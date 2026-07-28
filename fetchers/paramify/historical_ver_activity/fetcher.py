@@ -96,7 +96,7 @@ def main() -> int:
         env["generated_at"],
     )
 
-    output_path = output_dir / "paramify_historical_ver_activity.json"
+    output_path = output_dir / f"paramify_historical_ver_activity_{vc.sanitize_for_filename(env['project_id'])}.json"
     with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
 

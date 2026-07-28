@@ -92,7 +92,7 @@ def main() -> int:
         report["acceptedVulnerabilities"], env["report_from"], env["report_to"]
     )
 
-    output_path = output_dir / "paramify_accepted_vulnerabilities.json"
+    output_path = output_dir / f"paramify_accepted_vulnerabilities_{vc.sanitize_for_filename(env['project_id'])}.json"
     with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
 

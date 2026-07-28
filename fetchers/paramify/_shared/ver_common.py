@@ -22,6 +22,7 @@ Env reads (interim v0.x: fetchers read env directly; the runner sets these):
 """
 
 import os
+import re
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -87,6 +88,17 @@ def resolve_common_env() -> Dict[str, str]:
         "report_to": os.environ.get("PARAMIFY_REPORT_TO") or now,
         "generated_at": now,
     }
+
+
+def sanitize_for_filename(value: str) -> str:
+    """Make a target identifier safe for a filename (mirrors the gitlab fetcher).
+
+    Fanout writes one file per program; the runner discovers outputs by diffing
+    the evidence dir, so each invocation MUST write a distinct name or the second
+    program silently overwrites the first and its outputs list comes back empty.
+    """
+    sanitized = str(value).replace("/", "_").replace(" ", "_")
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", sanitized)
 
 
 def paramify_get(base_url: str, token: str, path: str, params: Dict[str, Any]) -> Any:

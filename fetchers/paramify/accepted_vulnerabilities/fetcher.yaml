@@ -7,6 +7,20 @@ description: >-
   open 192+ days past a real completed evaluation (VER-TFR-MAV).
 category: paramify
 
+supports_targets: true
+
+target_schema:
+  project_id:
+    type: string
+    required: true
+    env: PARAMIFY_PROJECT_ID
+    description: Paramify program (project) UUID. One target per program; from GET /projects.
+  cert_package_uri:
+    type: string
+    required: true
+    env: PARAMIFY_CERT_PACKAGE_URI
+    description: Public Certification Package Overview URI for THIS program.
+
 runtime:
   type: python
   entry: fetcher.py
@@ -15,14 +29,11 @@ runtime:
 output:
   type: json
   path: paramify_accepted_vulnerabilities.json
+  aggregation: per_target
 
 secrets:
   - name: api_token
     env: PARAMIFY_API_TOKEN
-  - name: project_id
-    env: PARAMIFY_PROJECT_ID
-  - name: cert_package_uri
-    env: PARAMIFY_CERT_PACKAGE_URI
   - name: report_from
     env: PARAMIFY_REPORT_FROM
   - name: api_base_url
