@@ -10,6 +10,27 @@ schemas and the `paramify` CLI — not the internal code.
 
 ## [Unreleased]
 
+### Changed
+
+- Run manifests are no longer gitignored, and the repo no longer tracks a file at
+  `./manifest.yaml`. The manifest that used to sit there ships as
+  `example_manifest.yaml` instead. Manifests describe which evidence you collect,
+  so teams under a compliance program generally want them in version control —
+  they hold no secret values, since `${env:VAR}` resolves from the environment at
+  run time. Previously `/manifest.yaml` and `/manifests/` were listed in
+  `.gitignore` *and* a `manifest.yaml` was tracked; because ignore rules don't
+  apply to already-tracked files, that entry had no effect and edits to the
+  shipped manifest were staged by default, conflicting on every upgrade.
+  **If you were relying on the tracked `manifest.yaml`,** copy
+  `example_manifest.yaml` to `manifest.yaml`, or pass `--manifest` explicitly.
+  `paramify manifest init` and the `manifests/` picker convention are unchanged.
+
+### Added
+
+- [`docs/private_mirror_workflow.md`](docs/private_mirror_workflow.md) — keeping a
+  private copy of this repo that still receives upstream releases, for teams whose
+  fetcher work can't be public.
+
 ## [0.3.0-beta] - 2026-07-23
 
 ### Added

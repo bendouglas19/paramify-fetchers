@@ -190,6 +190,11 @@ Issues found — see above.
 `./manifest.yaml`). It reads each `fetcher.yaml` and warns which secrets and
 config are still missing until the manifest is runnable.
 
+Nothing ships at `./manifest.yaml`, so the one you build there is yours — commit
+it or don't, as you prefer. For a worked reference see
+[`example_manifest.yaml`](example_manifest.yaml); [`examples/`](examples/) holds
+smaller per-scenario samples.
+
 ![Building a run manifest step by step with paramify manifest](docs/demo/manifest.gif)
 
 ```bash
@@ -411,6 +416,7 @@ To add evidence collection for a new control or a new tool, see [`docs/authoring
 | [`docs/design.md`](docs/design.md) | Why the framework is shaped this way + current state of the work |
 | [`docs/versioning.md`](docs/versioning.md) | How we version, the contract, and what 1.0 means |
 | [`docs/releasing.md`](docs/releasing.md) | How a release is cut |
+| [`docs/private_mirror_workflow.md`](docs/private_mirror_workflow.md) | Keeping a private copy of this repo that still receives upstream releases |
 
 ## License
 
