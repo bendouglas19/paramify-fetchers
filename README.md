@@ -190,6 +190,11 @@ Issues found — see above.
 `./manifest.yaml`). It reads each `fetcher.yaml` and warns which secrets and
 config are still missing until the manifest is runnable.
 
+Nothing ships at `./manifest.yaml`, so the one you build there is yours — commit
+it or don't, as you prefer. For a worked reference see
+[`example_manifest.yaml`](example_manifest.yaml); [`examples/`](examples/) holds
+smaller per-scenario samples.
+
 ![Building a run manifest step by step with paramify manifest](docs/demo/manifest.gif)
 
 ```bash

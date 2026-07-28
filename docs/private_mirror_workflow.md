@@ -218,33 +218,20 @@ Several people can work different fetchers in parallel on separate `feat/*`
 branches; there's no need to build a container until the fetchers themselves run
 correctly.
 
-## 5. Three things that will fight you
+**Your manifests are yours, and nothing ignores them.** A manifest describes
+which evidence you collect, so under FedRAMP you'll usually want it in version
+control — commit `manifest.yaml`, or organize several under `manifests/`, however
+suits you. We deliberately ship nothing at `./manifest.yaml`, so a manifest you
+create there can never conflict with one of ours on merge. Start from
+[`example_manifest.yaml`](../example_manifest.yaml) or the samples in
+[`examples/`](../examples).
+
+## 5. Two things that will fight you
 
 **Don't bump the version.** `pyproject.toml` and `CHANGELOG.md` will conflict on
 every release you merge if you're also editing them. Leave the version at whatever
 we shipped. If you need your own build identifier, add a SemVer local suffix —
 `0.4.0-beta+yourorg.3` — which no Paramify release will ever collide with.
-
-**Root `manifest.yaml` is tracked, even though `.gitignore` lists it.** Git ignore
-rules don't apply to files that are already tracked, so that entry has no effect
-on this file: your edits get committed by default, then conflict every time we
-change ours. Pick one:
-
-- *You don't need the manifest in version control* — untrack it once, and the
-  existing ignore rule takes effect:
-
-  ```bash
-  git rm --cached manifest.yaml
-  git commit -m "chore: untrack root manifest.yaml (local working file)"
-  ```
-
-- *You do want it under change control* (common, and reasonable under FedRAMP) —
-  keep it out of the path we use. Remove the `/manifests/` line from `.gitignore`
-  and commit your real manifests as `manifests/<environment>.yaml`. Root
-  `manifest.yaml` stays untracked scratch space.
-
-Either way, start from the samples in [`examples/`](../examples) rather than
-editing the root manifest directly.
 
 **Never commit a credential.** `.env` and `.env.*` are already ignored, and
 nothing else in the repo should ever hold a secret. The framework resolves

@@ -20,12 +20,16 @@ venv/
 # --- Generated collect output (runner writes evidence/run-<timestamp>/) ---
 /evidence/
 
-# --- Local working manifests ---
-# The manifest builder writes ./manifest.yaml by default; the welcome picker
-# also scans manifests/*.yaml. Both are customer-side working files; canonical
-# samples live in examples/. Delete these lines to commit your own.
-/manifest.yaml
-/manifests/
+# --- Run manifests are NOT ignored ---
+# Your manifests describe which evidence you collect, so most teams want them in
+# version control — the manifest builder's ./manifest.yaml default and anything
+# under manifests/ are yours to commit or leave untracked, as you prefer. They
+# hold no secret values: `${env:VAR}` is resolved from the environment at run
+# time, so a manifest names its secrets without containing them.
+#
+# Nothing is ignored here on purpose. This repo ships example_manifest.yaml as a
+# reference sample and nothing at ./manifest.yaml, so a manifest you create is
+# never in conflict with one of ours.
 
 # --- Claude Code: ignore personal settings, keep shared skills + settings.json ---
 .claude/settings.local.json
