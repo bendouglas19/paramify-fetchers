@@ -39,6 +39,15 @@ schemas and the `paramify` CLI — not the internal code.
   indistinguishable from a genuinely clean one to anything reading the payload.
 - The uploader prefers a target's `program_name` over its opaque id when titling
   an artifact. Fetchers whose id is already readable are unaffected.
+- **Every timestamp in a VER report is now emitted in one format** — UTC, second
+  precision, literal `Z` (`2026-07-30T09:00:00Z`). Values from the Paramify API
+  (`detectedAt`, `evaluationCompletedAt`, the `dueDate` quoted in an overdue
+  explanation) were previously passed through with the API's millisecond
+  precision, so a single document mixed notations; they are normalized on the way
+  in, and non-UTC offsets are converted rather than preserved. A `report_from` /
+  `report_to` given as a bare date is expanded, with a date-only end reported as
+  that day's last second (`2026-06-30` → `2026-06-30T23:59:59Z`) to match the
+  window actually collected.
 
 ### Fixed
 

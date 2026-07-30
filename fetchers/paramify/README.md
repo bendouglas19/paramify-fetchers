@@ -72,6 +72,32 @@ Each program's file is named for its program (`..._Alpha_Cloud_Services_aaaaaaaa
 UUID prefix appended because program names are not guaranteed unique), and the
 uploader titles the artifact the same way.
 
+## Timestamps
+
+Every instant in a generated report uses one format — UTC, second precision,
+literal `Z`:
+
+```
+2026-07-30T09:00:00Z
+```
+
+That holds regardless of source. Values the fetcher generates (`generatedAt`,
+a defaulted `reportPeriod.to`) are produced in it; values from the Paramify API
+(`detectedAt`, `evaluationCompletedAt`, the `dueDate` quoted in an overdue
+explanation) are **normalized on the way in**, since the API returns
+milliseconds; and a `report_from` / `report_to` supplied as a bare date is
+expanded. A non-UTC offset is converted rather than preserved, so
+`2026-02-01T09:00:00+02:00` is emitted as `2026-02-01T07:00:00Z`.
+
+A date-only `report_to` is reported as that day's **last second**
+(`2026-06-30` → `2026-06-30T23:59:59Z`), because a date-only end means "through
+the end of that day" to the coverage filter — reporting its midnight would
+understate the period by a day.
+
+A value the parser can't read is passed through unchanged rather than dropped or
+blanked; schema verification is the right place for a malformed source value to
+surface. `tests/test_ver_timestamps.py` pins all of this.
+
 ## Notes
 
 - **Coverage:** the fetchers keep every OPEN issue regardless of when its status

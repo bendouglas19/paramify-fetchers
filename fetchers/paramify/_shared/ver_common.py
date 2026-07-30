@@ -84,8 +84,14 @@ def http_timeout() -> int:
 
 
 # --- Environment / API ------------------------------------------------------
+# The single timestamp format every value in these reports is emitted in:
+# UTC, second precision, literal Z ("2026-07-30T09:00:00Z"). RFC 3339, and the
+# same shape the runner stamps into envelope metadata.
+TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
 def current_timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime(TIMESTAMP_FORMAT)
 
 
 def get_env(name: str) -> str:
@@ -217,6 +223,47 @@ def _parse_iso(value: str) -> Optional[datetime]:
     return parsed
 
 
+def to_utc_z(value: Optional[str]) -> Optional[str]:
+    """Normalize a timestamp to the one format these reports emit: UTC, second
+    precision, literal Z -- "2026-07-30T09:00:00Z".
+
+    Every instant in a report goes through here. Paramify returns milliseconds
+    ("2026-02-01T00:00:00.000Z") and config may supply a bare date, so passing
+    values straight through produced a document mixing three notations. Offsets
+    are converted to UTC rather than preserved, so "…T09:00:00+02:00" emits as
+    "…T07:00:00Z".
+
+    Unparseable input is returned unchanged: dropping or blanking a value the
+    source gave us is worse than an off-format one, and schema verification is
+    the right place for that to surface.
+    """
+    if not value:
+        return value
+    parsed = _parse_iso(value)
+    if parsed is None:
+        return value
+    return parsed.astimezone(timezone.utc).strftime(TIMESTAMP_FORMAT)
+
+
+def report_period_bounds(report_from: str, report_to: str) -> Tuple[str, str]:
+    """The reportPeriod as declared in a report: both ends in to_utc_z() form.
+
+    A date-only bound is reported as that day's last second rather than its
+    midnight, because a date-only end means "through the end of that day" to the
+    coverage filter (see _window_bounds). Emitting "2026-06-30T00:00:00Z" for a
+    window that collected all of June 30 would understate the period in a
+    compliance artifact by a day.
+    """
+    def bound(raw: str, date_only_end: bool) -> str:
+        if raw and len(raw.strip()) == 10 and date_only_end:
+            parsed = _parse_iso(raw)
+            if parsed is not None:
+                return (parsed + timedelta(days=1) - timedelta(seconds=1)).strftime(TIMESTAMP_FORMAT)
+        return to_utc_z(raw) or raw
+
+    return bound(report_from, False), bound(report_to, True)
+
+
 def effective_evaluation_date(issue: Dict) -> Optional[datetime]:
     """Real completed-evaluation date, or None when missing, unparseable, or a
     pre-2000 sentinel (e.g. Unix epoch)."""
@@ -320,7 +367,7 @@ def _overdue_status(issue: Dict, now: Optional[datetime] = None) -> Dict:
         return {
             "isOverdue": True,
             "explanation": (
-                f"Open past its remediation due date ({issue.get('dueDate')}); "
+                f"Open past its remediation due date ({to_utc_z(issue.get('dueDate'))}); "
                 "not yet fully mitigated or remediated."
             ),
         }
@@ -337,7 +384,8 @@ def map_vulnerability_detail(issue: Dict) -> Dict:
         # KeyError that kills the whole report.
         "providerTrackingId": issue.get("poamId") or issue.get("id") or "",
         "detection": {
-            "detectedAt": issue.get("createdAt"),
+            # Normalized, not passed through: the API returns milliseconds.
+            "detectedAt": to_utc_z(issue.get("createdAt")),
             "detectionSource": origin.get("name") or "Unspecified",
         },
         "vulnerabilityDescription": issue.get("description") or issue.get("title") or "",
@@ -347,7 +395,7 @@ def map_vulnerability_detail(issue: Dict) -> Dict:
     if issue.get("likelyExploitableVulnerability") is not None:
         detail["isLikelyExploitable"] = issue["likelyExploitableVulnerability"]
     if effective_evaluation_date(issue) is not None:
-        detail["evaluationCompletedAt"] = issue["evaluationDate"]
+        detail["evaluationCompletedAt"] = to_utc_z(issue["evaluationDate"])
     rating = LEVEL_TO_NRATING.get(issue.get("level"))
     if rating is not None:
         detail["currentRating"] = rating

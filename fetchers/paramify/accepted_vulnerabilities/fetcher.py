@@ -68,11 +68,17 @@ def main() -> int:
         "excluded from VER-TFR-MAV time-based acceptance",
     )
 
+    # Declared period in the report's own timestamp format. The RAW env values
+    # still drive fetch_all_issues above -- normalizing before the window is
+    # computed would turn a date-only bound into a midnight instant and silently
+    # drop that day's closures.
+    period_from, period_to = vc.report_period_bounds(env["report_from"], env["report_to"])
+
     report = build_report(
-        issues, env["cert_package_uri"], env["report_from"], env["report_to"]
+        issues, env["cert_package_uri"], period_from, period_to
     )
     report["_summary"] = vc.build_avi_summary(
-        report["acceptedVulnerabilities"], env["report_from"], env["report_to"]
+        report["acceptedVulnerabilities"], period_from, period_to
     )
     report["_summary"]["collection"] = vc.build_collection_status(api_failures)
 
