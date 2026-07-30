@@ -115,15 +115,22 @@ class ManifestPage(Vertical):
 
         descriptors = self._descriptors()
         entries = self._entries()
+        # One discovery pass shared by validate + effective_config: each would
+        # otherwise walk and schema-validate all ~125 fetcher.yaml files, and
+        # rebuild() runs on every mutation and tab switch.
         try:
-            self._errors = api.validate(self._manifest, self.app.root_path)
+            discovered = api.discover(self.app.root_path)
+        except Exception:  # never let a discovery failure kill the UI
+            discovered = {"fetchers": {}, "platforms": {}}
+        try:
+            self._errors = api.validate(self._manifest, self.app.root_path, **discovered)
         except Exception as exc:  # never let a validation crash kill the UI
             self._errors = [f"validation error: {exc}"]
         by_use = self._bucket_errors(self._errors, entries)
-        # One merged-config pass for the whole table (scans the fetcher tree once).
         try:
             self._config_view = api.effective_config(
-                self._manifest, [e.get("use", "") for e in entries], self.app.root_path
+                self._manifest, [e.get("use", "") for e in entries],
+                self.app.root_path, **discovered,
             )
         except Exception:  # never let a config-merge failure kill the UI
             self._config_view = {}
@@ -220,11 +227,7 @@ class ManifestPage(Vertical):
         """
         if not view:
             return (0, 0)
-        supplied = sum(
-            1 for c in view
-            if c.get("source") == "entry" or str(c.get("source") or "").startswith("platforms.")
-        )
-        return (supplied, len(view))
+        return (sum(1 for c in view if c.get("source") not in (None, "default")), len(view))
 
     @staticmethod
     def _bucket_errors(errors: List[str], entries: List[dict]) -> Dict[str, List[str]]:

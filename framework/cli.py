@@ -56,7 +56,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, NoReturn, Optional
 
 import typer
 
@@ -114,7 +114,7 @@ def _coerce(raw: str, typ: str):
     return raw
 
 
-def _fail(path, msg: str, json_out: bool):
+def _fail(path, msg: str, json_out: bool) -> NoReturn:
     """Report a command-level argument error honoring --json, then exit 1.
 
     Keeps the {ok, path, errors} contract on mutator argument-error paths (a
@@ -980,20 +980,6 @@ def tui_cmd(
 # prompt it can't answer.
 # --------------------------------------------------------------------------- #
 
-# Config the targeted fetchers need that does NOT vary per program: asked once,
-# stored at the category level. (field, flag, prompt, validate-as-ISO)
-_SHARED_CONFIG_PROMPTS = (
-    (
-        "cert_package_uri", "--cert-uri",
-        "Certification Package Overview URI (used for every program)", False,
-    ),
-    (
-        "report_from", "--report-from",
-        "Report period start — ISO date, e.g. 2026-01-01 (used for every program)", True,
-    ),
-)
-
-
 def _is_iso_datish(value: str) -> bool:
     """Accept what the fetchers' date parser accepts: an ISO date or timestamp,
     with a trailing Z allowed. Mirrors ver_common._parse_iso — fetchers aren't an
@@ -1005,15 +991,16 @@ def _is_iso_datish(value: str) -> bool:
     return True
 
 
+def _can_prompt(json_out: bool) -> bool:
+    """--json has no way to answer a prompt, and neither does a piped stdin."""
+    return not json_out and sys.stdin.isatty()
+
+
 def _programs_or_exit(json_out: bool) -> List[dict]:
     try:
         return api.list_programs()
     except RuntimeError as e:
-        if json_out:
-            typer.echo(json.dumps({"ok": False, "errors": [str(e)]}, indent=2))
-        else:
-            _err(str(e))
-        raise typer.Exit(1)
+        _fail(None, str(e), json_out)
 
 
 def _parse_selection(raw: str, count: int) -> List[int]:
@@ -1029,17 +1016,11 @@ def _parse_selection(raw: str, count: int) -> List[int]:
     for token in re.split(r"[,\s]+", text):
         if not token:
             continue
-        if "-" in token:
-            lo_s, _, hi_s = token.partition("-")
-            lo, hi = int(lo_s), int(hi_s)
-            if lo < 1 or hi > count or lo > hi:
-                raise ValueError(f"range {token!r} is outside 1-{count}")
-            picked.extend(range(lo - 1, hi))
-        else:
-            n = int(token)
-            if n < 1 or n > count:
-                raise ValueError(f"{n} is outside 1-{count}")
-            picked.append(n - 1)
+        lo_s, _, hi_s = token.partition("-")
+        lo, hi = int(lo_s), int(hi_s or lo_s)
+        if not 1 <= lo <= hi <= count:
+            raise ValueError(f"{token!r} is outside 1-{count}")
+        picked.extend(range(lo - 1, hi))
     ordered = list(dict.fromkeys(picked))  # de-dupe, keep the order typed
     if not ordered:
         raise ValueError("no programs selected")
@@ -1089,11 +1070,14 @@ def programs_target(
     root = api.find_repo_root()
     path = Path(file).resolve()
     m = _read_for_edit(path, json_out)
-    shared_config_values = {"cert_package_uri": cert_uri, "report_from": report_from}
+    # Discovered once and threaded through every api call below. Each of these
+    # walks + schema-validates all ~125 fetcher.yaml files; the tree is immutable
+    # for the life of the command, so one pass is enough.
+    discovered = api.discover(root)
 
     uses = list(fetchers or [])
     if not uses:
-        uses = api.program_target_fetchers(m, root)
+        uses = api.program_target_fetchers(m, root, discovered["fetchers"])
         if not uses:
             _fail(
                 path,
@@ -1119,7 +1103,7 @@ def programs_target(
                 _fail(path, str(e), json_out)
         selected = list({p["id"]: p for p in selected}.values())
     else:
-        if json_out or not sys.stdin.isatty():
+        if not _can_prompt(json_out):
             _fail(
                 path,
                 "No programs chosen and no terminal to prompt on: pass --program "
@@ -1144,16 +1128,20 @@ def programs_target(
     # platforms.<category>.config, where every fetcher in the category picks them
     # up. A re-run whose manifest already has them doesn't ask again; passing the
     # flag explicitly overwrites whatever is there.
-    for field_name, flag, prompt_text, validate_iso in _SHARED_CONFIG_PROMPTS:
-        supplied = (shared_config_values.get(field_name) or "").strip()
-        if supplied:
-            categories = api.categories_declaring_config(m, uses, field_name, root)
-            value = supplied
-        else:
-            categories = api.categories_needing_config(m, uses, field_name, root)
+    for field_name, flag, prompt_text, is_date, supplied in (
+        ("cert_package_uri", "--cert-uri",
+         "Certification Package Overview URI (used for every program)", False, cert_uri),
+        ("report_from", "--report-from",
+         "Report period start — ISO date, e.g. 2026-01-01 (used for every program)", True, report_from),
+    ):
+        value = (supplied or "").strip()
+        categories = api.categories_for_config(
+            m, uses, field_name, root, missing_only=not value, **discovered
+        )
+        if not value:
             if not categories:
                 continue
-            if json_out or not sys.stdin.isatty():
+            if not _can_prompt(json_out):
                 _fail(
                     path,
                     f"{field_name} is not set for "
@@ -1165,7 +1153,7 @@ def programs_target(
             value = typer.prompt(prompt_text).strip()
             if not value:
                 _fail(path, f"No {field_name} given; nothing written.", json_out)
-        if validate_iso and not _is_iso_datish(value):
+        if is_date and not _is_iso_datish(value):
             # A date the fetcher can't parse yields an empty report window, which
             # silently drops every closed issue rather than failing — so reject it
             # here, where it's still a typo instead of a wrong report.
@@ -1178,7 +1166,7 @@ def programs_target(
         for category in categories:
             api.set_platform_config(m, category, field_name, value)
 
-    report = api.add_program_targets(m, uses, selected)
+    report = api.add_program_targets(m, uses, selected, fetchers=discovered["fetchers"])
     if not json_out:
         for rec in report["added"]:
             typer.echo(f"  + {rec['use']}  ->  {rec['program_name']} ({rec['program_id']})")

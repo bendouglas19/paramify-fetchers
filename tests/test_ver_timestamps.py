@@ -17,6 +17,7 @@ Run: ``pytest tests/test_ver_timestamps.py``
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 from pathlib import Path
 
@@ -27,6 +28,8 @@ _VER_COMMON = REPO_ROOT / "fetchers" / "paramify" / "_shared" / "ver_common.py"
 
 # The one accepted shape. Anchored: a trailing offset or fractional seconds fails.
 CANONICAL = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+# Anything date-shaped, so an off-format value is found rather than skipped.
+LOOSE = re.compile(r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:Z|[+-]\d{2}:\d{2})?")
 
 
 def _load_ver_common():
@@ -83,20 +86,6 @@ def test_current_timestamp_is_canonical():
     assert CANONICAL.match(vc.current_timestamp())
 
 
-def _timestamps(obj, path=""):
-    """Every timestamp-looking substring in a nested structure, with its path."""
-    pattern = re.compile(r"\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:Z|[+-]\d{2}:\d{2})?")
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            yield from _timestamps(v, f"{path}.{k}" if path else k)
-    elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            yield from _timestamps(v, f"{path}[{i}]")
-    elif isinstance(obj, str):
-        for found in pattern.findall(obj):
-            yield path, found
-
-
 def test_vulnerability_detail_emits_only_canonical_timestamps():
     """The whole mapped object, from an issue whose every date is off-format —
     including the free-text overdue explanation, which interpolates a dueDate."""
@@ -111,7 +100,9 @@ def test_vulnerability_detail_emits_only_canonical_timestamps():
     detail = vc.map_vulnerability_detail(issue)
 
     assert detail["overdueStatus"]["isOverdue"] is True, "fixture must exercise the explanation"
-    found = list(_timestamps(detail))
-    assert found, "no timestamps found — the walker or the fixture is broken"
-    off_format = [(p, t) for p, t in found if not CANONICAL.match(t)]
-    assert not off_format, f"off-format timestamps in vulnerabilityDetail: {off_format}"
+    # Serialize and scan: catches timestamps in free text (the overdue
+    # explanation) as well as in fields, without a bespoke tree walker.
+    found = LOOSE.findall(json.dumps(detail))
+    assert found, "no timestamps found — the fixture is broken"
+    off_format = [ts for ts in found if not CANONICAL.match(ts)]
+    assert not off_format, f"off-format timestamps in {json.dumps(detail)}: {off_format}"

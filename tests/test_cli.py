@@ -124,6 +124,7 @@ def _tui_api_calls() -> set[str]:
 # its own command. Keep this in sync with the TUI; the test below enforces it.
 API_TO_CLI = {
     "find_repo_root": "<implicit: every command>",
+    "discover": "<implicit: one fetcher-tree scan shared across a redraw>",
     "catalog": "list / catalog / describe",
     "list_manifests": "manifests",
     "read_manifest": "manifest show",
@@ -655,13 +656,21 @@ def _platform_cfg(manifest_dict, category="paramify"):
     return (manifest_dict["run"].get("platforms") or {}).get(category, {}).get("config", {})
 
 
+# The shared config `programs target` needs; supplied by default so each test's
+# argv shows only what that test is actually varying.
+_SHARED_ARGS = ["--cert-uri", "https://example.gov/cpo", "--report-from", "2026-01-01"]
+
+
+def _target(manifest, *args, shared=True):
+    return runner.invoke(app, [
+        "programs", "target", *args, *(_SHARED_ARGS if shared else []),
+        "-f", str(manifest), "--json",
+    ])
+
+
 def test_programs_target_writes_targets_by_name(stub_programs, ver_manifest):
-    rep = _json(runner.invoke(app, [
-        "programs", "target", _VER_FETCHER,
-        "--program", "Alpha Cloud Services", "--program", "Gamma",
-        "--cert-uri", "https://example.gov/cpo", "--report-from", "2026-01-01",
-        "-f", str(ver_manifest), "--json",
-    ]))
+    rep = _json(_target(ver_manifest, _VER_FETCHER,
+                        "--program", "Alpha Cloud Services", "--program", "Gamma"))
     assert rep["ok"] is True, rep["errors"]
     m = api.read_manifest(ver_manifest)
     targets = _entry(m, _VER_FETCHER)["targets"]
@@ -674,10 +683,10 @@ def test_programs_target_writes_targets_by_name(stub_programs, ver_manifest):
 def test_programs_target_writes_cert_uri_as_category_config(stub_programs, ver_manifest):
     """One workspace, one URI: it lands once under platforms.paramify.config."""
     uri = "https://example.gov/cpo?package=abc&v=2"  # '=' in the query must survive
-    _json(runner.invoke(app, [
-        "programs", "target", _VER_FETCHER, "--all", "--cert-uri", uri, "--report-from", "2026-01-01",
-        "-f", str(ver_manifest), "--json",
-    ]))
+    # shared=False: _SHARED_ARGS is appended after *args, so its --cert-uri would
+    # win over this one.
+    _json(_target(ver_manifest, _VER_FETCHER, "--all", "--cert-uri", uri,
+                  "--report-from", "2026-01-01", shared=False))
     m = api.read_manifest(ver_manifest)
     assert _platform_cfg(m)["cert_package_uri"] == uri
     assert len(_entry(m, _VER_FETCHER)["targets"]) == len(_PROGRAMS)
@@ -689,14 +698,8 @@ def test_programs_target_does_not_reprompt_when_cert_uri_already_set(stub_progra
     Under --json there is no prompt to fall back on, so if the command still
     considered it missing this would fail instead of succeeding.
     """
-    _json(runner.invoke(app, [
-        "programs", "target", _VER_FETCHER, "--program", "Alpha",
-        "--cert-uri", "https://example.gov/cpo", "--report-from", "2026-01-01", "-f", str(ver_manifest), "--json",
-    ]))
-    rep = _json(runner.invoke(app, [
-        "programs", "target", _VER_FETCHER, "--program", "Beta",
-        "-f", str(ver_manifest), "--json",
-    ]))
+    _json(_target(ver_manifest, _VER_FETCHER, "--program", "Alpha"))
+    rep = _json(_target(ver_manifest, _VER_FETCHER, "--program", "Beta", shared=False))
     assert rep["ok"] is True, rep["errors"]
     m = api.read_manifest(ver_manifest)
     assert _platform_cfg(m)["cert_package_uri"] == "https://example.gov/cpo"
@@ -704,45 +707,29 @@ def test_programs_target_does_not_reprompt_when_cert_uri_already_set(stub_progra
 
 
 def test_programs_target_all_covers_every_program(stub_programs, ver_manifest):
-    rep = _json(runner.invoke(app, [
-        "programs", "target", _VER_FETCHER, "--all",
-        "--cert-uri", "https://example.gov/cpo", "--report-from", "2026-01-01",
-        "-f", str(ver_manifest), "--json",
-    ]))
+    rep = _json(_target(ver_manifest, _VER_FETCHER, "--all"))
     assert rep["ok"] is True, rep["errors"]
     targets = _entry(api.read_manifest(ver_manifest), _VER_FETCHER)["targets"]
     assert [t["project_id"] for t in targets] == [p["id"] for p in _PROGRAMS]
 
 
 def test_programs_target_is_idempotent(stub_programs, ver_manifest):
-    argv = [
-        "programs", "target", _VER_FETCHER, "--program", "Beta",
-        "--cert-uri", "https://example.gov/cpo", "--report-from", "2026-01-01",
-        "-f", str(ver_manifest), "--json",
-    ]
-    _json(runner.invoke(app, argv))
-    _json(runner.invoke(app, argv))  # same command again
+    _json(_target(ver_manifest, _VER_FETCHER, "--program", "Beta"))
+    _json(_target(ver_manifest, _VER_FETCHER, "--program", "Beta"))  # same command again
     targets = _entry(api.read_manifest(ver_manifest), _VER_FETCHER)["targets"]
     assert len(targets) == 1, "re-targeting the same program must not duplicate it"
 
 
 def test_programs_target_defaults_to_program_taking_entries(stub_programs, ver_manifest):
     """No fetcher argument: every manifest entry that takes a program gets it."""
-    rep = _json(runner.invoke(app, [
-        "programs", "target", "--program", "Beta",
-        "--cert-uri", "https://example.gov/cpo", "--report-from", "2026-01-01",
-        "-f", str(ver_manifest), "--json",
-    ]))
+    rep = _json(_target(ver_manifest, "--program", "Beta"))
     assert rep["ok"] is True, rep["errors"]
     assert _entry(api.read_manifest(ver_manifest), _VER_FETCHER)["targets"]
 
 
 def test_programs_target_requires_cert_uri_under_json(stub_programs, ver_manifest):
     """--json can't prompt, so a missing URI must fail loudly and say where it goes."""
-    rep = _json_err(runner.invoke(app, [
-        "programs", "target", _VER_FETCHER, "--program", "Beta",
-        "-f", str(ver_manifest), "--json",
-    ]))
+    rep = _json_err(_target(ver_manifest, _VER_FETCHER, "--program", "Beta", shared=False))
     assert "cert_package_uri" in rep["errors"][0]
     assert "platforms.paramify.config" in rep["errors"][0]
     assert "--cert-uri" in rep["errors"][0]
@@ -751,11 +738,7 @@ def test_programs_target_requires_cert_uri_under_json(stub_programs, ver_manifes
 def test_programs_target_writes_report_from_as_category_config(stub_programs, ver_manifest):
     """report_from is declared per-fetcher but set once at the platform level —
     the runner merges platform config over any field a fetcher declares."""
-    _json(runner.invoke(app, [
-        "programs", "target", _VER_FETCHER, "--all",
-        "--cert-uri", "https://example.gov/cpo", "--report-from", "2026-01-01",
-        "-f", str(ver_manifest), "--json",
-    ]))
+    _json(_target(ver_manifest, _VER_FETCHER, "--all"))
     m = api.read_manifest(ver_manifest)
     assert _platform_cfg(m)["report_from"] == "2026-01-01"
     assert "report_from" not in (_entry(m, _VER_FETCHER).get("config") or {})
@@ -765,52 +748,42 @@ def test_programs_target_writes_report_from_as_category_config(stub_programs, ve
 def test_programs_target_rejects_non_iso_report_from(stub_programs, ver_manifest, bad):
     """An unparseable date yields an empty report window, which silently drops
     every closed issue — so it has to fail here, not at run time."""
-    rep = _json_err(runner.invoke(app, [
-        "programs", "target", _VER_FETCHER, "--all",
-        "--cert-uri", "https://example.gov/cpo", "--report-from", bad,
-        "-f", str(ver_manifest), "--json",
-    ]))
+    rep = _json_err(_target(ver_manifest, _VER_FETCHER, "--all",
+                            "--cert-uri", "https://example.gov/cpo",
+                            "--report-from", bad, shared=False))
     assert "report_from" in rep["errors"][0]
     assert "ISO" in rep["errors"][0]
 
 
 @pytest.mark.parametrize("good", ["2026-01-01", "2026-01-01T00:00:00Z", "2026-06-30T12:00:00+00:00"])
 def test_programs_target_accepts_iso_report_from(stub_programs, ver_manifest, good):
-    rep = _json(runner.invoke(app, [
-        "programs", "target", _VER_FETCHER, "--all",
-        "--cert-uri", "https://example.gov/cpo", "--report-from", good,
-        "-f", str(ver_manifest), "--json",
-    ]))
+    rep = _json(_target(ver_manifest, _VER_FETCHER, "--all",
+                        "--cert-uri", "https://example.gov/cpo",
+                        "--report-from", good, shared=False))
     assert rep["ok"] is True, rep["errors"]
     assert _platform_cfg(api.read_manifest(ver_manifest))["report_from"] == good
 
 
 def test_programs_target_requires_report_from_under_json(stub_programs, ver_manifest):
-    rep = _json_err(runner.invoke(app, [
-        "programs", "target", _VER_FETCHER, "--all",
-        "--cert-uri", "https://example.gov/cpo",
-        "-f", str(ver_manifest), "--json",
-    ]))
+    rep = _json_err(_target(ver_manifest, _VER_FETCHER, "--all",
+                            "--cert-uri", "https://example.gov/cpo", shared=False))
     assert "report_from" in rep["errors"][0]
     assert "--report-from" in rep["errors"][0]
 
 
 def test_programs_target_flag_overrides_existing_shared_config(stub_programs, ver_manifest):
     """Passing a flag is an override — it applies even when a value is already set."""
-    base = ["programs", "target", _VER_FETCHER, "--all", "-f", str(ver_manifest), "--json"]
-    _json(runner.invoke(app, base + ["--cert-uri", "https://old.example.gov/cpo",
-                                     "--report-from", "2026-01-01"]))
-    _json(runner.invoke(app, base + ["--cert-uri", "https://new.example.gov/cpo",
-                                     "--report-from", "2026-04-01"]))
+    _json(_target(ver_manifest, _VER_FETCHER, "--all", "--cert-uri",
+                  "https://old.example.gov/cpo", "--report-from", "2026-01-01", shared=False))
+    _json(_target(ver_manifest, _VER_FETCHER, "--all", "--cert-uri",
+                  "https://new.example.gov/cpo", "--report-from", "2026-04-01", shared=False))
     cfg = _platform_cfg(api.read_manifest(ver_manifest))
     assert cfg["cert_package_uri"] == "https://new.example.gov/cpo"
     assert cfg["report_from"] == "2026-04-01"
 
 
 def test_programs_target_requires_a_selection_under_json(stub_programs, ver_manifest):
-    rep = _json_err(runner.invoke(app, [
-        "programs", "target", _VER_FETCHER, "-f", str(ver_manifest), "--json",
-    ]))
+    rep = _json_err(_target(ver_manifest, _VER_FETCHER, shared=False))
     assert "--program" in rep["errors"][0]
 
 

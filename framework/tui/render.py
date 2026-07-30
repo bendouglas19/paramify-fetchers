@@ -111,29 +111,6 @@ def _status(set_: bool, required: bool) -> Text:
     return Text("required — unset", style=palette.WARN) if required else Text("unset", style="dim")
 
 
-def _config_rows(descriptor: dict, entry: dict, view: Optional[List[dict]]) -> List[dict]:
-    """The config fields to render, each carrying `value` and `source`.
-
-    `view` is api.effective_config()'s merged result. Without one, fall back to
-    the entry's own config block — correct only when nothing is set at the
-    category level, so callers should pass the view.
-    """
-    if view is not None:
-        return view
-    cfg = entry.get("config") or {}
-    rows = []
-    for c in descriptor.get("config", []):
-        d = dict(c)
-        if c["name"] in cfg:
-            d["value"], d["source"] = cfg[c["name"]], "entry"
-        elif c.get("default") is not None:
-            d["value"], d["source"] = c["default"], "default"
-        else:
-            d["value"], d["source"] = None, None
-        rows.append(d)
-    return rows
-
-
 def entry_detail(
     descriptor: Optional[dict],
     entry: dict,
@@ -166,9 +143,11 @@ def entry_detail(
             rows.append((s["name"], value))
         parts += [Text("secrets", style="bold"), _kv_table(rows), Text()]
 
-    # config — the runner's merged view, so a value set once at the category
-    # level shows as set (and says where it came from) on every entry inheriting it
-    config_fields = _config_rows(descriptor, entry, config_view)
+    # config — api.effective_config()'s merged view (platform defaults <- platform
+    # values <- entry values), so a value set once at the category level shows as
+    # set, and says where it came from, on every entry inheriting it. Empty when
+    # the merge failed: no config block beats a knowingly-wrong one.
+    config_fields = config_view or []
     if config_fields:
         rows = []
         for c in config_fields:

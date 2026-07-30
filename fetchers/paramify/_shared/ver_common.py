@@ -128,8 +128,7 @@ def sanitize_for_filename(value: str) -> str:
     the evidence dir, so each invocation MUST write a distinct name or the second
     program silently overwrites the first and its outputs list comes back empty.
     """
-    sanitized = str(value).replace("/", "_").replace(" ", "_")
-    return re.sub(r"[^a-zA-Z0-9_-]", "_", sanitized)
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", str(value))
 
 
 def target_slug(env: Dict[str, str]) -> str:
@@ -254,14 +253,12 @@ def report_period_bounds(report_from: str, report_to: str) -> Tuple[str, str]:
     window that collected all of June 30 would understate the period in a
     compliance artifact by a day.
     """
-    def bound(raw: str, date_only_end: bool) -> str:
-        if raw and len(raw.strip()) == 10 and date_only_end:
-            parsed = _parse_iso(raw)
-            if parsed is not None:
-                return (parsed + timedelta(days=1) - timedelta(seconds=1)).strftime(TIMESTAMP_FORMAT)
-        return to_utc_z(raw) or raw
-
-    return bound(report_from, False), bound(report_to, True)
+    end_day = _parse_iso(report_to) if report_to and len(report_to.strip()) == 10 else None
+    end = (
+        (end_day + timedelta(days=1, seconds=-1)).strftime(TIMESTAMP_FORMAT)
+        if end_day is not None else (to_utc_z(report_to) or report_to)
+    )
+    return to_utc_z(report_from) or report_from, end
 
 
 def effective_evaluation_date(issue: Dict) -> Optional[datetime]:
@@ -274,19 +271,23 @@ def effective_evaluation_date(issue: Dict) -> Optional[datetime]:
 
 
 # --- Accepted-vulnerability test (shared by AVI + VDT) ----------------------
-def accepted_deviation(issue: Dict) -> Optional[Dict]:
-    qualifying = [
+def _accepted_deviations(issue: Dict, types: Tuple[str, ...]) -> List[Dict]:
+    """Deviations of the given types that have actually been ACCEPTED. A pending
+    or rejected deviation is a request, not a decision."""
+    return [
         d for d in issue.get("deviations", [])
-        if d.get("type") in ACCEPTED_DEVIATION_TYPES
+        if d.get("type") in types
         and (d.get("deviationMetadata") or {}).get("status") == ACCEPTED_STATUS
     ]
-    if not qualifying:
-        return None
-    qualifying.sort(
+
+
+def accepted_deviation(issue: Dict) -> Optional[Dict]:
+    """The most recently accepted qualifying deviation, or None."""
+    return max(
+        _accepted_deviations(issue, ACCEPTED_DEVIATION_TYPES),
         key=lambda d: (d.get("deviationMetadata") or {}).get("acceptanceStatusDate") or "",
-        reverse=True,
+        default=None,
     )
-    return qualifying[0]
 
 
 def is_192_day_accepted(issue: Dict, now: Optional[datetime] = None) -> bool:
@@ -321,37 +322,19 @@ def acceptance_rationale(issue: Dict) -> str:
 
 
 # --- VDT field derivations --------------------------------------------------
-def _false_positive_deviation(issue: Dict) -> bool:
-    return any(
-        d.get("type") == "FALSE_POSITIVE"
-        and (d.get("deviationMetadata") or {}).get("status") == ACCEPTED_STATUS
-        for d in issue.get("deviations", [])
-    )
-
-
-def _has_accepted_risk_adjustment(issue: Dict) -> bool:
-    """An ACCEPTED risk adjustment only. A pending/rejected deviation *request*
-    is not mitigation -- counting one would report "Partially Mitigated" on the
-    strength of a decision nobody has made yet."""
-    return any(
-        d.get("type") == "RISK_ADJUSTMENT"
-        and (d.get("deviationMetadata") or {}).get("status") == ACCEPTED_STATUS
-        for d in issue.get("deviations", [])
-    )
-
-
 def _final_disposition(issue: Dict) -> Optional[str]:
     """False Positive (accepted FP deviation) > Fully Mitigated (closed) >
     Partially Mitigated (open with accepted risk-adjustment or milestone) > omit.
     Milestones are read from the `milestones` array embedded in the /issues
     response -- no per-issue calls."""
-    if _false_positive_deviation(issue):
+    if _accepted_deviations(issue, ("FALSE_POSITIVE",)):
         return DISPOSITION_FALSE_POSITIVE
     if issue.get("status") in CLOSED_ISSUE_STATUSES:
         return DISPOSITION_FULLY
-    if issue.get("status") in OPEN_ISSUE_STATUSES:
-        if _has_accepted_risk_adjustment(issue) or issue.get("milestones"):
-            return DISPOSITION_PARTIALLY
+    if issue.get("status") in OPEN_ISSUE_STATUSES and (
+        _accepted_deviations(issue, ("RISK_ADJUSTMENT",)) or issue.get("milestones")
+    ):
+        return DISPOSITION_PARTIALLY
     return None
 
 
@@ -367,7 +350,8 @@ def _overdue_status(issue: Dict, now: Optional[datetime] = None) -> Dict:
         return {
             "isOverdue": True,
             "explanation": (
-                f"Open past its remediation due date ({to_utc_z(issue.get('dueDate'))}); "
+                f"Open past its remediation due date "
+                f"({due.astimezone(timezone.utc).strftime(TIMESTAMP_FORMAT)}); "
                 "not yet fully mitigated or remediated."
             ),
         }
@@ -394,8 +378,9 @@ def map_vulnerability_detail(issue: Dict) -> Dict:
         detail["isInternetReachable"] = issue["internetReachableVulnerability"]
     if issue.get("likelyExploitableVulnerability") is not None:
         detail["isLikelyExploitable"] = issue["likelyExploitableVulnerability"]
-    if effective_evaluation_date(issue) is not None:
-        detail["evaluationCompletedAt"] = to_utc_z(issue["evaluationDate"])
+    evaluated = effective_evaluation_date(issue)
+    if evaluated is not None:
+        detail["evaluationCompletedAt"] = evaluated.astimezone(timezone.utc).strftime(TIMESTAMP_FORMAT)
     rating = LEVEL_TO_NRATING.get(issue.get("level"))
     if rating is not None:
         detail["currentRating"] = rating
@@ -449,23 +434,39 @@ def build_collection_status(api_failures: List[Dict[str, Any]]) -> Dict[str, Any
 
 
 # --- _summary builders (vendor extension carried in the payload) ------------
+DISPOSITION_IN_PROGRESS = "In Progress"
+
+
+def _detail_counts(details: List[Dict]) -> Dict[str, Any]:
+    """Disposition / overdue / unevaluated tallies over mapped vulnerabilityDetails.
+
+    Shared by VDT and MRH, which count identically and differ only in the key
+    names they file the result under. Keyed off the DISPOSITION_* constants the
+    emitter uses, so renaming a label can't leave the summaries reporting zeros.
+    """
+    disp = Counter(v.get("finalDisposition", DISPOSITION_IN_PROGRESS) for v in details)
+    return {
+        "dispositions": {
+            "fullyMitigated": disp[DISPOSITION_FULLY],
+            "partiallyMitigated": disp[DISPOSITION_PARTIALLY],
+            "falsePositive": disp[DISPOSITION_FALSE_POSITIVE],
+            "inProgress": disp[DISPOSITION_IN_PROGRESS],
+        },
+        "overdue": sum(1 for v in details if (v.get("overdueStatus") or {}).get("isOverdue") is True),
+        "withoutCompletedEvaluation": sum(1 for v in details if "evaluationCompletedAt" not in v),
+    }
+
+
 def build_vdt_summary(vulns: List[Dict], report_from: str, report_to: str) -> Dict:
-    disp = Counter(v.get("finalDisposition", "In Progress") for v in vulns)
-    overdue = sum(1 for v in vulns if (v.get("overdueStatus") or {}).get("isOverdue") is True)
-    no_eval = sum(1 for v in vulns if "evaluationCompletedAt" not in v)
+    counts = _detail_counts(vulns)
     return {
         "report": "VER-RPT-VDT",
         "reportPeriod": {"from": report_from, "to": report_to},
         "nonAcceptedVulnerabilities": len(vulns),
-        "dispositions": {
-            "fullyMitigated": disp.get("Fully Mitigated", 0),
-            "partiallyMitigated": disp.get("Partially Mitigated", 0),
-            "falsePositive": disp.get("False Positive", 0),
-            "inProgress": disp.get("In Progress", 0),
-        },
-        "overdue": overdue,
-        "notOverdue": len(vulns) - overdue,
-        "withoutCompletedEvaluation": no_eval,
+        "dispositions": counts["dispositions"],
+        "overdue": counts["overdue"],
+        "notOverdue": len(vulns) - counts["overdue"],
+        "withoutCompletedEvaluation": counts["withoutCompletedEvaluation"],
     }
 
 
@@ -481,21 +482,14 @@ def build_avi_summary(accepted: List[Dict], report_from: str, report_to: str) ->
 
 
 def build_mrh_summary(active: List[Dict], accepted: List[Dict], generated_at: str) -> Dict:
-    disp = Counter(v.get("finalDisposition", "In Progress") for v in active)
-    overdue = sum(1 for v in active if (v.get("overdueStatus") or {}).get("isOverdue") is True)
-    no_eval = sum(1 for v in active if "evaluationCompletedAt" not in v)
+    counts = _detail_counts(active)
     return {
         "report": "VER-TFR-MRH",
         "generatedAt": generated_at,
         "totalVulnerabilities": len(active) + len(accepted),
         "active": len(active),
         "accepted": len(accepted),
-        "activeDispositions": {
-            "fullyMitigated": disp.get("Fully Mitigated", 0),
-            "partiallyMitigated": disp.get("Partially Mitigated", 0),
-            "falsePositive": disp.get("False Positive", 0),
-            "inProgress": disp.get("In Progress", 0),
-        },
-        "activeOverdue": overdue,
-        "activeWithoutCompletedEvaluation": no_eval,
+        "activeDispositions": counts["dispositions"],
+        "activeOverdue": counts["overdue"],
+        "activeWithoutCompletedEvaluation": counts["withoutCompletedEvaluation"],
     }

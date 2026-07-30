@@ -26,6 +26,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 import yaml
 
@@ -104,6 +105,18 @@ def _fetcher_descriptor(f) -> dict:
         "secrets": [_secret_descriptor(s) for s in f.secrets],
         "target_schema": [_target_descriptor(t) for t in f.target_schema.values()],
     }
+
+
+def discover(root: Path) -> Dict[str, dict]:
+    """One discovery pass, as {"fetchers": …, "platforms": …}.
+
+    Every api function that needs these takes them as optional arguments so a
+    caller can scan once and thread the result through. Worth doing: each scan
+    walks and jsonschema-validates all ~125 fetcher.yaml files (~165 ms), and the
+    tree is immutable for the life of a command or a TUI redraw. Splat it into a
+    call — `api.validate(m, root, **discovered)`.
+    """
+    return {"fetchers": discover_fetchers(root), "platforms": discover_platforms(root)}
 
 
 def catalog(root: Path) -> dict:
@@ -1067,20 +1080,6 @@ _PROGRAMS_PATH = "/projects"  # the UI's "programs" are the API's projects
 _PROGRAMS_TIMEOUT = 30
 
 
-def paramify_api_base_url() -> str:
-    """Base URL for read-only workspace lookups. Same env var and default the
-    fetchers and uploader use; no uploader-config layer, since this is a live
-    lookup rather than part of a run."""
-    return os.environ.get("PARAMIFY_API_BASE_URL") or "https://app.paramify.com/api/v0"
-
-
-def paramify_api_token() -> Optional[str]:
-    """Read token for workspace lookups, in the same fallback order as the VER
-    fetchers. Returns None when neither var is set — callers report that as a
-    setup error rather than attempting an unauthenticated call."""
-    return os.environ.get("PARAMIFY_API_TOKEN") or os.environ.get("PARAMIFY_UPLOAD_API_TOKEN")
-
-
 def program_display_name(program: dict) -> str:
     """Best human-readable label for a program, falling back to its UUID."""
     return (
@@ -1091,31 +1090,37 @@ def program_display_name(program: dict) -> str:
     )
 
 
-def list_programs(
-    base_url: Optional[str] = None,
-    token: Optional[str] = None,
-    timeout: int = _PROGRAMS_TIMEOUT,
-) -> List[dict]:
+def list_programs() -> List[dict]:
     """Fetch the workspace's programs via GET /projects.
 
     Returns [{"id", "name", "system_name", "short_name"}] sorted by display name.
-    Raises RuntimeError with an actionable message on missing credentials or a
-    transport/HTTP failure — the CLI turns that into {"ok": false, "errors": [...]}.
+    Raises RuntimeError with an actionable message on missing credentials, a
+    non-https endpoint, or a transport/HTTP failure — the CLI turns that into
+    {"ok": false, "errors": [...]}.
     """
     import requests  # local: keeps `paramify list`/`tui` startup free of it
 
-    resolved_token = token or paramify_api_token()
-    if not resolved_token:
+    token = os.environ.get("PARAMIFY_API_TOKEN") or os.environ.get("PARAMIFY_UPLOAD_API_TOKEN")
+    if not token:
         raise RuntimeError(
             "No Paramify API token: set PARAMIFY_API_TOKEN (or "
             "PARAMIFY_UPLOAD_API_TOKEN) to a token with read scope on the workspace"
         )
-    url = f"{(base_url or paramify_api_base_url()).rstrip('/')}{_PROGRAMS_PATH}"
+    base_url = os.environ.get("PARAMIFY_API_BASE_URL") or "https://app.paramify.com/api/v0"
+    # Same rule the uploader enforces (uploader._base_url_error): a Bearer token
+    # must not go out over plaintext. Localhost is exempt so a local stub works.
+    host = urlparse(base_url).hostname or ""
+    if urlparse(base_url).scheme != "https" and host not in ("localhost", "127.0.0.1", "::1"):
+        raise RuntimeError(
+            f"PARAMIFY_API_BASE_URL must be https to protect the API token (got {base_url!r}); "
+            "only localhost may use http"
+        )
+    url = f"{base_url.rstrip('/')}{_PROGRAMS_PATH}"
     try:
         resp = requests.get(
             url,
-            headers={"Accept": "application/json", "Authorization": f"Bearer {resolved_token}"},
-            timeout=timeout,
+            headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+            timeout=_PROGRAMS_TIMEOUT,
         )
     except Exception as e:  # noqa: BLE001 — transport errors become one clean message
         raise RuntimeError(f"could not reach {url}: {e}") from e
@@ -1176,32 +1181,44 @@ def resolve_program(programs: List[dict], selector: str) -> dict:
     raise LookupError(f"no program matches {selector!r}")
 
 
+# Fetchers whose target IS a Paramify program. Scoped by category, not by field
+# name alone: gitlab's fetchers also declare a `project_id` target field, and
+# selecting on that name would write Paramify program UUIDs into gitlab targets
+# in any manifest holding both. The category is the honest discriminator while
+# this command group is Paramify-specific; a target_schema field declaring what
+# it identifies would let it generalize (follow-up).
+PROGRAM_CATEGORY = "paramify"
+PROGRAM_ID_FIELD = "project_id"
+PROGRAM_NAME_FIELD = "program_name"
+
+
 def program_target_fetchers(m: dict, root: Path, fetchers: Optional[dict] = None) -> List[str]:
-    """Manifest entries that take a program as a target: fanout fetchers whose
-    target_schema declares project_id. Used as the default set so `programs
-    target` with no fetcher argument does the obvious thing.
+    """Manifest entries whose target is a Paramify program — the default set, so
+    `programs target` with no fetcher argument does the obvious thing.
 
     `fetchers` is the {name: Fetcher} mapping from discover_fetchers(), passed in
     when the caller already has one."""
     discovered = fetchers if fetchers is not None else discover_fetchers(root)
-    out = []
-    for entry in _entries(m):
-        f = discovered.get(entry.get("use"))
-        if f and f.supports_targets and "project_id" in f.target_schema:
-            out.append(entry["use"])
-    return out
+    return [
+        entry["use"] for entry in _entries(m)
+        if (f := discovered.get(entry.get("use"))) is not None
+        and f.category == PROGRAM_CATEGORY
+        and f.supports_targets
+        and PROGRAM_ID_FIELD in f.target_schema
+    ]
 
 
-def targeted_program_ids(m: dict, use: str) -> List[str]:
+def _targeted_program_ids(m: dict, use: str) -> List[str]:
     """project_id values already targeted on a fetcher entry — so re-running
     `programs target` tops up the manifest instead of duplicating targets."""
-    entry = _find_entry(m, use)
-    if entry is None:
-        return []
-    return [t.get("project_id") for t in (entry.get("targets") or []) if t.get("project_id")]
+    entry = _find_entry(m, use) or {}
+    return [t[PROGRAM_ID_FIELD] for t in (entry.get("targets") or []) if t.get(PROGRAM_ID_FIELD)]
 
 
-def add_program_targets(m: dict, uses: List[str], programs: List[dict]) -> dict:
+def add_program_targets(
+    m: dict, uses: List[str], programs: List[dict], root: Optional[Path] = None,
+    fetchers: Optional[dict] = None,
+) -> dict:
     """Add one target per (fetcher x program), skipping programs already targeted.
 
     A target carries only what varies per program: project_id and its readable
@@ -1213,19 +1230,22 @@ def add_program_targets(m: dict, uses: List[str], programs: List[dict]) -> dict:
     this is a composite of add_target() calls, and the caller needs to know what
     landed and what was already there.
     """
+    discovered = fetchers if fetchers is not None else (discover_fetchers(root) if root else {})
     added: List[dict] = []
     skipped: List[dict] = []
     for use in uses:
-        existing = set(targeted_program_ids(m, use))
+        existing = set(_targeted_program_ids(m, use))
         for program in programs:
             label = program_display_name(program)
             if program["id"] in existing:
                 skipped.append({"use": use, "program_id": program["id"], "program_name": label,
                                 "reason": "already targeted"})
                 continue
-            values: Dict[str, Any] = {"project_id": program["id"]}
-            if label and label != program["id"]:
-                values["program_name"] = label
+            values: Dict[str, Any] = {PROGRAM_ID_FIELD: program["id"]}
+            f = discovered.get(use)
+            declares_name = f is not None and PROGRAM_NAME_FIELD in f.target_schema
+            if declares_name and label and label != program["id"]:
+                values[PROGRAM_NAME_FIELD] = label
             add_target(m, use, values)
             existing.add(program["id"])
             added.append({"use": use, "program_id": program["id"], "program_name": label})
@@ -1273,6 +1293,7 @@ def effective_config(
         fields: List[dict] = []
         for name, fdef in schema.items():
             d = _config_descriptor(fdef)
+            d["category"] = f.category
             if name in entry_values:
                 d["value"], d["source"] = entry_values[name], "entry"
             elif name in platform_values:
@@ -1285,64 +1306,28 @@ def effective_config(
         out[use] = fields
     return out
 
-
-def _config_field_def(f, spec, field_name: str) -> Optional[ConfigField]:
-    """A config field's declaration, whether the category declares it or the
-    fetcher does. The runner merges both into one namespace (platform schema
-    then fetcher schema), so either is settable under platforms.<category>.config.
-    """
-    if spec and field_name in spec.config_schema:
-        return spec.config_schema[field_name]
-    return f.config_schema.get(field_name) if f else None
-
-
-def categories_declaring_config(
-    m: dict, uses: List[str], field_name: str, root: Path, fetchers: Optional[dict] = None,
-    platforms: Optional[dict] = None,
+def categories_for_config(
+    m: dict, uses: List[str], field_name: str, root: Path, *, missing_only: bool = False,
+    fetchers: Optional[dict] = None, platforms: Optional[dict] = None,
 ) -> List[str]:
-    """Categories among `uses` that accept `field_name` as config at all.
+    """Categories among `uses` that accept `field_name` as config.
 
-    The set an explicitly-supplied value should be written to — passing a flag is
-    an override, so it applies whether or not a value is already there.
+    With missing_only, narrows to those where nothing supplies a value yet —
+    required, no default, and set in neither the platform block nor the entry's
+    own config. A front-end uses the wide set to write an explicitly-supplied
+    value (passing a flag is an override) and the narrow set to decide whether
+    to ask for one.
+
+    Both are views over effective_config() rather than a second merge, so "is it
+    set" can't mean membership here and truthiness there — which is exactly how
+    the two functions this replaced had already drifted apart.
     """
-    discovered = fetchers if fetchers is not None else discover_fetchers(root)
-    specs = platforms if platforms is not None else discover_platforms(root)
     out: List[str] = []
-    for use in uses:
-        f = discovered.get(use)
-        category = f.category if f else None
-        if not category or category in out:
-            continue
-        if _config_field_def(f, specs.get(category), field_name) is not None:
-            out.append(category)
-    return out
-
-
-def categories_needing_config(
-    m: dict, uses: List[str], field_name: str, root: Path, fetchers: Optional[dict] = None,
-    platforms: Optional[dict] = None,
-) -> List[str]:
-    """Categories among `uses` that still need a value for `field_name`.
-
-    Required, no default, and set neither in platforms.<category>.config nor in
-    the fetcher entry's own config. Lets a front-end ask for a shared value only
-    when it's actually missing, and stay quiet on a re-run where it's already set.
-    """
-    discovered = fetchers if fetchers is not None else discover_fetchers(root)
-    specs = platforms if platforms is not None else discover_platforms(root)
-    run = _run(m)
-    out: List[str] = []
-    for use in uses:
-        f = discovered.get(use)
-        category = f.category if f else None
-        if not category or category in out:
-            continue
-        fdef = _config_field_def(f, specs.get(category), field_name)
-        if fdef is None or not fdef.required or fdef.default is not None:
-            continue
-        platform_cfg = (run.get("platforms") or {}).get(category, {}).get("config") or {}
-        entry_cfg = (_find_entry(m, use) or {}).get("config") or {}
-        if platform_cfg.get(field_name) or entry_cfg.get(field_name):
-            continue
-        out.append(category)
+    for fields in effective_config(m, uses, root, fetchers, platforms).values():
+        for d in fields:
+            if d["name"] != field_name or not d["category"] or d["category"] in out:
+                continue
+            if missing_only and not (d["required"] and d["source"] is None):
+                continue
+            out.append(d["category"])
     return out
