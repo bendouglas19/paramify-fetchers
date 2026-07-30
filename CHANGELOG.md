@@ -10,6 +10,56 @@ schemas and the `paramify` CLI — not the internal code.
 
 ## [Unreleased]
 
+### Added
+
+- `paramify programs` — a new command group over the Paramify workspace.
+  `programs list` shows each program's readable name next to its project UUID;
+  `programs target` selects programs (interactively, by name/id, or `--all`) and
+  writes them as fanout targets, filling in the shared config they need. The API
+  identifies programs by UUID while people know them by name; this closes that
+  gap without anyone copying a UUID by hand.
+- `program_name` — an optional target field on the Paramify VER fetchers. The
+  fetcher uses it for its evidence filename and the uploader for the artifact
+  title, so per-program artifacts read as `… - Alpha Cloud Services` rather than
+  a bare UUID. A UUID prefix stays in the filename because program names are not
+  guaranteed unique.
+
+### Changed
+
+- **Paramify VER fetchers**: `report_from` / `report_to` / `api_base_url` /
+  `http_timeout` moved out of `secrets[]`. Every declared secret is mandatory, so
+  declaring optional knobs there made them required, contradicting their
+  documented defaults. `cert_package_uri`, `api_base_url` and `http_timeout` are
+  now category config (`fetchers/_categories/paramify.yaml`) — one value per
+  workspace, set once under `platforms.paramify.config` instead of copied onto
+  every target.
+- Each VER report's `_summary` now carries a `collection` block (status + the
+  API-failure ledger). `/issues` is the only call these fetchers make, so a
+  failure yields empty report arrays; without this a failed report was
+  indistinguishable from a genuinely clean one to anything reading the payload.
+- The uploader prefers a target's `program_name` over its opaque id when titling
+  an artifact. Fetchers whose id is already readable are unaffected.
+
+### Fixed
+
+- **TUI**: config set at the category level showed as unset on every entry that
+  inherited it — the manifest screen read only the entry's own `config` block and
+  had no notion of `platforms.<category>.config`. Both the detail pane and the
+  summary count now render `api.effective_config()`, the same merge the runner
+  performs, and show which layer each value came from.
+- **Paramify VER fetchers**: a pending or rejected `RISK_ADJUSTMENT` no longer
+  reports `finalDisposition: "Partially Mitigated"` — mitigation now requires an
+  accepted deviation, not an unapproved request.
+- An issue carrying neither `poamId` nor `id` no longer raises `KeyError` and
+  kills the whole report.
+- `PARAMIFY_HTTP_TIMEOUT` is parsed at call time and falls back to the default on
+  a malformed value, instead of aborting the run with a bare `ValueError` at
+  import.
+- A timestamped `report_to` no longer over-includes up to a day beyond the
+  declared reporting period.
+- `PARAMIFY_REPORT_TO` is now declared, so it can actually be set through a
+  manifest (the runner passes only declared env vars).
+
 ## [0.3.1-beta] - 2026-07-28
 
 ### Changed

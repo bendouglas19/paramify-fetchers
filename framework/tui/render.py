@@ -111,7 +111,35 @@ def _status(set_: bool, required: bool) -> Text:
     return Text("required — unset", style=palette.WARN) if required else Text("unset", style="dim")
 
 
-def entry_detail(descriptor: Optional[dict], entry: dict, errors: Optional[List[str]] = None) -> RenderableType:
+def _config_rows(descriptor: dict, entry: dict, view: Optional[List[dict]]) -> List[dict]:
+    """The config fields to render, each carrying `value` and `source`.
+
+    `view` is api.effective_config()'s merged result. Without one, fall back to
+    the entry's own config block — correct only when nothing is set at the
+    category level, so callers should pass the view.
+    """
+    if view is not None:
+        return view
+    cfg = entry.get("config") or {}
+    rows = []
+    for c in descriptor.get("config", []):
+        d = dict(c)
+        if c["name"] in cfg:
+            d["value"], d["source"] = cfg[c["name"]], "entry"
+        elif c.get("default") is not None:
+            d["value"], d["source"] = c["default"], "default"
+        else:
+            d["value"], d["source"] = None, None
+        rows.append(d)
+    return rows
+
+
+def entry_detail(
+    descriptor: Optional[dict],
+    entry: dict,
+    errors: Optional[List[str]] = None,
+    config_view: Optional[List[dict]] = None,
+) -> RenderableType:
     """Render one manifest entry: its current config/secrets/targets vs the contract."""
     use = entry.get("use", "?")
     if descriptor is None:
@@ -125,7 +153,6 @@ def entry_detail(descriptor: Optional[dict], entry: dict, errors: Optional[List[
     header.append(use, style=f"bold {palette.FG}")
     header.append("  [fanout]" if fanout else "  [single]", style="dim")
 
-    cfg = entry.get("config") or {}
     secs = entry.get("secrets") or {}
     parts: List[RenderableType] = [header, Text()]
 
@@ -139,15 +166,21 @@ def entry_detail(descriptor: Optional[dict], entry: dict, errors: Optional[List[
             rows.append((s["name"], value))
         parts += [Text("secrets", style="bold"), _kv_table(rows), Text()]
 
-    # config
-    config_fields = descriptor.get("config", [])
+    # config — the runner's merged view, so a value set once at the category
+    # level shows as set (and says where it came from) on every entry inheriting it
+    config_fields = _config_rows(descriptor, entry, config_view)
     if config_fields:
         rows = []
         for c in config_fields:
-            if c["name"] in cfg:
-                rows.append((c["name"], Text(str(cfg[c["name"]]), style=palette.FG)))
-            elif c.get("default") is not None:
-                rows.append((c["name"], Text(f"{c['default']}  (default)", style="dim")))
+            source = c.get("source")
+            if source == "entry":
+                rows.append((c["name"], Text(str(c["value"]), style=palette.FG)))
+            elif source and source.startswith("platforms."):
+                value = Text(str(c["value"]), style=palette.FG)
+                value.append(f"  ({source})", style="dim")
+                rows.append((c["name"], value))
+            elif source == "default":
+                rows.append((c["name"], Text(f"{c['value']}  (default)", style="dim")))
             else:
                 rows.append((c["name"], _status(False, c.get("required", False))))
         parts += [Text("config", style="bold"), _kv_table(rows), Text()]
