@@ -18,6 +18,11 @@ Read / discover:
   paramify evidence <path> [--json]            # read one evidence file
   paramify upload [run-dir] [--dry-run] [--json]
 
+Paramify workspace (live lookups; needs PARAMIFY_API_TOKEN with read scope):
+  paramify programs list [--json]              # programs in the workspace: name + id
+  paramify programs target [fetcher ...] [--program NAME|ID ...] [--all]
+                           [--cert-uri NAME|ID=URI ...] [-f FILE] [--json]
+
 Manifest editing (writes the manifest file; -f/--file, default ./manifest.yaml;
 every subcommand accepts --json, emitting {"ok", "path", "errors"}):
   paramify manifest init [--output-dir DIR]
@@ -47,6 +52,9 @@ Outputs land in <output_dir>/run-<timestamp>/ with a _run_metadata.json.
 from __future__ import annotations
 
 import json
+import re
+import sys
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -80,6 +88,13 @@ scripts_app = typer.Typer(
     help="Sync fetcher entry scripts to Paramify and associate them to evidence sets.",
 )
 app.add_typer(scripts_app, name="scripts")
+
+programs_app = typer.Typer(
+    no_args_is_help=True,
+    context_settings=_HELP_OPTS,
+    help="List the workspace's programs and turn them into manifest targets.",
+)
+app.add_typer(programs_app, name="programs")
 
 
 # --------------------------------------------------------------------------- #
@@ -954,6 +969,222 @@ def tui_cmd(
         )
         raise typer.Exit(1)
     launch(manifest, at)
+
+# --------------------------------------------------------------------------- #
+# Paramify workspace — pick programs by name, target them by UUID
+#
+# The API only accepts project UUIDs; people know their programs by name. These
+# commands close that gap: list what's in the workspace, let the operator choose,
+# then reuse the manifest mutators to write the targets. Selection is interactive
+# by default and fully flag-driven under --json, so an AI caller never hits a
+# prompt it can't answer.
+# --------------------------------------------------------------------------- #
+
+# Config the targeted fetchers need that does NOT vary per program: asked once,
+# stored at the category level. (field, flag, prompt, validate-as-ISO)
+_SHARED_CONFIG_PROMPTS = (
+    (
+        "cert_package_uri", "--cert-uri",
+        "Certification Package Overview URI (used for every program)", False,
+    ),
+    (
+        "report_from", "--report-from",
+        "Report period start — ISO date, e.g. 2026-01-01 (used for every program)", True,
+    ),
+)
+
+
+def _is_iso_datish(value: str) -> bool:
+    """Accept what the fetchers' date parser accepts: an ISO date or timestamp,
+    with a trailing Z allowed. Mirrors ver_common._parse_iso — fetchers aren't an
+    importable package, so the rule is restated rather than shared."""
+    try:
+        datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def _programs_or_exit(json_out: bool) -> List[dict]:
+    try:
+        return api.list_programs()
+    except RuntimeError as e:
+        if json_out:
+            typer.echo(json.dumps({"ok": False, "errors": [str(e)]}, indent=2))
+        else:
+            _err(str(e))
+        raise typer.Exit(1)
+
+
+def _parse_selection(raw: str, count: int) -> List[int]:
+    """Parse "1,3,5", "1-3", "2 4", or "all" into zero-based indices.
+
+    Raises ValueError on anything out of range so a typo can't silently target
+    the wrong program.
+    """
+    text = raw.strip().lower()
+    if text in ("all", "*"):
+        return list(range(count))
+    picked: List[int] = []
+    for token in re.split(r"[,\s]+", text):
+        if not token:
+            continue
+        if "-" in token:
+            lo_s, _, hi_s = token.partition("-")
+            lo, hi = int(lo_s), int(hi_s)
+            if lo < 1 or hi > count or lo > hi:
+                raise ValueError(f"range {token!r} is outside 1-{count}")
+            picked.extend(range(lo - 1, hi))
+        else:
+            n = int(token)
+            if n < 1 or n > count:
+                raise ValueError(f"{n} is outside 1-{count}")
+            picked.append(n - 1)
+    ordered = list(dict.fromkeys(picked))  # de-dupe, keep the order typed
+    if not ordered:
+        raise ValueError("no programs selected")
+    return ordered
+
+
+@programs_app.command("list")
+def programs_list(json_out: bool = typer.Option(False, "--json", help="Emit JSON")):
+    """List the programs in the Paramify workspace (name + id)."""
+    programs = _programs_or_exit(json_out)
+    if json_out:
+        typer.echo(json.dumps({"ok": True, "programs": programs}, indent=2))
+        return
+    if not programs:
+        typer.echo("No programs found in this workspace.")
+        return
+    width = max(len(api.program_display_name(p)) for p in programs)
+    typer.echo(f"{len(programs)} program(s):\n")
+    for p in programs:
+        short = f"  [{p['short_name']}]" if p["short_name"] else ""
+        typer.echo(f"  {api.program_display_name(p):<{width}}  {p['id']}{short}")
+
+
+@programs_app.command("target")
+def programs_target(
+    fetchers: Optional[List[str]] = typer.Argument(
+        None, help="Fanout fetcher(s) to add targets to. Default: every manifest entry that takes a program."
+    ),
+    program: Optional[List[str]] = typer.Option(
+        None, "--program", "-p", help="Program name or id (repeatable). Omit to choose interactively."
+    ),
+    all_programs: bool = typer.Option(False, "--all", help="Target every program in the workspace"),
+    cert_uri: Optional[str] = typer.Option(
+        None, "--cert-uri",
+        help="Certification Package Overview URI for the workspace. Set once as category "
+             "config; prompted when the manifest doesn't already have it.",
+    ),
+    report_from: Optional[str] = typer.Option(
+        None, "--report-from",
+        help="Report period start (ISO date, e.g. 2026-01-01). Set once as category "
+             "config; prompted when the manifest doesn't already have it.",
+    ),
+    file: str = typer.Option(_DEFAULT_MANIFEST, "-f", "--file", help="Manifest path"),
+    json_out: bool = typer.Option(False, "--json", help="Emit JSON"),
+):
+    """Select programs from the workspace and add them as manifest targets."""
+    root = api.find_repo_root()
+    path = Path(file).resolve()
+    m = _read_for_edit(path, json_out)
+    shared_config_values = {"cert_package_uri": cert_uri, "report_from": report_from}
+
+    uses = list(fetchers or [])
+    if not uses:
+        uses = api.program_target_fetchers(m, root)
+        if not uses:
+            _fail(
+                path,
+                "No manifest entry takes a program as a target. Add one first "
+                "(e.g. paramify manifest add paramify_accepted_vulnerabilities), "
+                "or name the fetcher explicitly.",
+                json_out,
+            )
+
+    programs = _programs_or_exit(json_out)
+    if not programs:
+        _fail(path, "No programs found in this workspace.", json_out)
+
+    # --- selection ---------------------------------------------------------- #
+    selected: List[dict] = []
+    if all_programs:
+        selected = programs
+    elif program:
+        for selector in program:
+            try:
+                selected.append(api.resolve_program(programs, selector))
+            except (LookupError, ValueError) as e:
+                _fail(path, str(e), json_out)
+        selected = list({p["id"]: p for p in selected}.values())
+    else:
+        if json_out or not sys.stdin.isatty():
+            _fail(
+                path,
+                "No programs chosen and no terminal to prompt on: pass --program "
+                "NAME|ID (repeatable) or --all.",
+                json_out,
+            )
+        typer.echo(f"Programs in this workspace (targeting: {', '.join(uses)})\n")
+        for i, p in enumerate(programs, 1):
+            short = f"  [{p['short_name']}]" if p["short_name"] else ""
+            typer.echo(f"  {i:>3}. {api.program_display_name(p)}{short}")
+        typer.echo("")
+        try:
+            indices = _parse_selection(
+                typer.prompt("Select programs (e.g. 1,3 or 1-3 or all)"), len(programs)
+            )
+        except ValueError as e:
+            _fail(path, f"Invalid selection: {e}", json_out)
+        selected = [programs[i] for i in indices]
+
+    # --- shared config ------------------------------------------------------- #
+    # Values that don't vary per program are asked for once and written to
+    # platforms.<category>.config, where every fetcher in the category picks them
+    # up. A re-run whose manifest already has them doesn't ask again; passing the
+    # flag explicitly overwrites whatever is there.
+    for field_name, flag, prompt_text, validate_iso in _SHARED_CONFIG_PROMPTS:
+        supplied = (shared_config_values.get(field_name) or "").strip()
+        if supplied:
+            categories = api.categories_declaring_config(m, uses, field_name, root)
+            value = supplied
+        else:
+            categories = api.categories_needing_config(m, uses, field_name, root)
+            if not categories:
+                continue
+            if json_out or not sys.stdin.isatty():
+                _fail(
+                    path,
+                    f"{field_name} is not set for "
+                    + ", ".join(f"platforms.{c}.config" for c in categories)
+                    + f". Pass {flag} <value>.",
+                    json_out,
+                )
+            typer.echo("")
+            value = typer.prompt(prompt_text).strip()
+            if not value:
+                _fail(path, f"No {field_name} given; nothing written.", json_out)
+        if validate_iso and not _is_iso_datish(value):
+            # A date the fetcher can't parse yields an empty report window, which
+            # silently drops every closed issue rather than failing — so reject it
+            # here, where it's still a typo instead of a wrong report.
+            _fail(
+                path,
+                f"{field_name}: {value!r} is not an ISO date or timestamp "
+                "(e.g. 2026-01-01 or 2026-01-01T00:00:00Z).",
+                json_out,
+            )
+        for category in categories:
+            api.set_platform_config(m, category, field_name, value)
+
+    report = api.add_program_targets(m, uses, selected)
+    if not json_out:
+        for rec in report["added"]:
+            typer.echo(f"  + {rec['use']}  ->  {rec['program_name']} ({rec['program_id']})")
+        for rec in report["skipped"]:
+            typer.echo(f"  = {rec['use']}  ->  {rec['program_name']} ({rec['reason']})")
+    _save_and_report(m, path, root, json_out, verb="Updated")
 
 
 if __name__ == "__main__":

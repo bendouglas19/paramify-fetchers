@@ -1053,3 +1053,296 @@ def new_manifest_path(root, name: str, output_dir: str = "./evidence") -> Path:
         raise FileExistsError(str(path))
     path.write_text(yaml.safe_dump(init_manifest(output_dir), sort_keys=False))
     return path
+
+
+# --------------------------------------------------------------------------- #
+# Paramify workspace — program (project) discovery
+#
+# The Paramify API identifies programs by UUID, but the product UI shows people
+# names. These helpers let a front-end offer the readable pick list and hand the
+# UUID to the manifest, so nobody has to copy a UUID by hand.
+# --------------------------------------------------------------------------- #
+
+_PROGRAMS_PATH = "/projects"  # the UI's "programs" are the API's projects
+_PROGRAMS_TIMEOUT = 30
+
+
+def paramify_api_base_url() -> str:
+    """Base URL for read-only workspace lookups. Same env var and default the
+    fetchers and uploader use; no uploader-config layer, since this is a live
+    lookup rather than part of a run."""
+    return os.environ.get("PARAMIFY_API_BASE_URL") or "https://app.paramify.com/api/v0"
+
+
+def paramify_api_token() -> Optional[str]:
+    """Read token for workspace lookups, in the same fallback order as the VER
+    fetchers. Returns None when neither var is set — callers report that as a
+    setup error rather than attempting an unauthenticated call."""
+    return os.environ.get("PARAMIFY_API_TOKEN") or os.environ.get("PARAMIFY_UPLOAD_API_TOKEN")
+
+
+def program_display_name(program: dict) -> str:
+    """Best human-readable label for a program, falling back to its UUID."""
+    return (
+        program.get("name")
+        or program.get("system_name")
+        or program.get("short_name")
+        or program.get("id", "")
+    )
+
+
+def list_programs(
+    base_url: Optional[str] = None,
+    token: Optional[str] = None,
+    timeout: int = _PROGRAMS_TIMEOUT,
+) -> List[dict]:
+    """Fetch the workspace's programs via GET /projects.
+
+    Returns [{"id", "name", "system_name", "short_name"}] sorted by display name.
+    Raises RuntimeError with an actionable message on missing credentials or a
+    transport/HTTP failure — the CLI turns that into {"ok": false, "errors": [...]}.
+    """
+    import requests  # local: keeps `paramify list`/`tui` startup free of it
+
+    resolved_token = token or paramify_api_token()
+    if not resolved_token:
+        raise RuntimeError(
+            "No Paramify API token: set PARAMIFY_API_TOKEN (or "
+            "PARAMIFY_UPLOAD_API_TOKEN) to a token with read scope on the workspace"
+        )
+    url = f"{(base_url or paramify_api_base_url()).rstrip('/')}{_PROGRAMS_PATH}"
+    try:
+        resp = requests.get(
+            url,
+            headers={"Accept": "application/json", "Authorization": f"Bearer {resolved_token}"},
+            timeout=timeout,
+        )
+    except Exception as e:  # noqa: BLE001 — transport errors become one clean message
+        raise RuntimeError(f"could not reach {url}: {e}") from e
+    if resp.status_code in (401, 403):
+        raise RuntimeError(
+            f"Paramify rejected the token (HTTP {resp.status_code}) for {url}; "
+            "check that it has read scope on this workspace"
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"GET {url} failed (HTTP {resp.status_code}): {resp.text[:300]}")
+    try:
+        payload = resp.json()
+    except ValueError as e:
+        raise RuntimeError(f"GET {url} returned a non-JSON body: {resp.text[:200]}") from e
+
+    # List endpoints wrap in {"projects": [...]}; tolerate a bare list.
+    raw = payload.get("projects", []) if isinstance(payload, dict) else payload
+    programs = [
+        {
+            "id": p.get("id", ""),
+            "name": p.get("name") or "",
+            "system_name": p.get("systemName") or "",
+            "short_name": p.get("systemShortName") or "",
+        }
+        for p in raw
+        if isinstance(p, dict) and p.get("id")
+    ]
+    programs.sort(key=lambda p: program_display_name(p).lower())
+    return programs
+
+
+def resolve_program(programs: List[dict], selector: str) -> dict:
+    """Resolve one program from a user-supplied id or name.
+
+    Exact id, then exact case-insensitive display name, then a unique
+    case-insensitive substring of the display name. Raises LookupError when
+    nothing matches and ValueError when a substring is ambiguous — an ambiguous
+    pick must never silently target the wrong program.
+    """
+    needle = selector.strip()
+    for p in programs:
+        if p["id"] == needle:
+            return p
+    lowered = needle.lower()
+    exact = [p for p in programs if program_display_name(p).lower() == lowered]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        raise ValueError(
+            f"{selector!r} matches {len(exact)} programs by name; use the program id instead"
+        )
+    partial = [p for p in programs if lowered in program_display_name(p).lower()]
+    if len(partial) == 1:
+        return partial[0]
+    if len(partial) > 1:
+        names = ", ".join(f"{program_display_name(p)} ({p['id']})" for p in partial[:5])
+        raise ValueError(f"{selector!r} is ambiguous — matches: {names}")
+    raise LookupError(f"no program matches {selector!r}")
+
+
+def program_target_fetchers(m: dict, root: Path, fetchers: Optional[dict] = None) -> List[str]:
+    """Manifest entries that take a program as a target: fanout fetchers whose
+    target_schema declares project_id. Used as the default set so `programs
+    target` with no fetcher argument does the obvious thing.
+
+    `fetchers` is the {name: Fetcher} mapping from discover_fetchers(), passed in
+    when the caller already has one."""
+    discovered = fetchers if fetchers is not None else discover_fetchers(root)
+    out = []
+    for entry in _entries(m):
+        f = discovered.get(entry.get("use"))
+        if f and f.supports_targets and "project_id" in f.target_schema:
+            out.append(entry["use"])
+    return out
+
+
+def targeted_program_ids(m: dict, use: str) -> List[str]:
+    """project_id values already targeted on a fetcher entry — so re-running
+    `programs target` tops up the manifest instead of duplicating targets."""
+    entry = _find_entry(m, use)
+    if entry is None:
+        return []
+    return [t.get("project_id") for t in (entry.get("targets") or []) if t.get("project_id")]
+
+
+def add_program_targets(m: dict, uses: List[str], programs: List[dict]) -> dict:
+    """Add one target per (fetcher x program), skipping programs already targeted.
+
+    A target carries only what varies per program: project_id and its readable
+    program_name. Everything uniform across the workspace — the Certification
+    Package Overview URI, the API base URL — is category config, set once under
+    platforms.<category>.config.
+
+    Mutates `m` in place and returns a JSON-able report rather than the manifest:
+    this is a composite of add_target() calls, and the caller needs to know what
+    landed and what was already there.
+    """
+    added: List[dict] = []
+    skipped: List[dict] = []
+    for use in uses:
+        existing = set(targeted_program_ids(m, use))
+        for program in programs:
+            label = program_display_name(program)
+            if program["id"] in existing:
+                skipped.append({"use": use, "program_id": program["id"], "program_name": label,
+                                "reason": "already targeted"})
+                continue
+            values: Dict[str, Any] = {"project_id": program["id"]}
+            if label and label != program["id"]:
+                values["program_name"] = label
+            add_target(m, use, values)
+            existing.add(program["id"])
+            added.append({"use": use, "program_id": program["id"], "program_name": label})
+    return {"added": added, "skipped": skipped}
+
+
+def effective_config(
+    m: dict, uses: List[str], root: Path, fetchers: Optional[dict] = None,
+    platforms: Optional[dict] = None,
+) -> Dict[str, List[dict]]:
+    """Per entry, every config field that applies to it, with its value and where
+    that value comes from — the merge the runner actually performs:
+
+        platform defaults <- platform values <- per-fetcher values
+
+    Returns {use: [descriptor + {"value", "source"}]}, where source is "entry",
+    "platforms.<category>", "default", or None when nothing supplies it. A field
+    the category declares (and the fetcher doesn't) is included too, since it is
+    injected into that fetcher's environment just the same.
+
+    Front-ends need this to render config honestly: reading only the entry's own
+    `config` block reports a value set once at the category level as unset on
+    every entry that inherits it. Batched over `uses` so a caller redrawing a
+    table scans the fetcher tree once, not once per row.
+    """
+    discovered = fetchers if fetchers is not None else discover_fetchers(root)
+    specs = platforms if platforms is not None else discover_platforms(root)
+    all_platforms = _run(m).get("platforms") or {}
+
+    out: Dict[str, List[dict]] = {}
+    for use in uses:
+        f = discovered.get(use)
+        if f is None:
+            out[use] = []
+            continue
+        spec = specs.get(f.category) if f.category else None
+        schema: Dict[str, ConfigField] = {}
+        if spec:
+            schema.update(spec.config_schema)
+        schema.update(f.config_schema)  # fetcher overrides platform on a name clash
+
+        platform_values = ((all_platforms.get(f.category or "") or {}).get("config")) or {}
+        entry_values = (_find_entry(m, use) or {}).get("config") or {}
+
+        fields: List[dict] = []
+        for name, fdef in schema.items():
+            d = _config_descriptor(fdef)
+            if name in entry_values:
+                d["value"], d["source"] = entry_values[name], "entry"
+            elif name in platform_values:
+                d["value"], d["source"] = platform_values[name], f"platforms.{f.category}"
+            elif fdef.default is not None:
+                d["value"], d["source"] = fdef.default, "default"
+            else:
+                d["value"], d["source"] = None, None
+            fields.append(d)
+        out[use] = fields
+    return out
+
+
+def _config_field_def(f, spec, field_name: str) -> Optional[ConfigField]:
+    """A config field's declaration, whether the category declares it or the
+    fetcher does. The runner merges both into one namespace (platform schema
+    then fetcher schema), so either is settable under platforms.<category>.config.
+    """
+    if spec and field_name in spec.config_schema:
+        return spec.config_schema[field_name]
+    return f.config_schema.get(field_name) if f else None
+
+
+def categories_declaring_config(
+    m: dict, uses: List[str], field_name: str, root: Path, fetchers: Optional[dict] = None,
+    platforms: Optional[dict] = None,
+) -> List[str]:
+    """Categories among `uses` that accept `field_name` as config at all.
+
+    The set an explicitly-supplied value should be written to — passing a flag is
+    an override, so it applies whether or not a value is already there.
+    """
+    discovered = fetchers if fetchers is not None else discover_fetchers(root)
+    specs = platforms if platforms is not None else discover_platforms(root)
+    out: List[str] = []
+    for use in uses:
+        f = discovered.get(use)
+        category = f.category if f else None
+        if not category or category in out:
+            continue
+        if _config_field_def(f, specs.get(category), field_name) is not None:
+            out.append(category)
+    return out
+
+
+def categories_needing_config(
+    m: dict, uses: List[str], field_name: str, root: Path, fetchers: Optional[dict] = None,
+    platforms: Optional[dict] = None,
+) -> List[str]:
+    """Categories among `uses` that still need a value for `field_name`.
+
+    Required, no default, and set neither in platforms.<category>.config nor in
+    the fetcher entry's own config. Lets a front-end ask for a shared value only
+    when it's actually missing, and stay quiet on a re-run where it's already set.
+    """
+    discovered = fetchers if fetchers is not None else discover_fetchers(root)
+    specs = platforms if platforms is not None else discover_platforms(root)
+    run = _run(m)
+    out: List[str] = []
+    for use in uses:
+        f = discovered.get(use)
+        category = f.category if f else None
+        if not category or category in out:
+            continue
+        fdef = _config_field_def(f, specs.get(category), field_name)
+        if fdef is None or not fdef.required or fdef.default is not None:
+            continue
+        platform_cfg = (run.get("platforms") or {}).get(category, {}).get("config") or {}
+        entry_cfg = (_find_entry(m, use) or {}).get("config") or {}
+        if platform_cfg.get(field_name) or entry_cfg.get(field_name):
+            continue
+        out.append(category)
+    return out

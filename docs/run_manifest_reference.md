@@ -241,6 +241,44 @@ the AI CLI; without it you get the human-readable rendering. Mutating commands
 return `{ok, path, errors}` under `--json` so a caller can confirm the write
 landed and surface any validation messages.
 
+### Targets from a Paramify workspace
+
+For fetchers whose target is a Paramify program, the targets can be filled in
+from the workspace instead of by hand — the API needs project UUIDs, which nobody
+wants to copy:
+
+```bash
+paramify programs list                                   # readable name + UUID
+paramify programs target                                 # pick interactively, write targets
+paramify programs target --all \                         # every program
+    --cert-uri https://… --report-from 2026-01-01        # non-interactive / --json
+```
+
+With no fetcher argument it targets every manifest entry whose `target_schema`
+declares `project_id`. Programs already targeted are skipped, so re-running tops
+the manifest up instead of duplicating entries.
+
+A target gets only what varies per program: `project_id` and `program_name` (the
+readable label — the fetcher uses it for its evidence filename, the uploader for
+the artifact title).
+
+Anything the targeted fetchers need that *doesn't* vary per program is asked for
+once and written to `platforms.<category>.config`: `--cert-uri` (the Certification
+Package Overview URI) and `--report-from` (the report period start). Each is
+prompted for only when it's genuinely missing — required, no default, and absent
+from both the platform block and the entry's own config — so a re-run that just
+adds a program asks nothing. Supplying the flag explicitly overwrites an existing
+value. `--report-from` is validated as an ISO date before it's written.
+
+Needs `PARAMIFY_API_TOKEN` with read scope; under `--json` nothing prompts, so
+pass `--program`/`--all` plus whichever shared values are still missing.
+
+The same split applies generally: values that vary per fanout iteration belong in
+`targets[]`, and values shared across a category belong under `platforms.<category>.config`
+— which the runner merges as *platform defaults ← platform values ← per-fetcher
+values*, so a manifest can set **any** field a fetcher declares once at the
+platform level, even one declared in the fetcher's own `config_schema`.
+
 ### Build / edit a manifest
 
 The `manifest` subcommands read each fetcher's `fetcher.yaml` and write the
