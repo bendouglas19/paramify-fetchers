@@ -20,16 +20,57 @@ apart.
 ## Credentials
 
 A Paramify REST API Bearer token with **read** scope on the target project's
-issues and deviations.
+issues and deviations. It is the only `secret` these fetchers declare; everything
+else is a `target` field or non-secret `config`.
 
-| Env var | Required | Purpose |
-|---|---|---|
-| `PARAMIFY_PROJECT_ID` | yes | Project UUID to scope the report. |
-| `PARAMIFY_CERT_PACKAGE_URI` | yes | Certification Package Overview URI written into each report. |
-| `PARAMIFY_REPORT_FROM` | yes | ISO start of the report period. |
-| `PARAMIFY_REPORT_TO` | no | ISO end; defaults to run time. |
-| `PARAMIFY_API_BASE_URL` | no | Defaults to `https://app.paramify.com/api/v0`. Point at stage for testing. |
-| `PARAMIFY_HTTP_TIMEOUT` | no | Per-request timeout (seconds). Default 300 — the unfiltered `/issues` call is large. |
+| Env var | Declared as | Required | Purpose |
+|---|---|---|---|
+| `PARAMIFY_API_TOKEN` | secret `api_token` | yes | Bearer token (falls back to `PARAMIFY_UPLOAD_API_TOKEN` when run standalone). |
+| `PARAMIFY_PROJECT_ID` | **target** `project_id` | yes | Project UUID to scope the report. One target per program. |
+| `PARAMIFY_PROGRAM_NAME` | **target** `program_name` | no | Readable program name; used for the evidence filename and artifact title. Falls back to the UUID. |
+| `PARAMIFY_REPORT_FROM` | fetcher config `report_from` | yes | ISO start of the report period. |
+| `PARAMIFY_REPORT_TO` | fetcher config `report_to` | no | ISO end; defaults to run time. |
+| `PARAMIFY_CERT_PACKAGE_URI` | **category** config `cert_package_uri` | yes | Certification Package Overview URI written into every report. |
+| `PARAMIFY_API_BASE_URL` | **category** config `api_base_url` | no | Defaults to `https://app.paramify.com/api/v0`. Point at stage for testing. |
+| `PARAMIFY_HTTP_TIMEOUT` | **category** config `http_timeout` | no | Per-request timeout (seconds). Default 300 — the unfiltered `/issues` call is large. |
+
+Three layers, by what the value actually varies with:
+
+- **target** — differs per program, so it's per fanout iteration.
+- **category config** (`fetchers/_categories/paramify.yaml`, set under
+  `platforms.paramify.config`) — one value for the whole workspace, shared by all
+  three fetchers. The package URI belongs here: one workspace publishes one, and
+  copying it onto every target would mean editing N×3 places to change it.
+- **fetcher config** — the report period, which is a property of the report.
+
+Nothing non-secret is declared under `secrets[]`, deliberately: every declared
+secret is **mandatory** (the runner raises when a manifest omits one), while
+config is optional and defaultable.
+
+## Running across several programs
+
+All three fetchers fan out: one invocation per program, one evidence file per
+program, all files landing in that report's single evidence set. Fill the targets
+in from the workspace rather than by hand:
+
+```bash
+paramify programs list            # readable name + project UUID
+paramify programs target          # pick programs, get targets on all three fetchers
+```
+
+It asks once for the Certification Package Overview URI and the report period
+start, storing both as category config, so adding a program later is just
+`programs target` again — no URI, no dates, no per-program bookkeeping.
+
+`report_from` is declared per-fetcher (it's a property of the report, not the
+platform) but set once at the platform level: the runner merges *platform
+defaults ← platform values ← per-fetcher values*, so a manifest can set any
+declared field once under `platforms.paramify.config`. Override it for a single
+report by putting `report_from` in that fetcher entry's own `config`.
+
+Each program's file is named for its program (`..._Alpha_Cloud_Services_aaaaaaaa.json`,
+UUID prefix appended because program names are not guaranteed unique), and the
+uploader titles the artifact the same way.
 
 ## Notes
 
@@ -43,5 +84,12 @@ issues and deviations.
 - **`_summary`:** each report carries a top-level `_summary` object (count
   breakdowns computed from the report's own arrays). It is a vendor extension —
   the FedRAMP report arrays remain the source of truth.
+- **`_summary.collection`:** records the collection outcome and the API-failure
+  ledger *inside* the payload. `/issues` is the only call these fetchers make, so
+  a failure leaves the report arrays empty; without this block an empty **failed**
+  report would look identical to a genuinely clean one to anything reading the
+  payload alone (the uploader's `skip_failed` defaults to false, so failed
+  evidence is uploaded unless configured otherwise). A failed collection still
+  exits non-zero.
 - **Milestones** are read from the `milestones` array embedded in the `/issues`
   response; there are no per-issue milestone calls.

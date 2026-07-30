@@ -15,11 +15,14 @@ target_schema:
     required: true
     env: PARAMIFY_PROJECT_ID
     description: Paramify program (project) UUID. One target per program; from GET /projects.
-  cert_package_uri:
+  program_name:
     type: string
-    required: true
-    env: PARAMIFY_CERT_PACKAGE_URI
-    description: Public Certification Package Overview URI for THIS program.
+    required: false
+    env: PARAMIFY_PROGRAM_NAME
+    description: >-
+      Human-readable program name from the Paramify workspace. Used for the
+      evidence filename and the uploaded artifact title; falls back to the
+      project UUID when absent. `paramify programs target` fills this in.
 
 runtime:
   type: python
@@ -34,12 +37,23 @@ output:
 secrets:
   - name: api_token
     env: PARAMIFY_API_TOKEN
-  - name: report_from
+
+# Report-period knobs. Declared here (not under secrets) because every entry in
+# secrets[] is mandatory -- the runner raises when a manifest omits one -- while
+# config is optional and defaultable. Platform-wide knobs (cert_package_uri,
+# api_base_url, http_timeout) live in fetchers/_categories/paramify.yaml; a
+# manifest can still set any of these once under platforms.paramify.config.
+config_schema:
+  report_from:
+    type: string
+    required: true
     env: PARAMIFY_REPORT_FROM
-  - name: api_base_url
-    env: PARAMIFY_API_BASE_URL
-  - name: http_timeout
-    env: PARAMIFY_HTTP_TIMEOUT
+    description: ISO start of the report period, date ("2026-01-01") or timestamp.
+  report_to:
+    type: string
+    required: false
+    env: PARAMIFY_REPORT_TO
+    description: ISO end of the report period. Defaults to run time when omitted.
 
 evidence_set:
   reference_id: EVD-PARAMIFY-VER-RPT-AVI

@@ -32,22 +32,13 @@ import ver_common as vc  # noqa: E402
 logger = logging.getLogger("paramify_historical_ver_activity")
 
 
-def _acceptance_rationale(issue):
-    dev = vc._accepted_deviation(issue)
-    if dev and dev.get("description"):
-        return dev["description"]
-    if vc._is_192_day_accepted(issue):
-        return "Open beyond the VER-TFR-MAV 192-day threshold without full mitigation."
-    return "Accepted vulnerability."
-
-
 def build_report(issues, cert_package_uri, generated_at):
     active, accepted = [], []
     for issue in issues:
         if vc.is_accepted(issue):
             accepted.append({
                 "vulnerabilityDetail": vc.map_vulnerability_detail(issue),
-                "acceptanceRationale": _acceptance_rationale(issue),
+                "acceptanceRationale": vc.acceptance_rationale(issue),
             })
         else:
             active.append(vc.map_vulnerability_detail(issue))
@@ -73,30 +64,22 @@ def main() -> int:
     api_failures = []
     issues = vc.fetch_all_issues(
         env["base_url"], env["token"], env["project_id"],
-        env["report_from"][:10], env["report_to"][:10], api_failures,
+        env["report_from"], env["report_to"], api_failures,
     )
 
-    unevaluated = [
-        i for i in issues
-        if i.get("status") in vc.OPEN_ISSUE_STATUSES
-        and vc._effective_evaluation_date(i) is None
-        and vc._accepted_deviation(i) is None
-    ]
-    if unevaluated:
-        logger.warning(
-            "%d open issue(s) have no real completed-evaluation date "
-            "(missing or epoch sentinel); reported as active without "
-            "evaluationCompletedAt (VER-TFR-EVU: evaluate within 5 days).",
-            len(unevaluated),
-        )
+    vc.warn_unevaluated_backlog(
+        issues, logger,
+        "reported as active without evaluationCompletedAt",
+    )
 
     report = build_report(issues, env["cert_package_uri"], env["generated_at"])
     report["_summary"] = vc.build_mrh_summary(
         report["activeVulnerabilities"], report["acceptedVulnerabilities"],
         env["generated_at"],
     )
+    report["_summary"]["collection"] = vc.build_collection_status(api_failures)
 
-    output_path = output_dir / f"paramify_historical_ver_activity_{vc.sanitize_for_filename(env['project_id'])}.json"
+    output_path = output_dir / f"paramify_historical_ver_activity_{vc.target_slug(env)}.json"
     with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
 
@@ -108,8 +91,15 @@ def main() -> int:
         s["activeOverdue"], s["activeWithoutCompletedEvaluation"],
     )
 
+    # /issues is the only call, so any failure means both arrays above are empty
+    # for want of data -- NOT because the program has no vulnerabilities.
+    # _summary.collection records that inside the payload.
     if api_failures:
-        logger.error("%d API failure(s) during collection", len(api_failures))
+        logger.error(
+            "%d API failure(s) during collection; the snapshot is incomplete and "
+            "its counts must not be read as a clean result",
+            len(api_failures),
+        )
         return 1
     return 0
 

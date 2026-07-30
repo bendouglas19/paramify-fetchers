@@ -32,8 +32,10 @@ logger = logging.getLogger("paramify_accepted_vulnerabilities")
 
 def build_report(issues, cert_package_uri, report_from, report_to):
     accepted = [
-        {"vulnerabilityDetail": vc.map_vulnerability_detail(i), "acceptanceRationale":
-            _acceptance_rationale(i)}
+        {
+            "vulnerabilityDetail": vc.map_vulnerability_detail(i),
+            "acceptanceRationale": vc.acceptance_rationale(i),
+        }
         for i in issues if vc.is_accepted(i)
     ]
     return {
@@ -41,16 +43,6 @@ def build_report(issues, cert_package_uri, report_from, report_to):
         "reportPeriod": {"from": report_from, "to": report_to},
         "acceptedVulnerabilities": accepted,
     }
-
-
-def _acceptance_rationale(issue):
-    """Rationale text from the qualifying accepted deviation, or a default."""
-    dev = vc._accepted_deviation(issue)
-    if dev and dev.get("description"):
-        return dev["description"]
-    if vc._is_192_day_accepted(issue):
-        return "Open beyond the VER-TFR-MAV 192-day threshold without full mitigation."
-    return "Accepted vulnerability."
 
 
 def main() -> int:
@@ -67,23 +59,14 @@ def main() -> int:
     api_failures = []
     issues = vc.fetch_all_issues(
         env["base_url"], env["token"], env["project_id"],
-        env["report_from"][:10], env["report_to"][:10], api_failures,
+        env["report_from"], env["report_to"], api_failures,
     )
 
     # Visibility: open issues with no real completed evaluation (VER-TFR-EVU).
-    unevaluated = [
-        i for i in issues
-        if i.get("status") in vc.OPEN_ISSUE_STATUSES
-        and vc._effective_evaluation_date(i) is None
-        and vc._accepted_deviation(i) is None
-    ]
-    if unevaluated:
-        logger.warning(
-            "%d open issue(s) have no real completed-evaluation date "
-            "(missing or epoch sentinel); excluded from VER-TFR-MAV time-based "
-            "acceptance (VER-TFR-EVU: evaluate within 5 days of detection).",
-            len(unevaluated),
-        )
+    vc.warn_unevaluated_backlog(
+        issues, logger,
+        "excluded from VER-TFR-MAV time-based acceptance",
+    )
 
     report = build_report(
         issues, env["cert_package_uri"], env["report_from"], env["report_to"]
@@ -91,8 +74,9 @@ def main() -> int:
     report["_summary"] = vc.build_avi_summary(
         report["acceptedVulnerabilities"], env["report_from"], env["report_to"]
     )
+    report["_summary"]["collection"] = vc.build_collection_status(api_failures)
 
-    output_path = output_dir / f"paramify_accepted_vulnerabilities_{vc.sanitize_for_filename(env['project_id'])}.json"
+    output_path = output_dir / f"paramify_accepted_vulnerabilities_{vc.target_slug(env)}.json"
     with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
 
@@ -104,8 +88,15 @@ def main() -> int:
     )
 
     # Exit non-zero if collection encountered API failures (repo convention).
+    # /issues is the only call, so any failure means the report arrays above are
+    # empty for want of data -- NOT because the program has no accepted
+    # vulnerabilities. _summary.collection records that inside the payload.
     if api_failures:
-        logger.error("%d API failure(s) during collection", len(api_failures))
+        logger.error(
+            "%d API failure(s) during collection; the report is incomplete and "
+            "its counts must not be read as a clean result",
+            len(api_failures),
+        )
         return 1
     return 0
 

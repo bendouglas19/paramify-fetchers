@@ -14,6 +14,32 @@ description: >-
   data (accepted vulnerabilities, vulnerability detail report, and the
   historical VER-activity snapshot).
 
+# Config shared by every paramify fetcher. The runner injects these env vars for
+# any fetcher with category: paramify. Set values once per run under manifest
+# platforms.paramify.config.
+config_schema:
+  cert_package_uri:
+    type: string
+    required: true
+    env: PARAMIFY_CERT_PACKAGE_URI
+    description: >-
+      Public Certification Package Overview URI, written into every VER report as
+      certificationPackageOverviewUri. One workspace publishes one such URI, so it
+      lives here rather than per fetcher or per program — set it once and all
+      three reports, across every program, carry it.
+  api_base_url:
+    type: string
+    default: https://app.paramify.com/api/v0
+    env: PARAMIFY_API_BASE_URL
+    description: Paramify REST API base URL. Point at a non-production instance for testing.
+  http_timeout:
+    type: integer
+    default: 300
+    env: PARAMIFY_HTTP_TIMEOUT
+    description: >-
+      Per-request timeout in seconds. The unfiltered /issues call is large
+      (~1.9 MB / ~75-120 s on a ~2k-issue project), hence the high default.
+
 auth:
   # The fetchers read the token from PARAMIFY_API_TOKEN (falling back to
   # PARAMIFY_UPLOAD_API_TOKEN). Base URL defaults to app.paramify.com and can
