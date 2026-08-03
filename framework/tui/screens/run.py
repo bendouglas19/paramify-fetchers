@@ -44,7 +44,11 @@ class RunEvent(Message):
 
 
 class RunPage(Vertical):
-    HINTS = [("ctrl+r", "run")]
+    # Focus opens on the ▶ Run button, and Button binds enter — so enter runs the
+    # manifest too. Advertised rather than changed: the status table can't hold
+    # focus before the first run (.panel.empty hides it), so moving focus there
+    # would leave ctrl+r dead instead.
+    HINTS = [("enter/ctrl+r", "run")]
 
     BINDINGS = [Binding("ctrl+r", "run_manifest", "Run")]
 

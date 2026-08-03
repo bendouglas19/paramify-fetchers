@@ -31,7 +31,10 @@ class WorkspaceScreen(Screen):
 
     # Screen-level bindings shown on every tab's footer (after the page-specific
     # hints). Keep in sync with BINDINGS below.
-    WORKSPACE_HINTS = [("1-5", "tabs"), ("m", "manifest"), ("q", "quit")]
+    # esc is listed because it is the only way out of a focused text field back
+    # to the shortcut keys: an Input consumes every printable key, so while one
+    # holds focus none of the hints above it are live.
+    WORKSPACE_HINTS = [("1-5", "tabs"), ("m", "manifest"), ("esc", "leave field"), ("q", "quit")]
 
     BINDINGS = [
         Binding("1", "go_tab(0)", "Catalog"),
@@ -105,8 +108,16 @@ class WorkspaceScreen(Screen):
         self.query_one(HintFooter).set_hints(page_hints + self.WORKSPACE_HINTS)
 
     def _go_to_tab(self, tab_id: str) -> None:
+        tabs = self.query_one(TabbedContent)
+        if tabs.active == tab_id:
+            # Assigning the active tab it already has fires no TabActivated, so
+            # nothing would restore focus after set_focus(None) below — pressing
+            # the number of the tab you're on would silently kill every page
+            # binding. Re-home focus directly instead.
+            self.call_after_refresh(self._focus_active_pane)
+            return
         self.set_focus(None)  # Textual reverts an active-change while focus is in the outgoing pane
-        self.query_one(TabbedContent).active = tab_id
+        tabs.active = tab_id
         # Focus follows via on_tabbed_content_tab_activated (fires for programmatic
         # changes too), so this is the single place pane focus is decided.
 

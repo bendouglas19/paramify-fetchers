@@ -293,6 +293,12 @@ class MultiPickerModal(ModalScreen[list]):
 class ConfirmModal(ModalScreen[bool]):
     """A yes/no confirmation. Returns True on confirm, False otherwise."""
 
+    # Yes is composed first, so the default AUTO_FOCUS ("*") put enter on the
+    # destructive answer — this dialog gates deleting a manifest file, removing
+    # an entry, and uploading to Paramify. Focus No: enter and escape both mean
+    # no, y means yes.
+    AUTO_FOCUS = "#no"
+
     BINDINGS = [
         Binding("escape", "no", "No"),
         Binding("n", "no", "No"),

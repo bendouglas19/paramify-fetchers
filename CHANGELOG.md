@@ -26,6 +26,16 @@ schemas and the `paramify` CLI — not the internal code.
 
 ### Changed
 
+- The `tui` extra pins `textual>=8,<9` (was `>=1.0,<2.0`). The old range was not
+  what anyone ran, and focus / `Input` behaviour differs enough across those lines
+  that the TUI is not the same app on 1.x. `tests/test_tui_keys.py` (new) drives
+  the real app through Textual's pilot to hold the key-and-focus contract: what
+  each tab focuses, that the globals survive a repeat tab press, and that enter
+  reaches an action wherever the footer says it does.
+- **TUI**: the footer hint bar lists `esc` (the only way out of a focused text
+  field back to the shortcut keys — an `Input` consumes every printable key) and
+  the Run tab shows `enter/ctrl+r`, since focus opens on the ▶ Run button and
+  `enter` presses it.
 - **Paramify VER fetchers**: `report_from` / `report_to` / `api_base_url` /
   `http_timeout` moved out of `secrets[]`. Every declared secret is mandatory, so
   declaring optional knobs there made them required, contradicting their
@@ -51,6 +61,26 @@ schemas and the `paramify` CLI — not the internal code.
 
 ### Fixed
 
+- **TUI**: pressing the number of the tab you are already on no longer clears
+  focus. Assigning `TabbedContent.active` the value it already holds fires no
+  `TabActivated`, so nothing re-homed focus after it was cleared — and because a
+  page's bindings only resolve while focus is inside that page, every page
+  shortcut (`a`/`e`/`x`, `ctrl+r`, `j`/`k`, the arrows) silently went dead until
+  you pressed escape or a different tab.
+- **TUI**: `ctrl+p` on the Paramify tab runs Preview instead of opening Textual's
+  command palette, which claims that key as a *priority* binding — checked ahead
+  of the focused widget, so the page's own binding could never fire. `p` now does
+  it too, mirroring the Manifest tab's preview key.
+- **TUI**: `enter` does what the footer promises on the two tables where it did
+  nothing at all — on a run it drills into that run's evidence files (where enter
+  opens one), and on a manifest row it opens the entry editor.
+- **TUI**: editing the manifest's output dir no longer loses the path. Textual
+  selects an `Input`'s value on focus, so the first keystroke replaced the whole
+  path; and an edit never submitted with `enter` was silently reverted by the next
+  rebuild. Focus no longer selects the value, and leaving the field commits it.
+- **TUI**: `enter` in a confirmation dialog now means No. Yes is composed first,
+  so it took the default focus — on the dialogs that delete a manifest file,
+  remove an entry, and upload to Paramify. `y` still confirms.
 - **TUI**: config set at the category level showed as unset on every entry that
   inherited it — the manifest screen read only the entry's own `config` block and
   had no notion of `platforms.<category>.config`. Both the detail pane and the

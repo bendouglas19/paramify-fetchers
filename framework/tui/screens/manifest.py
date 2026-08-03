@@ -50,7 +50,9 @@ class ManifestPage(Vertical):
     def compose(self) -> ComposeResult:
         with Horizontal(id="manifest-top"):
             yield Static("output dir:", classes="inline-label")
-            yield Input(placeholder="./evidence", id="manifest-output-dir")
+            # select_on_focus off: Textual selects the whole value on focus, so
+            # the first keystroke replaced the existing path wholesale.
+            yield Input(placeholder="./evidence", id="manifest-output-dir", select_on_focus=False)
             yield Button("Add fetcher", variant="primary", id="btn-add")
             yield Button("Save", id="btn-save")
         with Horizontal(id="manifest-body"):
@@ -280,11 +282,27 @@ class ManifestPage(Vertical):
         self._selected = event.row_key.value
         self._refresh_detail()
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        # Enter on a row edits it — what a table row implies, and previously the
+        # one key on this page that did nothing at all.
+        self.action_edit_entry()
+
     @on(Input.Submitted, "#manifest-output-dir")
     def _on_output_dir(self, event: Input.Submitted) -> None:
-        if self._manifest is None:
-            return
-        api.set_output_dir(self._manifest, event.value.strip() or "./evidence")
+        self._commit_output_dir(event.value.strip() or "./evidence")
+
+    @on(Input.Blurred, "#manifest-output-dir")
+    def _on_output_dir_blurred(self, event: Input.Blurred) -> None:
+        # Commit on blur as well as enter: an edit that was never submitted got
+        # silently reverted by the next rebuild(). A cleared field is left alone
+        # (that's an empty field, not a request for the default).
+        if event.value.strip():
+            self._commit_output_dir(event.value.strip())
+
+    def _commit_output_dir(self, value: str) -> None:
+        if self._manifest is None or value == (self._run().get("output_dir") or ""):
+            return  # blur fires on every focus change; only a real change commits
+        api.set_output_dir(self._manifest, value)
         self.notify("Output dir updated.")
         self.rebuild()
 
