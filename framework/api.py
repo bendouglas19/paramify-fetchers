@@ -1306,28 +1306,49 @@ def effective_config(
         out[use] = fields
     return out
 
-def categories_for_config(
-    m: dict, uses: List[str], field_name: str, root: Path, *, missing_only: bool = False,
+def shared_config_state(
+    m: dict, uses: List[str], field_name: str, root: Path, *,
     fetchers: Optional[dict] = None, platforms: Optional[dict] = None,
-) -> List[str]:
-    """Categories among `uses` that accept `field_name` as config.
+) -> dict:
+    """What a front-end needs to show and edit one config field shared across
+    `uses` — the kind set once per category rather than per entry:
 
-    With missing_only, narrows to those where nothing supplies a value yet —
-    required, no default, and set in neither the platform block nor the entry's
-    own config. A front-end uses the wide set to write an explicitly-supplied
-    value (passing a flag is an override) and the narrow set to decide whether
-    to ask for one.
+        categories  every category among `uses` that accepts `field_name`
+        value       the value they all resolve to today, or None when nothing
+                    supplies one or the entries disagree
+        sources     where those values come from ("entry", "platforms.<cat>",
+                    "default"), distinct, in the order met
+        conflict    True when the entries resolve to different values
+        missing     categories where nothing supplies a required value
 
-    Both are views over effective_config() rather than a second merge, so "is it
-    set" can't mean membership here and truthiness there — which is exactly how
-    the two functions this replaced had already drifted apart.
+    A view over effective_config() rather than a second merge, so "is it set"
+    can't mean membership here and truthiness there — which is exactly how the
+    two functions this replaced had already drifted apart. Offering `value` as an
+    edit default is honest only while `conflict` is False: one entry's override
+    presented as the manifest's answer would misreport the other entries.
     """
-    out: List[str] = []
+    categories: List[str] = []
+    missing: List[str] = []
+    values: List[Any] = []
+    sources: List[str] = []
     for fields in effective_config(m, uses, root, fetchers, platforms).values():
         for d in fields:
-            if d["name"] != field_name or not d["category"] or d["category"] in out:
+            if d["name"] != field_name or not d["category"]:
                 continue
-            if missing_only and not (d["required"] and d["source"] is None):
+            if d["category"] not in categories:
+                categories.append(d["category"])
+            if d["required"] and d["source"] is None and d["category"] not in missing:
+                missing.append(d["category"])
+            if d["source"] is None:
                 continue
-            out.append(d["category"])
-    return out
+            if d["value"] not in values:
+                values.append(d["value"])
+            if d["source"] not in sources:
+                sources.append(d["source"])
+    return {
+        "categories": categories,
+        "value": values[0] if len(values) == 1 else None,
+        "sources": sources,
+        "conflict": len(values) > 1,
+        "missing": missing,
+    }

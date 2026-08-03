@@ -262,13 +262,16 @@ A target gets only what varies per program: `project_id` and `program_name` (the
 readable label — the fetcher uses it for its evidence filename, the uploader for
 the artifact title).
 
-Anything the targeted fetchers need that *doesn't* vary per program is asked for
-once and written to `platforms.<category>.config`: `--cert-uri` (the Certification
-Package Overview URI) and `--report-from` (the report period start). Each is
-prompted for only when it's genuinely missing — required, no default, and absent
-from both the platform block and the entry's own config — so a re-run that just
-adds a program asks nothing. Supplying the flag explicitly overwrites an existing
-value. `--report-from` is validated as an ISO date before it's written.
+Anything the targeted fetchers need that *doesn't* vary per program is written to
+`platforms.<category>.config`: `--cert-uri` (the Certification Package Overview
+URI) and `--report-from` (the report period start). Each is shown on every
+interactive run, with the value in force as the prompt default and a line saying
+where it comes from (`platforms.paramify`, an entry's own config, or not set
+yet); enter keeps it and leaves the manifest alone, typing over it updates the
+category value. Entries that resolve to *different* values are reported as such
+and no default is offered, since either one shown as the answer would misreport
+the other. Supplying the flag skips the prompt and overwrites an existing value.
+`--report-from` is validated as an ISO date before it's written.
 
 Needs `PARAMIFY_API_TOKEN` with read scope; under `--json` nothing prompts, so
 pass `--program`/`--all` plus whichever shared values are still missing.

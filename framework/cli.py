@@ -21,7 +21,7 @@ Read / discover:
 Paramify workspace (live lookups; needs PARAMIFY_API_TOKEN with read scope):
   paramify programs list [--json]              # programs in the workspace: name + id
   paramify programs target [fetcher ...] [--program NAME|ID ...] [--all]
-                           [--cert-uri NAME|ID=URI ...] [-f FILE] [--json]
+                           [--cert-uri URI] [--report-from DATE] [-f FILE] [--json]
 
 Manifest editing (writes the manifest file; -f/--file, default ./manifest.yaml;
 every subcommand accepts --json, emitting {"ok", "path", "errors"}):
@@ -996,6 +996,21 @@ def _can_prompt(json_out: bool) -> bool:
     return not json_out and sys.stdin.isatty()
 
 
+def _config_origin(state: dict) -> str:
+    """Where a shared config field's value comes from, for the line above its
+    prompt. The value itself is the prompt's default, so this says only what the
+    bracketed default can't: whether it's already stored, and where — an entry's
+    own config outranks the category value this command writes."""
+    labels = ", ".join(
+        "this entry's own config" if s == "entry" else
+        "the fetcher default" if s == "default" else s
+        for s in state["sources"]
+    )
+    if state["conflict"]:
+        return f"differs across entries ({labels}) — one value replaces them all"
+    return f"set in {labels}" if labels else "not set yet"
+
+
 def _programs_or_exit(json_out: bool) -> List[dict]:
     try:
         return api.list_programs()
@@ -1056,12 +1071,12 @@ def programs_target(
     cert_uri: Optional[str] = typer.Option(
         None, "--cert-uri",
         help="Certification Package Overview URI for the workspace. Set once as category "
-             "config; prompted when the manifest doesn't already have it.",
+             "config; shown for confirmation on every interactive run.",
     ),
     report_from: Optional[str] = typer.Option(
         None, "--report-from",
         help="Report period start (ISO date, e.g. 2026-01-01). Set once as category "
-             "config; prompted when the manifest doesn't already have it.",
+             "config; shown for confirmation on every interactive run.",
     ),
     file: str = typer.Option(_DEFAULT_MANIFEST, "-f", "--file", help="Manifest path"),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON"),
@@ -1124,33 +1139,50 @@ def programs_target(
         selected = [programs[i] for i in indices]
 
     # --- shared config ------------------------------------------------------- #
-    # Values that don't vary per program are asked for once and written to
+    # Values that don't vary per program are written once to
     # platforms.<category>.config, where every fetcher in the category picks them
-    # up. A re-run whose manifest already has them doesn't ask again; passing the
-    # flag explicitly overwrites whatever is there.
-    for field_name, flag, prompt_text, is_date, supplied in (
-        ("cert_package_uri", "--cert-uri",
-         "Certification Package Overview URI (used for every program)", False, cert_uri),
-        ("report_from", "--report-from",
-         "Report period start — ISO date, e.g. 2026-01-01 (used for every program)", True, report_from),
-    ):
-        value = (supplied or "").strip()
-        categories = api.categories_for_config(
-            m, uses, field_name, root, missing_only=not value, **discovered
+    # up. Interactively each one is shown on every run with the value in force as
+    # the prompt default, because a re-run is also how you fix a wrong URI or roll
+    # the report window forward — enter keeps what's there and writes nothing.
+    # Nothing is asked when the flag supplied it (that's an override) or when
+    # there's no terminal, where only a genuinely missing value is an error.
+    fields = [
+        (name, flag, prompt_text, is_date, supplied,
+         api.shared_config_state(m, uses, name, root, **discovered))
+        for name, flag, prompt_text, is_date, supplied in (
+            ("cert_package_uri", "--cert-uri",
+             "Certification Package Overview URI (used for every program)", False, cert_uri),
+            ("report_from", "--report-from",
+             "Report period start — ISO date, e.g. 2026-01-01 (used for every program)", True, report_from),
         )
+    ]
+    # The header promises "enter keeps it" only when something is actually stored
+    # to keep — on a first run there is nothing to show and every prompt is bare.
+    header = "\nShared config — one value for every program." + (
+        " Enter keeps what's shown." if any(s["value"] for *_, s in fields) else ""
+    )
+    announced = False
+    for field_name, flag, prompt_text, is_date, supplied, state in fields:
+        if not state["categories"]:
+            continue
+        current = "" if state["conflict"] else str(state["value"] or "")
+        value = (supplied or "").strip()
         if not value:
-            if not categories:
-                continue
             if not _can_prompt(json_out):
-                _fail(
-                    path,
-                    f"{field_name} is not set for "
-                    + ", ".join(f"platforms.{c}.config" for c in categories)
-                    + f". Pass {flag} <value>.",
-                    json_out,
-                )
-            typer.echo("")
-            value = typer.prompt(prompt_text).strip()
+                if state["missing"]:
+                    _fail(
+                        path,
+                        f"{field_name} is not set for "
+                        + ", ".join(f"platforms.{c}.config" for c in state["missing"])
+                        + f". Pass {flag} <value>.",
+                        json_out,
+                    )
+                continue
+            if not announced:
+                typer.echo(header)
+                announced = True
+            typer.echo(f"\n  {field_name}: {_config_origin(state)}")
+            value = typer.prompt(prompt_text, default=current or None).strip()
             if not value:
                 _fail(path, f"No {field_name} given; nothing written.", json_out)
         if is_date and not _is_iso_datish(value):
@@ -1163,7 +1195,9 @@ def programs_target(
                 "(e.g. 2026-01-01 or 2026-01-01T00:00:00Z).",
                 json_out,
             )
-        for category in categories:
+        if value == current and not state["missing"] and not supplied:
+            continue  # enter on a value already in force everywhere: leave it be
+        for category in state["categories"]:
             api.set_platform_config(m, category, field_name, value)
 
     report = api.add_program_targets(m, uses, selected, fetchers=discovered["fetchers"])

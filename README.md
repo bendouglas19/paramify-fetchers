@@ -185,10 +185,11 @@ rather than duplicating targets.
 A target carries only what varies per program — `project_id` and its readable
 `program_name`. Everything shared is written once to `platforms.paramify.config`:
 the Certification Package Overview URI (not in Paramify's API, one value per
-workspace) and the report period start. Both are prompted for when the manifest
-doesn't already have them, and skipped when it does, so adding a program later is
-just `paramify programs target` again. Passing `--cert-uri`/`--report-from`
-explicitly overwrites what's there.
+workspace) and the report period start. Every interactive run shows both with
+whatever the manifest holds today as the prompt default — enter keeps it and
+writes nothing, typing over it updates it — so `paramify programs target` is
+equally how you add a program and how you roll the report window forward.
+Passing `--cert-uri`/`--report-from` overwrites what's there without asking.
 
 `--report-from` is checked for an ISO date up front — an unparseable one produces
 an empty report window, which drops every closed issue from the report without

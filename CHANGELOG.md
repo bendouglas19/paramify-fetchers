@@ -17,7 +17,14 @@ schemas and the `paramify` CLI — not the internal code.
   `programs target` selects programs (interactively, by name/id, or `--all`) and
   writes them as fanout targets, filling in the shared config they need. The API
   identifies programs by UUID while people know them by name; this closes that
-  gap without anyone copying a UUID by hand.
+  gap without anyone copying a UUID by hand. The shared values (`--cert-uri`,
+  `--report-from`) are shown on every interactive run with what the manifest
+  holds today as the prompt default and a note of where it comes from: enter
+  keeps it and writes nothing, typing over it updates the category value. So the
+  same command adds a program and rolls the report window forward, and neither
+  requires opening the manifest to see what the next run will carry. Entries that
+  resolve to different values get no default — either one offered as *the* answer
+  would misreport the other.
 - `program_name` — an optional target field on the Paramify VER fetchers. The
   fetcher uses it for its evidence filename and the uploader for the artifact
   title, so per-program artifacts read as `… - Alpha Cloud Services` rather than

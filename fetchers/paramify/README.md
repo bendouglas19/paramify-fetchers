@@ -58,9 +58,10 @@ paramify programs list            # readable name + project UUID
 paramify programs target          # pick programs, get targets on all three fetchers
 ```
 
-It asks once for the Certification Package Overview URI and the report period
-start, storing both as category config, so adding a program later is just
-`programs target` again — no URI, no dates, no per-program bookkeeping.
+It asks for the Certification Package Overview URI and the report period start,
+storing both as category config — no per-program bookkeeping. A later run shows
+both again with the stored values as the defaults, so adding a program is enter,
+enter, and moving the report window forward is typing a new date over the old one.
 
 `report_from` is declared per-fetcher (it's a property of the report, not the
 platform) but set once at the platform level: the runner merges *platform

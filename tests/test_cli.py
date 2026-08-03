@@ -27,7 +27,7 @@ import pytest
 from typer.main import get_command
 from typer.testing import CliRunner
 
-from framework import api
+from framework import api, cli
 from framework.cli import app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -692,7 +692,7 @@ def test_programs_target_writes_cert_uri_as_category_config(stub_programs, ver_m
     assert len(_entry(m, _VER_FETCHER)["targets"]) == len(_PROGRAMS)
 
 
-def test_programs_target_does_not_reprompt_when_cert_uri_already_set(stub_programs, ver_manifest):
+def test_programs_target_under_json_reuses_existing_cert_uri(stub_programs, ver_manifest):
     """Second run with the URI already in the manifest must not need --cert-uri.
 
     Under --json there is no prompt to fall back on, so if the command still
@@ -785,6 +785,91 @@ def test_programs_target_flag_overrides_existing_shared_config(stub_programs, ve
 def test_programs_target_requires_a_selection_under_json(stub_programs, ver_manifest):
     rep = _json_err(_target(ver_manifest, _VER_FETCHER, shared=False))
     assert "--program" in rep["errors"][0]
+
+
+# --------------------------------------------------------------------------- #
+# Shared config is shown and editable on every interactive run — the manifest is
+# never a black box you have to open to see what a re-run will carry forward.
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def tty(monkeypatch):
+    """Let the command prompt. CliRunner's stdin isn't a tty, so `_can_prompt`
+    is patched rather than sys.stdin: click reads the runner's piped `input=`
+    either way, and this keeps the seam to one function."""
+    monkeypatch.setattr(cli, "_can_prompt", lambda json_out: not json_out)
+
+
+def _target_tty(manifest, *args, keys=""):
+    """Invoke without --json, answering the shared-config prompts with `keys`."""
+    return runner.invoke(
+        app, ["programs", "target", *args, "-f", str(manifest)], input=keys
+    )
+
+
+def _seeded(manifest):
+    """A manifest that already carries both shared values, as a second run finds it."""
+    _json(_target(manifest, _VER_FETCHER, "--program", "Alpha"))
+    return manifest
+
+
+def test_programs_target_shows_shared_config_on_every_run(stub_programs, ver_manifest, tty):
+    """Values already in the manifest are still displayed — a re-run shows what
+    it's about to carry forward instead of silently reusing it."""
+    result = _target_tty(_seeded(ver_manifest), _VER_FETCHER, "--program", "Beta", keys="\n\n")
+    assert result.exit_code == 0, result.output
+    assert "https://example.gov/cpo" in result.output   # the URI, as the prompt default
+    assert "2026-01-01" in result.output                # the report start, likewise
+    assert "set in platforms.paramify" in result.output  # ...and where it lives
+
+
+def test_programs_target_enter_keeps_shared_config(stub_programs, ver_manifest, tty):
+    """Enter at both prompts leaves the platform block byte-identical."""
+    before = _platform_cfg(api.read_manifest(_seeded(ver_manifest)))
+    result = _target_tty(ver_manifest, _VER_FETCHER, "--program", "Beta", keys="\n\n")
+    assert result.exit_code == 0, result.output
+    m = api.read_manifest(ver_manifest)
+    assert _platform_cfg(m) == before
+    assert len(_entry(m, _VER_FETCHER)["targets"]) == 2, "the run still added its target"
+
+
+def test_programs_target_prompt_updates_shared_config(stub_programs, ver_manifest, tty):
+    """Typing over the default is how you fix a wrong URI or roll the window."""
+    result = _target_tty(_seeded(ver_manifest), _VER_FETCHER, "--program", "Beta",
+                         keys="https://new.example.gov/cpo\n2026-04-01\n")
+    assert result.exit_code == 0, result.output
+    cfg = _platform_cfg(api.read_manifest(ver_manifest))
+    assert cfg["cert_package_uri"] == "https://new.example.gov/cpo"
+    assert cfg["report_from"] == "2026-04-01"
+
+
+def test_programs_target_rejects_a_bad_date_typed_at_the_prompt(stub_programs, ver_manifest, tty):
+    """The ISO check guards the prompt too, and failing writes nothing at all."""
+    result = _target_tty(_seeded(ver_manifest), _VER_FETCHER, "--program", "Beta",
+                         keys="\nsoon\n")
+    assert result.exit_code == 1
+    assert "ISO" in result.output
+    m = api.read_manifest(ver_manifest)
+    assert _platform_cfg(m)["report_from"] == "2026-01-01"
+    assert len(_entry(m, _VER_FETCHER)["targets"]) == 1, "no target written on a failed run"
+
+
+def test_programs_target_offers_no_default_when_entries_disagree(stub_programs, ver_manifest, tty):
+    """Two entries, two different report starts — either one shown as *the*
+    default would misreport the other, so it says so and asks outright: with no
+    default, enter re-asks instead of quietly picking a side."""
+    other = "paramify_vulnerability_detail_report"
+    m = api.read_manifest(_seeded(ver_manifest))
+    api.add_entry(m, other)
+    api.set_secret(m, other, "api_token", "PARAMIFY_API_TOKEN")
+    api.set_fetcher_config(m, other, "report_from", "2025-06-01")  # diverges from the platform value
+    api.dump_manifest(m, ver_manifest, REPO_ROOT)
+    result = _target_tty(ver_manifest, "--program", "Beta", keys="\n\n2026-05-05\n")
+    assert result.exit_code == 0, result.output
+    assert "differs across entries" in result.output
+    for value in ("[2026-01-01]", "[2025-06-01]"):
+        assert value not in result.output, "a disputed value must not be offered as the default"
+    assert _platform_cfg(api.read_manifest(ver_manifest))["report_from"] == "2026-05-05"
 
 
 def test_programs_target_errors_when_no_entry_takes_a_program(stub_programs, tmp_path, in_repo):
