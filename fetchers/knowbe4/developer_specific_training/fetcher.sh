@@ -31,7 +31,22 @@ mkdir -p "$OUTPUT_DIR"
 OUTPUT_JSON="$OUTPUT_DIR/${FETCHER}.json"
 
 _FAILURE_LOG="$(mktemp -t ${FETCHER}_fail.XXXXXX)"
-trap 'rm -f "$_FAILURE_LOG"' EXIT
+# Large jq inputs go in by FILE, never as an argv string: Linux caps a single
+# argument at MAX_ARG_STRLEN (128KB), so --argjson with a full enrollments or
+# members array fails execve with E2BIG and jq never runs — leaving an empty
+# evidence file. macOS has no per-argument cap, which is exactly how this hid
+# during local dev.
+_TMP_ENROLLMENTS="$(mktemp -t ${FETCHER}_enroll.XXXXXX)"
+_TMP_MEMBERS="$(mktemp -t ${FETCHER}_members.XXXXXX)"
+_TMP_MATCHED_GROUPS="$(mktemp -t ${FETCHER}_mgroups.XXXXXX)"
+_TMP_MATCHED_CAMPAIGNS="$(mktemp -t ${FETCHER}_mcamps.XXXXXX)"
+_TMP_GROUPS_PRESENT="$(mktemp -t ${FETCHER}_gpresent.XXXXXX)"
+_TMP_CAMPAIGNS_PRESENT="$(mktemp -t ${FETCHER}_cpresent.XXXXXX)"
+_TMP_GROUP_RES="$(mktemp -t ${FETCHER}_gres.XXXXXX)"
+_TMP_CAMPAIGN_RES="$(mktemp -t ${FETCHER}_cres.XXXXXX)"
+trap 'rm -f "$_FAILURE_LOG" "$_TMP_ENROLLMENTS" "$_TMP_MEMBERS" \
+      "$_TMP_MATCHED_GROUPS" "$_TMP_MATCHED_CAMPAIGNS" "$_TMP_GROUPS_PRESENT" \
+      "$_TMP_CAMPAIGNS_PRESENT" "$_TMP_GROUP_RES" "$_TMP_CAMPAIGN_RES"' EXIT
 
 log_info()  { printf '%s INFO %s %s\n'  "$(date -u +'%Y-%m-%d %H:%M:%S')" "$FETCHER" "$*" >&2; }
 log_warn()  { printf '%s WARN %s %s\n'  "$(date -u +'%Y-%m-%d %H:%M:%S')" "$FETCHER" "$*" >&2; }
@@ -159,16 +174,34 @@ done < <(printf '%s' "$matched_groups" | jq -r '.[].id')
 
 # One jq pass builds the whole document. The previous version re-ran jq over the
 # growing output file once per record, which was quadratic.
+printf '%s' "$enrollments_response"   > "$_TMP_ENROLLMENTS"
+printf '%s' "$members"                > "$_TMP_MEMBERS"
+printf '%s' "$matched_groups"         > "$_TMP_MATCHED_GROUPS"
+printf '%s' "$matched_campaign_objs"  > "$_TMP_MATCHED_CAMPAIGNS"
+printf '%s' "$campaigns_present"      > "$_TMP_CAMPAIGNS_PRESENT"
+printf '%s' "$groups_present"         > "$_TMP_GROUPS_PRESENT"
+printf '%s' "$campaign_res"           > "$_TMP_CAMPAIGN_RES"
+printf '%s' "$group_res"              > "$_TMP_GROUP_RES"
+
 jq -n \
-   --argjson enrollments "$enrollments_response" \
-   --argjson members "$members" \
-   --argjson matched_groups "$matched_groups" \
-   --argjson matched_campaigns "$matched_campaign_objs" \
-   --argjson campaign_res "$campaign_res" \
-   --argjson group_res "$group_res" \
-   --argjson campaigns_present "$campaigns_present" \
-   --argjson groups_present "$groups_present" '
-    ($campaign_res.matched) as $mc
+   --slurpfile enrollments_in "$_TMP_ENROLLMENTS" \
+   --slurpfile members_in "$_TMP_MEMBERS" \
+   --slurpfile matched_groups_in "$_TMP_MATCHED_GROUPS" \
+   --slurpfile matched_campaigns_in "$_TMP_MATCHED_CAMPAIGNS" \
+   --slurpfile campaign_res_in "$_TMP_CAMPAIGN_RES" \
+   --slurpfile group_res_in "$_TMP_GROUP_RES" \
+   --slurpfile campaigns_present_in "$_TMP_CAMPAIGNS_PRESENT" \
+   --slurpfile groups_present_in "$_TMP_GROUPS_PRESENT" '
+    # --slurpfile wraps the contents of each file in an array; [0] unwraps it.
+    ($enrollments_in[0]) as $enrollments
+    | ($members_in[0]) as $members
+    | ($matched_groups_in[0]) as $matched_groups
+    | ($matched_campaigns_in[0]) as $matched_campaigns
+    | ($campaign_res_in[0]) as $campaign_res
+    | ($group_res_in[0]) as $group_res
+    | ($campaigns_present_in[0]) as $campaigns_present
+    | ($groups_present_in[0]) as $groups_present
+    | ($campaign_res.matched) as $mc
     | ($group_res.matched) as $mg
     # Measurable needs both dimensions: a population to measure and a campaign to
     # measure it against. Nothing downstream of an unmatched name may be a number.

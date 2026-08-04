@@ -24,7 +24,12 @@ mkdir -p "$OUTPUT_DIR"
 OUTPUT_JSON="$OUTPUT_DIR/${FETCHER}.json"
 
 _FAILURE_LOG="$(mktemp -t ${FETCHER}_fail.XXXXXX)"
-trap 'rm -f "$_FAILURE_LOG"' EXIT
+# Large jq inputs go in by FILE, never as an argv string: Linux caps a single
+# argument at MAX_ARG_STRLEN (128KB), so --argjson with a full enrollments array
+# fails execve with E2BIG and jq never runs — leaving an empty evidence file.
+# macOS has no per-argument cap, which is exactly how this hid during local dev.
+_TMP_ENROLLMENTS="$(mktemp -t ${FETCHER}_enroll.XXXXXX)"
+trap 'rm -f "$_FAILURE_LOG" "$_TMP_ENROLLMENTS"' EXIT
 
 log_info()  { printf '%s INFO %s %s\n'  "$(date -u +'%Y-%m-%d %H:%M:%S')" "$FETCHER" "$*" >&2; }
 log_error() { printf '%s ERROR %s %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$FETCHER" "$*" >&2; }
@@ -91,8 +96,10 @@ enrollments_response=$(make_paginated_api_call \
 # by re-running jq over the growing output file, which was quadratic: 1500
 # enrollments took 69s and 3000 took over 120s, so a mid-size tenant blew the
 # runner's 600s cap.
-jq -n --argjson enrollments "$enrollments_response" '
-    [ $enrollments[] | del(.policy_acknowledged) ] as $rows
+printf '%s' "$enrollments_response" > "$_TMP_ENROLLMENTS"
+
+jq -n --slurpfile enrollments "$_TMP_ENROLLMENTS" '
+    [ $enrollments[0][] | del(.policy_acknowledged) ] as $rows
     | {
         results: {
           enrollments: $rows,

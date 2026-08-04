@@ -29,7 +29,17 @@ mkdir -p "$OUTPUT_DIR"
 OUTPUT_JSON="$OUTPUT_DIR/${FETCHER}.json"
 
 _FAILURE_LOG="$(mktemp -t ${FETCHER}_fail.XXXXXX)"
-trap 'rm -f "$_FAILURE_LOG"' EXIT
+# Large jq inputs go in by FILE, never as an argv string: Linux caps a single
+# argument at MAX_ARG_STRLEN (128KB), so --argjson with a full users or
+# enrollments array fails execve with E2BIG and jq never runs — leaving an empty
+# evidence file. macOS has no per-argument cap, which is exactly how this hid
+# during local dev.
+_TMP_USERS="$(mktemp -t ${FETCHER}_users.XXXXXX)"
+_TMP_ENROLLMENTS="$(mktemp -t ${FETCHER}_enroll.XXXXXX)"
+_TMP_CAMPAIGNS_PRESENT="$(mktemp -t ${FETCHER}_cpresent.XXXXXX)"
+_TMP_CAMPAIGN_RES="$(mktemp -t ${FETCHER}_cres.XXXXXX)"
+trap 'rm -f "$_FAILURE_LOG" "$_TMP_USERS" "$_TMP_ENROLLMENTS" \
+      "$_TMP_CAMPAIGNS_PRESENT" "$_TMP_CAMPAIGN_RES"' EXIT
 
 log_info()  { printf '%s INFO %s %s\n'  "$(date -u +'%Y-%m-%d %H:%M:%S')" "$FETCHER" "$*" >&2; }
 log_warn()  { printf '%s WARN %s %s\n'  "$(date -u +'%Y-%m-%d %H:%M:%S')" "$FETCHER" "$*" >&2; }
@@ -144,14 +154,24 @@ campaign_res=$(resolve_names "$campaigns_present" "${requested_campaigns[@]}")
 # One jq pass builds the whole document. The previous version re-ran jq over the
 # growing output file once per record, which was quadratic — 3k enrollments blew
 # the runner's 600s cap.
+printf '%s' "$users_response"       > "$_TMP_USERS"
+printf '%s' "$enrollments_response" > "$_TMP_ENROLLMENTS"
+printf '%s' "$campaigns_present"    > "$_TMP_CAMPAIGNS_PRESENT"
+printf '%s' "$campaign_res"         > "$_TMP_CAMPAIGN_RES"
+
 jq -n \
-   --argjson users "$users_response" \
-   --argjson enrollments "$enrollments_response" \
-   --argjson campaign_res "$campaign_res" \
-   --argjson campaigns_present "$campaigns_present" \
+   --slurpfile users_in "$_TMP_USERS" \
+   --slurpfile enrollments_in "$_TMP_ENROLLMENTS" \
+   --slurpfile campaign_res_in "$_TMP_CAMPAIGN_RES" \
+   --slurpfile campaigns_present_in "$_TMP_CAMPAIGNS_PRESENT" \
    --argjson cutoff "$RETRAIN_CUTOFF_EPOCH" \
    --argjson interval_days "$RETRAINING_INTERVAL_DAYS" '
-    ($campaign_res.matched) as $matched
+    # --slurpfile wraps the contents of each file in an array; [0] unwraps it.
+    ($users_in[0]) as $users
+    | ($enrollments_in[0]) as $enrollments
+    | ($campaign_res_in[0]) as $campaign_res
+    | ($campaigns_present_in[0]) as $campaigns_present
+    | ($campaign_res.matched) as $matched
     # Measurable only if at least one requested campaign exists in the tenant.
     # Nothing downstream of an unmatched name may be reported as a number.
     | (($matched | length) > 0) as $measurable

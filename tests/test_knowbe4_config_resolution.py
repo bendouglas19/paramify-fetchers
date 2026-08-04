@@ -449,14 +449,24 @@ def test_e_api_failure_exits_nonzero(fetcher, tmp_path):
 # ---------------------------------------------------------------------------- #
 
 def test_f_scales_to_a_realistic_enrollment_count(tmp_path):
-    """3k enrollments must finish fast.
+    """5k enrollments must finish fast, and must not be passed to jq via argv.
 
-    The per-record ``jq``-rewrite this replaced was quadratic: 1500 enrollments
-    took 69s and 3000 took over 120s, so a mid-size tenant blew the runner's
-    600s cap (framework/runner/executor.py). The bound here is deliberately far
-    below that — a regression to per-record rewriting cannot sneak under it.
+    Two regressions are pinned here, and the fixture size is load-bearing for both.
+
+    1. The per-record ``jq``-rewrite this replaced was quadratic: 1500 enrollments
+       took 69s and 3000 took over 120s, so a mid-size tenant blew the runner's
+       600s cap (framework/runner/executor.py). The time bound catches that.
+    2. Passing the array as one ``--argjson`` string dies at Linux's
+       MAX_ARG_STRLEN (131072 bytes for a single argument): execve fails E2BIG,
+       jq never runs, and the fetcher writes an EMPTY evidence file. macOS has no
+       per-argument cap, so 3000 enrollments (645KB) passed locally and only
+       failed in CI. 5000 enrollments is ~1.08MB, which also clears macOS's
+       1048576-byte total ARG_MAX — so an argv regression now fails on both.
+
+    For scale, the real Paramify tenant is 463 enrollments = 99KB, only 25% under
+    the Linux per-argument cliff.
     """
-    n = 3000
+    n = 5000
     tenant = {
         "users": _USERS,
         "training_enrollments": [
