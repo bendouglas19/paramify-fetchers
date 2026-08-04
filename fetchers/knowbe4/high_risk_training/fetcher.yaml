@@ -1,9 +1,21 @@
 name: knowbe4_high_risk_training
 version: 0.1.0
-description: Validates completion of role-specific training (e.g. "Privileged Users Training") for users in high-risk groups (Cloud Ops, IT, DevOps). Reports per-user status with summary metrics.
+description: Validates completion of the role-specific training campaign(s) named in config for members of the high-risk groups named in config. Reports per-user status with summary metrics. Names are matched exactly; when one matches nothing in the tenant, every compliance metric is reported as null (not 0) and results.config_resolution names what did not resolve.
 category: knowbe4
 
 supports_targets: false
+
+config_schema:
+  high_risk_groups:
+    type: string
+    required: true
+    env: KNOWBE4_HIGH_RISK_GROUPS
+    description: Comma-separated KnowBe4 group names whose members are treated as high-risk (e.g. "Cloud Ops,IT,DevOps"). Matched exactly against the group titles in your tenant, not as substrings, so "IT" will not pull in "AUDIT". Whitespace around each name is trimmed.
+  role_specific_campaigns:
+    type: string
+    required: true
+    env: KNOWBE4_ROLE_SPECIFIC_CAMPAIGNS
+    description: Comma-separated training campaign names those users are required to complete, matched exactly against the campaign titles in your tenant.
 
 runtime:
   type: bash

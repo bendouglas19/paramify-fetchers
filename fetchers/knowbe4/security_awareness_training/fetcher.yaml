@@ -1,9 +1,22 @@
 name: knowbe4_security_awareness_training
 version: 0.1.0
-description: Validates completion of the annual Security Awareness Training campaign for all active users. Tracks per-user status (completed / in_progress / past_due / not_started) and flags users needing retraining (last completion > 1 year ago).
+description: Validates completion of the Security Awareness Training campaign(s) named in config, for all active users. Tracks per-user status (completed / in_progress / past_due / not_started) and flags users whose last completion is older than the retraining interval. When a configured campaign name matches nothing in the tenant, every compliance metric is reported as null (not 0) and results.config_resolution names what did not resolve.
 category: knowbe4
 
 supports_targets: false
+
+config_schema:
+  security_awareness_campaigns:
+    type: string
+    required: true
+    env: KNOWBE4_SECURITY_AWARENESS_CAMPAIGNS
+    description: Comma-separated KnowBe4 training campaign names to measure, matched exactly against the campaign titles in your tenant (e.g. "2026 Annual Security Awareness Training"). Whitespace around each name is trimmed.
+  retraining_interval_days:
+    type: integer
+    required: false
+    default: 365
+    env: KNOWBE4_RETRAINING_INTERVAL_DAYS
+    description: A user whose most recent completion is older than this many days is flagged as needing retraining.
 
 runtime:
   type: bash

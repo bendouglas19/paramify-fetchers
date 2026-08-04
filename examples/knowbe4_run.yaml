@@ -1,8 +1,9 @@
 # End-to-end test manifest: KnowBe4 module-based training summary.
 #
-# Single fetcher, single source. module_based_summary is chosen because it has
-# NO hardcoded customer group/campaign names — it works against any KnowBe4
-# tenant (the other 3 knowbe4 fetchers match specific group/campaign titles).
+# module_based_summary is the runnable default because it takes NO config — it
+# reports on whatever the tenant has, so it works against any KnowBe4 tenant
+# as-is. The other three fetchers measure specific groups and campaigns and so
+# must be told which ones; the commented block below shows that form.
 #
 # Set before running:
 #   export KNOWBE4_API_KEY=<your KnowBe4 Reporting API key>
@@ -15,3 +16,41 @@ run:
       secrets:
         api_key: ${env:KNOWBE4_API_KEY}
         region: ${env:KNOWBE4_REGION}
+
+    # The configurable fetchers. Replace the names with the exact group and
+    # campaign titles from YOUR tenant — they are matched exactly, not as
+    # substrings. List them with:
+    #
+    #   curl -s -H "Authorization: Bearer $KNOWBE4_API_KEY" \
+    #     "https://${KNOWBE4_REGION}.api.knowbe4.com/v1/groups?page=1" | jq -r '.[].name'
+    #   curl -s -H "Authorization: Bearer $KNOWBE4_API_KEY" \
+    #     "https://${KNOWBE4_REGION}.api.knowbe4.com/v1/training/campaigns?page=1" | jq -r '.[].name'
+    #
+    # A name that matches nothing does not fail the run: the fetcher exits 0 and
+    # reports every metric it could not measure as null (never 0), with
+    # results.config_resolution naming what did not resolve. See the category
+    # README for how to read that block.
+    #
+    # - use: knowbe4_security_awareness_training
+    #   secrets:
+    #     api_key: ${env:KNOWBE4_API_KEY}
+    #     region: ${env:KNOWBE4_REGION}
+    #   config:
+    #     security_awareness_campaigns: "2026 Annual Security Awareness Training"
+    #     retraining_interval_days: 365
+    #
+    # - use: knowbe4_high_risk_training
+    #   secrets:
+    #     api_key: ${env:KNOWBE4_API_KEY}
+    #     region: ${env:KNOWBE4_REGION}
+    #   config:
+    #     high_risk_groups: "Cloud Ops,IT,DevOps"
+    #     role_specific_campaigns: "Privileged Users Training (Before CloudOps Access)"
+    #
+    # - use: knowbe4_developer_specific_training
+    #   secrets:
+    #     api_key: ${env:KNOWBE4_API_KEY}
+    #     region: ${env:KNOWBE4_REGION}
+    #   config:
+    #     developer_groups: "Engineering,Developers"
+    #     developer_campaigns: "Developers Training"
