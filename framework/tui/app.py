@@ -27,6 +27,11 @@ class FetcherApp(App):
 
     CSS_PATH = "styles/index.tcss"
     TITLE = "paramify-fetchers"
+    # Textual binds ctrl+p to its command palette as a *priority* binding, which
+    # is checked before the focused widget — it swallowed the Paramify tab's
+    # ctrl+p (preview) entirely. We register no command providers, so the palette
+    # only offers Textual's own built-ins; turn it off and keep the key.
+    ENABLE_COMMAND_PALETTE = False
 
     def __init__(
         self, manifest_path: Optional[str] = None, root_override: Optional[str] = None

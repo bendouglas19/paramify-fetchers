@@ -10,6 +10,102 @@ schemas and the `paramify` CLI — not the internal code.
 
 ## [Unreleased]
 
+### Added
+
+- `paramify programs` — a new command group over the Paramify workspace.
+  `programs list` shows each program's readable name next to its project UUID;
+  `programs target` selects programs (interactively, by name/id, or `--all`) and
+  writes them as fanout targets, filling in the shared config they need. The API
+  identifies programs by UUID while people know them by name; this closes that
+  gap without anyone copying a UUID by hand. The shared values (`--cert-uri`,
+  `--report-from`) are shown on every interactive run with what the manifest
+  holds today as the prompt default and a note of where it comes from: enter
+  keeps it and writes nothing, typing over it updates the category value. So the
+  same command adds a program and rolls the report window forward, and neither
+  requires opening the manifest to see what the next run will carry. Entries that
+  resolve to different values get no default — either one offered as *the* answer
+  would misreport the other.
+- `program_name` — an optional target field on the Paramify VER fetchers. The
+  fetcher uses it for its evidence filename and the uploader for the artifact
+  title, so per-program artifacts read as `… - Alpha Cloud Services` rather than
+  a bare UUID. A UUID prefix stays in the filename because program names are not
+  guaranteed unique.
+
+### Changed
+
+- The `tui` extra pins `textual>=8,<9` (was `>=1.0,<2.0`). The old range was not
+  what anyone ran, and focus / `Input` behaviour differs enough across those lines
+  that the TUI is not the same app on 1.x. `tests/test_tui_keys.py` (new) drives
+  the real app through Textual's pilot to hold the key-and-focus contract: what
+  each tab focuses, that the globals survive a repeat tab press, and that enter
+  reaches an action wherever the footer says it does.
+- **TUI**: the footer hint bar lists `esc` (the only way out of a focused text
+  field back to the shortcut keys — an `Input` consumes every printable key) and
+  the Run tab shows `enter/ctrl+r`, since focus opens on the ▶ Run button and
+  `enter` presses it.
+- **Paramify VER fetchers**: `report_from` / `report_to` / `api_base_url` /
+  `http_timeout` moved out of `secrets[]`. Every declared secret is mandatory, so
+  declaring optional knobs there made them required, contradicting their
+  documented defaults. `cert_package_uri`, `api_base_url` and `http_timeout` are
+  now category config (`fetchers/_categories/paramify.yaml`) — one value per
+  workspace, set once under `platforms.paramify.config` instead of copied onto
+  every target.
+- Each VER report's `_summary` now carries a `collection` block (status + the
+  API-failure ledger). `/issues` is the only call these fetchers make, so a
+  failure yields empty report arrays; without this a failed report was
+  indistinguishable from a genuinely clean one to anything reading the payload.
+- The uploader prefers a target's `program_name` over its opaque id when titling
+  an artifact. Fetchers whose id is already readable are unaffected.
+- **Every timestamp in a VER report is now emitted in one format** — UTC, second
+  precision, literal `Z` (`2026-07-30T09:00:00Z`). Values from the Paramify API
+  (`detectedAt`, `evaluationCompletedAt`, the `dueDate` quoted in an overdue
+  explanation) were previously passed through with the API's millisecond
+  precision, so a single document mixed notations; they are normalized on the way
+  in, and non-UTC offsets are converted rather than preserved. A `report_from` /
+  `report_to` given as a bare date is expanded, with a date-only end reported as
+  that day's last second (`2026-06-30` → `2026-06-30T23:59:59Z`) to match the
+  window actually collected.
+
+### Fixed
+
+- **TUI**: pressing the number of the tab you are already on no longer clears
+  focus. Assigning `TabbedContent.active` the value it already holds fires no
+  `TabActivated`, so nothing re-homed focus after it was cleared — and because a
+  page's bindings only resolve while focus is inside that page, every page
+  shortcut (`a`/`e`/`x`, `ctrl+r`, `j`/`k`, the arrows) silently went dead until
+  you pressed escape or a different tab.
+- **TUI**: `ctrl+p` on the Paramify tab runs Preview instead of opening Textual's
+  command palette, which claims that key as a *priority* binding — checked ahead
+  of the focused widget, so the page's own binding could never fire. `p` now does
+  it too, mirroring the Manifest tab's preview key.
+- **TUI**: `enter` does what the footer promises on the two tables where it did
+  nothing at all — on a run it drills into that run's evidence files (where enter
+  opens one), and on a manifest row it opens the entry editor.
+- **TUI**: editing the manifest's output dir no longer loses the path. Textual
+  selects an `Input`'s value on focus, so the first keystroke replaced the whole
+  path; and an edit never submitted with `enter` was silently reverted by the next
+  rebuild. Focus no longer selects the value, and leaving the field commits it.
+- **TUI**: `enter` in a confirmation dialog now means No. Yes is composed first,
+  so it took the default focus — on the dialogs that delete a manifest file,
+  remove an entry, and upload to Paramify. `y` still confirms.
+- **TUI**: config set at the category level showed as unset on every entry that
+  inherited it — the manifest screen read only the entry's own `config` block and
+  had no notion of `platforms.<category>.config`. Both the detail pane and the
+  summary count now render `api.effective_config()`, the same merge the runner
+  performs, and show which layer each value came from.
+- **Paramify VER fetchers**: a pending or rejected `RISK_ADJUSTMENT` no longer
+  reports `finalDisposition: "Partially Mitigated"` — mitigation now requires an
+  accepted deviation, not an unapproved request.
+- An issue carrying neither `poamId` nor `id` no longer raises `KeyError` and
+  kills the whole report.
+- `PARAMIFY_HTTP_TIMEOUT` is parsed at call time and falls back to the default on
+  a malformed value, instead of aborting the run with a bare `ValueError` at
+  import.
+- A timestamped `report_to` no longer over-includes up to a day beyond the
+  declared reporting period.
+- `PARAMIFY_REPORT_TO` is now declared, so it can actually be set through a
+  manifest (the runner passes only declared env vars).
+
 ## [0.3.1-beta] - 2026-07-28
 
 ### Changed

@@ -110,8 +110,16 @@ paramify run <manifest.yaml>        # collect: enveloped JSON + _run_metadata.js
 paramify runs                       # past runs under the output dir (newest first)
 paramify evidence <file>            # read one evidence file (normalizing the envelope)
 paramify upload [run-dir]           # push one run's evidence to Paramify (default: latest run)
+paramify programs list              # programs in the Paramify workspace: readable name + project UUID
+paramify programs target [fetcher ...]  # select programs by name and write them as fanout targets
 paramify manifest <sub>             # build/edit a manifest file (init/new/add/remove/set-config/set-secret/add-target/remove-target/...)
 ```
+
+`paramify programs` is the only command that reads live workspace state (`GET
+/projects`, needs `PARAMIFY_API_TOKEN`); it exists because the API identifies
+programs by UUID while operators know them by name. `target` composes
+`add_target` under the hood, so it produces exactly the manifest a hand-written
+`manifest add-target` would.
 
 Every `manifest` subcommand also accepts `--json`, emitting a stable `{ok, path, errors}` object so an agent can build a manifest step by step and read `errors` to see what's still missing.
 

@@ -27,7 +27,7 @@ import pytest
 from typer.main import get_command
 from typer.testing import CliRunner
 
-from framework import api
+from framework import api, cli
 from framework.cli import app
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -49,8 +49,9 @@ def _registered():
 
 EXPECTED_TOP = {
     "list", "catalog", "describe", "ksi", "doctor", "manifests", "runs",
-    "evidence", "validate", "run", "upload", "manifest", "scripts", "tui",
+    "evidence", "validate", "run", "upload", "manifest", "scripts", "programs", "tui",
 }
+EXPECTED_PROGRAMS = {"list", "target"}
 EXPECTED_MANIFEST = {
     "init", "new", "add", "remove", "set-config", "set-secret",
     "add-target", "remove-target", "set-platform-config",
@@ -64,6 +65,17 @@ def test_all_expected_commands_registered():
     assert EXPECTED_TOP <= top, f"missing top-level commands: {EXPECTED_TOP - top}"
     assert EXPECTED_MANIFEST <= manifest, f"missing manifest subcommands: {EXPECTED_MANIFEST - manifest}"
     assert EXPECTED_SCRIPTS <= scripts, f"missing scripts subcommands: {EXPECTED_SCRIPTS - scripts}"
+
+
+def test_programs_subcommands_registered():
+    """Assert the subcommands are actually attached to the sub-app.
+
+    Worth its own test: a @programs_app.command decorator placed after the
+    module's `if __name__ == "__main__": app()` line never runs before dispatch,
+    so the group loads but reports "No such command" at runtime.
+    """
+    programs = set(get_command(app).commands["programs"].commands.keys())
+    assert EXPECTED_PROGRAMS <= programs, f"missing programs subcommands: {EXPECTED_PROGRAMS - programs}"
 
 
 def test_doctor_json_ok_without_manifest():
@@ -112,9 +124,14 @@ def _tui_api_calls() -> set[str]:
 # its own command. Keep this in sync with the TUI; the test below enforces it.
 API_TO_CLI = {
     "find_repo_root": "<implicit: every command>",
+    "discover": "<implicit: one fetcher-tree scan shared across a redraw>",
     "catalog": "list / catalog / describe",
     "list_manifests": "manifests",
     "read_manifest": "manifest show",
+    # Read-only render helper: the runner's merged config view (platform <- entry)
+    # behind what the manifest screen displays. No command of its own — the CLI
+    # surfaces the same facts through `manifest show` + `validate`.
+    "effective_config": "<implicit: manifest render>",
     "init_manifest": "manifest init",
     "new_manifest_path": "manifest new",
     "add_entry": "manifest add",
@@ -531,3 +548,334 @@ def test_manifest_new_creates_under_manifests_dir(in_repo):
     finally:
         if target.exists():
             target.unlink()
+
+
+# --------------------------------------------------------------------------- #
+# programs — pick a program by name, target it by UUID
+#
+# GET /projects is stubbed at the api boundary (never over the wire), so these
+# assert the selection/resolution/manifest-wiring logic, not the HTTP client.
+# --------------------------------------------------------------------------- #
+
+_PROGRAMS = [
+    {"id": "aaaa1111-0000-0000-0000-000000000000", "name": "Alpha Cloud Services",
+     "system_name": "Alpha Cloud Services", "short_name": "ACS"},
+    {"id": "bbbb2222-0000-0000-0000-000000000000", "name": "Beta Platform",
+     "system_name": "Beta Platform", "short_name": "BETA"},
+    {"id": "cccc3333-0000-0000-0000-000000000000", "name": "Gamma Analytics",
+     "system_name": "Gamma Analytics", "short_name": "GAM"},
+]
+
+_VER_FETCHER = "paramify_accepted_vulnerabilities"
+
+
+@pytest.fixture
+def stub_programs(monkeypatch):
+    """Stub the workspace lookup so no test touches the network."""
+    monkeypatch.setattr(api, "list_programs", lambda *a, **k: list(_PROGRAMS))
+    return _PROGRAMS
+
+
+@pytest.fixture
+def ver_manifest(tmp_path, in_repo):
+    """A manifest at the point `programs target` is normally reached: the entry
+    added and its secret wired, but no targets and no shared config yet — those
+    are exactly what the command fills in.
+    """
+    path = tmp_path / "m.yaml"
+    m = api.init_manifest(str(tmp_path / "out"))
+    api.add_entry(m, _VER_FETCHER)
+    api.set_secret(m, _VER_FETCHER, "api_token", "PARAMIFY_API_TOKEN")
+    api.dump_manifest(m, path, in_repo)
+    return path
+
+
+def test_programs_list_json(stub_programs):
+    rep = _json(runner.invoke(app, ["programs", "list", "--json"]))
+    assert rep["ok"] is True
+    assert [p["name"] for p in rep["programs"]] == [p["name"] for p in _PROGRAMS]
+
+
+def test_programs_list_human_shows_name_and_id(stub_programs):
+    result = runner.invoke(app, ["programs", "list"])
+    assert result.exit_code == 0, result.output
+    assert "Alpha Cloud Services" in result.output
+    assert "aaaa1111-0000-0000-0000-000000000000" in result.output
+
+
+def test_programs_list_reports_missing_token_as_json_error(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("No Paramify API token: set PARAMIFY_API_TOKEN")
+    monkeypatch.setattr(api, "list_programs", boom)
+    rep = _json_err(runner.invoke(app, ["programs", "list", "--json"]))
+    assert rep["ok"] is False
+    assert "PARAMIFY_API_TOKEN" in rep["errors"][0]
+
+
+@pytest.mark.parametrize("selector", [
+    "Alpha Cloud Services",              # exact name
+    "alpha cloud services",              # case-insensitive
+    "Alpha",                             # unique substring
+    "aaaa1111-0000-0000-0000-000000000000",  # id
+])
+def test_resolve_program_accepts_name_or_id(selector):
+    assert api.resolve_program(_PROGRAMS, selector)["short_name"] == "ACS"
+
+
+def test_resolve_program_rejects_ambiguous_substring():
+    """'a' hits all three — resolving it silently would target the wrong program."""
+    with pytest.raises(ValueError, match="ambiguous"):
+        api.resolve_program(_PROGRAMS, "a")
+
+
+def test_resolve_program_rejects_unknown():
+    with pytest.raises(LookupError):
+        api.resolve_program(_PROGRAMS, "Nope")
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("1,3", [0, 2]),
+    ("1-3", [0, 1, 2]),
+    ("2 3", [1, 2]),
+    ("all", [0, 1, 2]),
+    ("3,1,3", [2, 0]),  # de-duped, in the order typed
+])
+def test_parse_selection(raw, expected):
+    from framework.cli import _parse_selection
+    assert _parse_selection(raw, 3) == expected
+
+
+@pytest.mark.parametrize("raw", ["0", "4", "2-9", "", "nope"])
+def test_parse_selection_rejects_out_of_range(raw):
+    from framework.cli import _parse_selection
+    with pytest.raises(ValueError):
+        _parse_selection(raw, 3)
+
+
+def _platform_cfg(manifest_dict, category="paramify"):
+    return (manifest_dict["run"].get("platforms") or {}).get(category, {}).get("config", {})
+
+
+# The shared config `programs target` needs; supplied by default so each test's
+# argv shows only what that test is actually varying.
+_SHARED_ARGS = ["--cert-uri", "https://example.gov/cpo", "--report-from", "2026-01-01"]
+
+
+def _target(manifest, *args, shared=True):
+    return runner.invoke(app, [
+        "programs", "target", *args, *(_SHARED_ARGS if shared else []),
+        "-f", str(manifest), "--json",
+    ])
+
+
+def test_programs_target_writes_targets_by_name(stub_programs, ver_manifest):
+    rep = _json(_target(ver_manifest, _VER_FETCHER,
+                        "--program", "Alpha Cloud Services", "--program", "Gamma"))
+    assert rep["ok"] is True, rep["errors"]
+    m = api.read_manifest(ver_manifest)
+    targets = _entry(m, _VER_FETCHER)["targets"]
+    assert [t["project_id"] for t in targets] == [_PROGRAMS[0]["id"], _PROGRAMS[2]["id"]]
+    assert [t["program_name"] for t in targets] == ["Alpha Cloud Services", "Gamma Analytics"]
+    # A target carries ONLY what varies per program.
+    assert all("cert_package_uri" not in t for t in targets)
+
+
+def test_programs_target_writes_cert_uri_as_category_config(stub_programs, ver_manifest):
+    """One workspace, one URI: it lands once under platforms.paramify.config."""
+    uri = "https://example.gov/cpo?package=abc&v=2"  # '=' in the query must survive
+    # shared=False: _SHARED_ARGS is appended after *args, so its --cert-uri would
+    # win over this one.
+    _json(_target(ver_manifest, _VER_FETCHER, "--all", "--cert-uri", uri,
+                  "--report-from", "2026-01-01", shared=False))
+    m = api.read_manifest(ver_manifest)
+    assert _platform_cfg(m)["cert_package_uri"] == uri
+    assert len(_entry(m, _VER_FETCHER)["targets"]) == len(_PROGRAMS)
+
+
+def test_programs_target_under_json_reuses_existing_cert_uri(stub_programs, ver_manifest):
+    """Second run with the URI already in the manifest must not need --cert-uri.
+
+    Under --json there is no prompt to fall back on, so if the command still
+    considered it missing this would fail instead of succeeding.
+    """
+    _json(_target(ver_manifest, _VER_FETCHER, "--program", "Alpha"))
+    rep = _json(_target(ver_manifest, _VER_FETCHER, "--program", "Beta", shared=False))
+    assert rep["ok"] is True, rep["errors"]
+    m = api.read_manifest(ver_manifest)
+    assert _platform_cfg(m)["cert_package_uri"] == "https://example.gov/cpo"
+    assert len(_entry(m, _VER_FETCHER)["targets"]) == 2
+
+
+def test_programs_target_all_covers_every_program(stub_programs, ver_manifest):
+    rep = _json(_target(ver_manifest, _VER_FETCHER, "--all"))
+    assert rep["ok"] is True, rep["errors"]
+    targets = _entry(api.read_manifest(ver_manifest), _VER_FETCHER)["targets"]
+    assert [t["project_id"] for t in targets] == [p["id"] for p in _PROGRAMS]
+
+
+def test_programs_target_is_idempotent(stub_programs, ver_manifest):
+    _json(_target(ver_manifest, _VER_FETCHER, "--program", "Beta"))
+    _json(_target(ver_manifest, _VER_FETCHER, "--program", "Beta"))  # same command again
+    targets = _entry(api.read_manifest(ver_manifest), _VER_FETCHER)["targets"]
+    assert len(targets) == 1, "re-targeting the same program must not duplicate it"
+
+
+def test_programs_target_defaults_to_program_taking_entries(stub_programs, ver_manifest):
+    """No fetcher argument: every manifest entry that takes a program gets it."""
+    rep = _json(_target(ver_manifest, "--program", "Beta"))
+    assert rep["ok"] is True, rep["errors"]
+    assert _entry(api.read_manifest(ver_manifest), _VER_FETCHER)["targets"]
+
+
+def test_programs_target_requires_cert_uri_under_json(stub_programs, ver_manifest):
+    """--json can't prompt, so a missing URI must fail loudly and say where it goes."""
+    rep = _json_err(_target(ver_manifest, _VER_FETCHER, "--program", "Beta", shared=False))
+    assert "cert_package_uri" in rep["errors"][0]
+    assert "platforms.paramify.config" in rep["errors"][0]
+    assert "--cert-uri" in rep["errors"][0]
+
+
+def test_programs_target_writes_report_from_as_category_config(stub_programs, ver_manifest):
+    """report_from is declared per-fetcher but set once at the platform level —
+    the runner merges platform config over any field a fetcher declares."""
+    _json(_target(ver_manifest, _VER_FETCHER, "--all"))
+    m = api.read_manifest(ver_manifest)
+    assert _platform_cfg(m)["report_from"] == "2026-01-01"
+    assert "report_from" not in (_entry(m, _VER_FETCHER).get("config") or {})
+
+
+@pytest.mark.parametrize("bad", ["Jan 1 2026", "2026-13-45", "01/01/2026", "soon"])
+def test_programs_target_rejects_non_iso_report_from(stub_programs, ver_manifest, bad):
+    """An unparseable date yields an empty report window, which silently drops
+    every closed issue — so it has to fail here, not at run time."""
+    rep = _json_err(_target(ver_manifest, _VER_FETCHER, "--all",
+                            "--cert-uri", "https://example.gov/cpo",
+                            "--report-from", bad, shared=False))
+    assert "report_from" in rep["errors"][0]
+    assert "ISO" in rep["errors"][0]
+
+
+@pytest.mark.parametrize("good", ["2026-01-01", "2026-01-01T00:00:00Z", "2026-06-30T12:00:00+00:00"])
+def test_programs_target_accepts_iso_report_from(stub_programs, ver_manifest, good):
+    rep = _json(_target(ver_manifest, _VER_FETCHER, "--all",
+                        "--cert-uri", "https://example.gov/cpo",
+                        "--report-from", good, shared=False))
+    assert rep["ok"] is True, rep["errors"]
+    assert _platform_cfg(api.read_manifest(ver_manifest))["report_from"] == good
+
+
+def test_programs_target_requires_report_from_under_json(stub_programs, ver_manifest):
+    rep = _json_err(_target(ver_manifest, _VER_FETCHER, "--all",
+                            "--cert-uri", "https://example.gov/cpo", shared=False))
+    assert "report_from" in rep["errors"][0]
+    assert "--report-from" in rep["errors"][0]
+
+
+def test_programs_target_flag_overrides_existing_shared_config(stub_programs, ver_manifest):
+    """Passing a flag is an override — it applies even when a value is already set."""
+    _json(_target(ver_manifest, _VER_FETCHER, "--all", "--cert-uri",
+                  "https://old.example.gov/cpo", "--report-from", "2026-01-01", shared=False))
+    _json(_target(ver_manifest, _VER_FETCHER, "--all", "--cert-uri",
+                  "https://new.example.gov/cpo", "--report-from", "2026-04-01", shared=False))
+    cfg = _platform_cfg(api.read_manifest(ver_manifest))
+    assert cfg["cert_package_uri"] == "https://new.example.gov/cpo"
+    assert cfg["report_from"] == "2026-04-01"
+
+
+def test_programs_target_requires_a_selection_under_json(stub_programs, ver_manifest):
+    rep = _json_err(_target(ver_manifest, _VER_FETCHER, shared=False))
+    assert "--program" in rep["errors"][0]
+
+
+# --------------------------------------------------------------------------- #
+# Shared config is shown and editable on every interactive run — the manifest is
+# never a black box you have to open to see what a re-run will carry forward.
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def tty(monkeypatch):
+    """Let the command prompt. CliRunner's stdin isn't a tty, so `_can_prompt`
+    is patched rather than sys.stdin: click reads the runner's piped `input=`
+    either way, and this keeps the seam to one function."""
+    monkeypatch.setattr(cli, "_can_prompt", lambda json_out: not json_out)
+
+
+def _target_tty(manifest, *args, keys=""):
+    """Invoke without --json, answering the shared-config prompts with `keys`."""
+    return runner.invoke(
+        app, ["programs", "target", *args, "-f", str(manifest)], input=keys
+    )
+
+
+def _seeded(manifest):
+    """A manifest that already carries both shared values, as a second run finds it."""
+    _json(_target(manifest, _VER_FETCHER, "--program", "Alpha"))
+    return manifest
+
+
+def test_programs_target_shows_shared_config_on_every_run(stub_programs, ver_manifest, tty):
+    """Values already in the manifest are still displayed — a re-run shows what
+    it's about to carry forward instead of silently reusing it."""
+    result = _target_tty(_seeded(ver_manifest), _VER_FETCHER, "--program", "Beta", keys="\n\n")
+    assert result.exit_code == 0, result.output
+    assert "https://example.gov/cpo" in result.output   # the URI, as the prompt default
+    assert "2026-01-01" in result.output                # the report start, likewise
+    assert "set in platforms.paramify" in result.output  # ...and where it lives
+
+
+def test_programs_target_enter_keeps_shared_config(stub_programs, ver_manifest, tty):
+    """Enter at both prompts leaves the platform block byte-identical."""
+    before = _platform_cfg(api.read_manifest(_seeded(ver_manifest)))
+    result = _target_tty(ver_manifest, _VER_FETCHER, "--program", "Beta", keys="\n\n")
+    assert result.exit_code == 0, result.output
+    m = api.read_manifest(ver_manifest)
+    assert _platform_cfg(m) == before
+    assert len(_entry(m, _VER_FETCHER)["targets"]) == 2, "the run still added its target"
+
+
+def test_programs_target_prompt_updates_shared_config(stub_programs, ver_manifest, tty):
+    """Typing over the default is how you fix a wrong URI or roll the window."""
+    result = _target_tty(_seeded(ver_manifest), _VER_FETCHER, "--program", "Beta",
+                         keys="https://new.example.gov/cpo\n2026-04-01\n")
+    assert result.exit_code == 0, result.output
+    cfg = _platform_cfg(api.read_manifest(ver_manifest))
+    assert cfg["cert_package_uri"] == "https://new.example.gov/cpo"
+    assert cfg["report_from"] == "2026-04-01"
+
+
+def test_programs_target_rejects_a_bad_date_typed_at_the_prompt(stub_programs, ver_manifest, tty):
+    """The ISO check guards the prompt too, and failing writes nothing at all."""
+    result = _target_tty(_seeded(ver_manifest), _VER_FETCHER, "--program", "Beta",
+                         keys="\nsoon\n")
+    assert result.exit_code == 1
+    assert "ISO" in result.output
+    m = api.read_manifest(ver_manifest)
+    assert _platform_cfg(m)["report_from"] == "2026-01-01"
+    assert len(_entry(m, _VER_FETCHER)["targets"]) == 1, "no target written on a failed run"
+
+
+def test_programs_target_offers_no_default_when_entries_disagree(stub_programs, ver_manifest, tty):
+    """Two entries, two different report starts — either one shown as *the*
+    default would misreport the other, so it says so and asks outright: with no
+    default, enter re-asks instead of quietly picking a side."""
+    other = "paramify_vulnerability_detail_report"
+    m = api.read_manifest(_seeded(ver_manifest))
+    api.add_entry(m, other)
+    api.set_secret(m, other, "api_token", "PARAMIFY_API_TOKEN")
+    api.set_fetcher_config(m, other, "report_from", "2025-06-01")  # diverges from the platform value
+    api.dump_manifest(m, ver_manifest, REPO_ROOT)
+    result = _target_tty(ver_manifest, "--program", "Beta", keys="\n\n2026-05-05\n")
+    assert result.exit_code == 0, result.output
+    assert "differs across entries" in result.output
+    for value in ("[2026-01-01]", "[2025-06-01]"):
+        assert value not in result.output, "a disputed value must not be offered as the default"
+    assert _platform_cfg(api.read_manifest(ver_manifest))["report_from"] == "2026-05-05"
+
+
+def test_programs_target_errors_when_no_entry_takes_a_program(stub_programs, tmp_path, in_repo):
+    path = tmp_path / "empty.yaml"
+    api.dump_manifest(api.init_manifest(str(tmp_path / "out")), path, in_repo)
+    rep = _json_err(runner.invoke(app, [
+        "programs", "target", "--program", "Beta", "-f", str(path), "--json",
+    ]))
+    assert "No manifest entry takes a program" in rep["errors"][0]

@@ -26,7 +26,7 @@ from framework.tui.modals import PreviewModal
 
 
 class EvidencePage(Vertical):
-    HINTS = [("↑↓", "runs"), ("enter", "view"), ("ctrl+r", "refresh")]
+    HINTS = [("↑↓", "runs"), ("enter", "open / view"), ("ctrl+r", "refresh")]
 
     BINDINGS = [Binding("ctrl+r", "refresh_runs", "Refresh")]
 
@@ -135,7 +135,16 @@ class EvidencePage(Vertical):
             self._show_run(event.row_key.value)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if event.data_table.id == "evidence-files" and event.row_key.value:
+        if event.data_table.id == "evidence-runs":
+            # Enter drills into the run. Focus opens on the runs table, and the
+            # files table — where enter actually views evidence — was reachable
+            # only by tab/click, so enter looked broken on the way in.
+            files = self.query_one("#evidence-files", DataTable)
+            if files.row_count:
+                files.focus()
+            else:
+                self.notify("This run has no evidence files.")
+        elif event.data_table.id == "evidence-files" and event.row_key.value:
             self._open_file(event.row_key.value)
 
     @on(Button.Pressed, "#evidence-refresh")

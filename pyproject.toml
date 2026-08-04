@@ -24,11 +24,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-tui = ["textual>=1.0,<2.0"]
+# textual 8.x is what the TUI is developed and tested against (tests/test_tui_keys.py).
+# The old >=1.0,<2.0 range was a fiction — nobody ran it, and focus/Input behaviour
+# (select_on_focus, blurred cursor styles) differs enough that the TUI is not the
+# same app on 1.x.
+tui = ["textual>=8,<9"]
 checkov = ["checkov"]
 dev = ["pytest", "ruff", "mypy"]
 # Convenience: every front-end + dev tooling in one install.
-all = ["textual>=1.0,<2.0", "checkov", "pytest", "ruff", "mypy"]
+all = ["textual>=8,<9", "checkov", "pytest", "ruff", "mypy"]
 
 # The single entry point. `paramify` steers every front-end: the headless
 # commands, plus `paramify tui`. (Renaming later is a one-line change here; add

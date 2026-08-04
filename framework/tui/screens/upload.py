@@ -44,11 +44,14 @@ class ScriptsSyncEvent(Message):
 
 
 class UploadPage(Vertical):
-    HINTS = [("ctrl+u", "upload"), ("ctrl+p", "preview"), ("ctrl+s", "sync"), ("ctrl+r", "refresh")]
+    HINTS = [("ctrl+u", "upload"), ("p", "preview"), ("ctrl+s", "sync"), ("ctrl+r", "refresh")]
 
     BINDINGS = [
         Binding("ctrl+u", "upload_run", "Upload"),
-        Binding("ctrl+p", "preview_scripts", "Preview"),
+        # p mirrors the Manifest tab's preview key (this page has no Input to eat
+        # it); ctrl+p stays as an alias, which needs App.ENABLE_COMMAND_PALETTE
+        # off — Textual's palette claims ctrl+p as a priority binding.
+        Binding("p,ctrl+p", "preview_scripts", "Preview"),
         Binding("ctrl+s", "sync_scripts", "Sync Scripts"),
         Binding("ctrl+r", "refresh_upload", "Refresh"),
     ]

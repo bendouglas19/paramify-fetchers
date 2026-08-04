@@ -8,8 +8,9 @@ jsonschema
 # steers every front-end (headless commands + `paramify tui`).
 typer
 
-# Terminal UI (framework/tui) — optional unless you run the console
-textual>=1.0,<2.0
+# Terminal UI (framework/tui) — optional unless you run the console.
+# Pinned to the 8.x line the TUI is tested against; see pyproject's [tui] extra.
+textual>=8,<9
 
 # Checkov category (fetchers/checkov/*) — the bash fetchers shell out to the
 # `checkov` CLI. Also requires system `git` (clone) + `jq`, which are not pip deps.

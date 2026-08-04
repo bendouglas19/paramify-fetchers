@@ -162,8 +162,41 @@ paramify run      <manifest>   # run it
 paramify runs                  # past runs under an output dir (newest first)
 paramify evidence <file>       # read one evidence file (normalizing the envelope)
 paramify upload   [run-dir]    # push a run's evidence to Paramify (default: latest run)
+paramify programs <sub>        # list workspace programs; turn them into targets
 paramify manifest <sub>        # build/edit a manifest (see below)
 ```
+
+Fanning a fetcher out across the programs in a Paramify workspace is its own
+step, because the API takes project UUIDs while people know their programs by
+name. `paramify programs` closes that gap — list what's there, pick by name, and
+it writes the targets for you:
+
+```bash
+paramify programs list                       # name + UUID for every program
+paramify programs target                     # choose interactively, then wire them up
+paramify programs target --all \
+    --cert-uri https://example.gov/cpo --report-from 2026-01-01
+```
+
+With no fetcher argument it targets every manifest entry that takes a program, so
+one command fans all of them out at once. Re-running it tops the manifest up
+rather than duplicating targets.
+
+A target carries only what varies per program — `project_id` and its readable
+`program_name`. Everything shared is written once to `platforms.paramify.config`:
+the Certification Package Overview URI (not in Paramify's API, one value per
+workspace) and the report period start. Every interactive run shows both with
+whatever the manifest holds today as the prompt default — enter keeps it and
+writes nothing, typing over it updates it — so `paramify programs target` is
+equally how you add a program and how you roll the report window forward.
+Passing `--cert-uri`/`--report-from` overwrites what's there without asking.
+
+`--report-from` is checked for an ISO date up front — an unparseable one produces
+an empty report window, which drops every closed issue from the report without
+failing.
+
+Both subcommands need `PARAMIFY_API_TOKEN` with read scope and accept `--json`
+(under `--json` nothing prompts, so pass the flags).
 
 > Back-compat: `python -m framework.runner <cmd>` and `python -m framework.tui`
 > still work and are exactly equivalent to the corresponding `paramify`
