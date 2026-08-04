@@ -68,6 +68,40 @@ schemas and the `paramify` CLI — not the internal code.
 
 ### Fixed
 
+- **KnowBe4**: the three group- and campaign-scoped fetchers no longer report an
+  unresolved config as a failing control. The group and campaign titles they match
+  on were hardcoded to one tenant, so pointed anywhere else they emitted
+  `completion_rate: 0` and exited 0 — byte-identical to a tenant where the campaign
+  resolved and genuinely nobody had trained. Two very different states, one output,
+  and no assertion could tell them apart. The names now come from `config_schema`
+  (`high_risk_groups`, `role_specific_campaigns`, `developer_groups`,
+  `developer_campaigns`, `security_awareness_campaigns`, plus
+  `retraining_interval_days`), and a name that matches nothing in the tenant is
+  **not** a fetcher failure — one typo must not turn a whole nightly run red. The
+  fetcher exits 0 and reports every metric it could not measure as `null`, never
+  `0`, alongside a `results.config_resolution` block naming what was requested,
+  what matched, and what the tenant actually has. `null` means "not measured"; `0`
+  still means "measured, and it is zero", so a genuine 0% remains a real finding.
+  A config key that is never wired at all is caught pre-flight by
+  `paramify validate`, since these are `required`.
+- **KnowBe4**: names are matched exactly rather than as substrings. A group
+  configured as `IT` previously also swept in `AUDIT` and `Legal-IT`, inflating the
+  high-risk population.
+- **KnowBe4**: config values reach `jq` as data (`--args` / `$ARGS.positional`)
+  instead of being spliced into the filter text. A campaign title containing a
+  quote or backslash produced a jq compile error before; making the titles
+  customer-supplied would have turned that into a routine failure.
+- **KnowBe4**: all four fetchers assemble their evidence in one `jq` pass. Each
+  record was previously appended by re-running `jq` over the growing output file,
+  which was quadratic — 1500 enrollments took 69s and 3000 took over 120s, so a
+  mid-size tenant blew the runner's 600s cap. 3000 enrollments now completes in
+  about 3s. `training_module_summary` for an empty tenant is `{}` rather than
+  `null`.
+- **KnowBe4**: a response that is not a JSON array (an error body returned with
+  HTTP 200) is recorded as a failure instead of being treated as a page. Pagination
+  previously looped forever on such a body, bounded only by the runner's timeout.
+  Pagination also stops at a 1000-page cap, and `printf '%s'` replaces `echo` on
+  every API response so a backslash in a title survives a non-bash shell.
 - **TUI**: pressing the number of the tab you are already on no longer clears
   focus. Assigning `TabbedContent.active` the value it already holds fires no
   `TabActivated`, so nothing re-homed focus after it was cleared — and because a

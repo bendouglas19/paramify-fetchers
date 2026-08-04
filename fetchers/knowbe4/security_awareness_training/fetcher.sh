@@ -1,190 +1,251 @@
 #!/bin/bash
 #
-# KnowBe4 — Annual Security Awareness Training Validation
+# KnowBe4 — Security Awareness Training Validation
 #
-# Tracks completion of the annual SAT campaign for all active users.
-# Flags users needing retraining (last completion > 1 year ago).
+# Tracks completion of the campaign(s) named in KNOWBE4_SECURITY_AWARENESS_CAMPAIGNS
+# for all active users, and flags users whose last completion is older than the
+# retraining interval.
+#
+# Campaign names come from config, never from this file: hardcoding them made the
+# fetcher report a confident 0% on any tenant that named its campaigns differently.
+# A name that matches nothing in the tenant is NOT a fetcher failure — one typo must
+# not turn a whole run red — so it exits 0 and reports every metric it could not
+# measure as null, with results.config_resolution naming what did not resolve.
+# null means "not measured"; 0 means "measured, and it is zero".
 #
 # Output: $EVIDENCE_DIR/knowbe4_security_awareness_training.json
-# Required env: KNOWBE4_API_KEY, KNOWBE4_REGION
+# Required env: KNOWBE4_API_KEY, KNOWBE4_REGION, KNOWBE4_SECURITY_AWARENESS_CAMPAIGNS
+# Optional env: KNOWBE4_RETRAINING_INTERVAL_DAYS (default 365)
 
 set -o pipefail
 
+# Interim v0.x: load .env if present. Runner + secret resolver replaces this.
 [ -f .env ] && { set -a; . .env; set +a; }
+
+FETCHER=knowbe4_security_awareness_training
 
 OUTPUT_DIR="${EVIDENCE_DIR:-./evidence}"
 mkdir -p "$OUTPUT_DIR"
+OUTPUT_JSON="$OUTPUT_DIR/${FETCHER}.json"
+
+_FAILURE_LOG="$(mktemp -t ${FETCHER}_fail.XXXXXX)"
+trap 'rm -f "$_FAILURE_LOG"' EXIT
+
+log_info()  { printf '%s INFO %s %s\n'  "$(date -u +'%Y-%m-%d %H:%M:%S')" "$FETCHER" "$*" >&2; }
+log_warn()  { printf '%s WARN %s %s\n'  "$(date -u +'%Y-%m-%d %H:%M:%S')" "$FETCHER" "$*" >&2; }
+log_error() { printf '%s ERROR %s %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$FETCHER" "$*" >&2; }
 
 if [ -z "${KNOWBE4_API_KEY:-}" ]; then
-    echo "ERROR knowbe4_security_awareness_training: KNOWBE4_API_KEY is not set" >&2
+    log_error "KNOWBE4_API_KEY is not set"
     exit 1
 fi
 if [ -z "${KNOWBE4_REGION:-}" ]; then
-    echo "ERROR knowbe4_security_awareness_training: KNOWBE4_REGION is not set" >&2
+    log_error "KNOWBE4_REGION is not set"
     exit 1
 fi
 
-OUTPUT_JSON="$OUTPUT_DIR/knowbe4_security_awareness_training.json"
-_FETCHER_TMP_JSON="$(mktemp -t knowbe4_security_awareness_training.XXXXXX.json)"
-_FAILURE_LOG="$(mktemp -t knowbe4_security_awareness_training_fail.XXXXXX)"
-trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG"' EXIT
+RETRAINING_INTERVAL_DAYS="${KNOWBE4_RETRAINING_INTERVAL_DAYS:-365}"
+case "$RETRAINING_INTERVAL_DAYS" in
+    ''|*[!0-9]*)
+        log_error "KNOWBE4_RETRAINING_INTERVAL_DAYS must be a whole number of days, got '$RETRAINING_INTERVAL_DAYS'"
+        exit 1 ;;
+esac
+RETRAIN_CUTOFF_EPOCH=$(( $(date -u +%s) - RETRAINING_INTERVAL_DAYS * 86400 ))
 
-log_info() {
-    printf '%s INFO knowbe4_security_awareness_training %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2
+# Split a comma-separated config value into _SPLIT[], trimming surrounding
+# whitespace and dropping empty elements. `read -ra`, not an unquoted expansion,
+# so a name containing a glob character is never pathname-expanded.
+split_config() {
+    local raw="$1" item
+    local -a parts=()
+    _SPLIT=()
+    IFS=',' read -ra parts <<< "$raw"
+    for item in "${parts[@]}"; do
+        item="${item#"${item%%[![:space:]]*}"}"
+        item="${item%"${item##*[![:space:]]}"}"
+        [ -n "$item" ] && _SPLIT+=("$item")
+    done
 }
 
-log_error() {
-    printf '%s ERROR knowbe4_security_awareness_training %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2
-}
-
-SECURITY_AWARENESS_CAMPAIGN="2026 Annual Security Awareness Training"
-# Portable 1-year-ago timestamp (handle macOS vs GNU date)
-ONE_YEAR_AGO=$(date -u -v-1y +%s 2>/dev/null || date -u -d "1 year ago" +%s)
-
+# printf '%s', never echo: bash's echo leaves backslashes alone but sh's and zsh's
+# do not, and KnowBe4 group and campaign titles are free text.
 make_api_call() {
     local endpoint=$1
     local url="https://${KNOWBE4_REGION}.api.knowbe4.com/v1/${endpoint}"
     local response
-    if ! response=$(curl -sf -H "Authorization: Bearer ${KNOWBE4_API_KEY}" -H "Content-Type: application/json" "${url}"); then
-        echo "GET ${endpoint}" >> "$_FAILURE_LOG"
-        echo "{}"
+    if ! response=$(curl -sf -H "Authorization: Bearer ${KNOWBE4_API_KEY}" \
+                         -H "Content-Type: application/json" "${url}"); then
+        printf 'GET %s\n' "$endpoint" >> "$_FAILURE_LOG"
+        printf '%s' '[]'
         return 1
     fi
-    if ! echo "$response" | jq . >/dev/null 2>&1; then
-        echo "GET ${endpoint} (invalid JSON)" >> "$_FAILURE_LOG"
-        echo "{}"
+    # Anything that is not a JSON array is an error body, not a page. Recording it
+    # rather than treating it as data is what stops pagination looping forever on a
+    # 200-with-error-payload.
+    if ! printf '%s' "$response" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        printf 'GET %s (response was not a JSON array)\n' "$endpoint" >> "$_FAILURE_LOG"
+        printf '%s' '[]'
         return 1
     fi
-    echo "$response"
-    return 0
+    printf '%s' "$response"
 }
+
+_MAX_PAGES=1000
 
 make_paginated_api_call() {
     local endpoint="$1"
-    local page=1
-    local all_results="[]"
-    local separator
+    local page=1 all_results="[]" response count separator
     if [[ "$endpoint" == *\?* ]]; then separator="&"; else separator="?"; fi
 
-    while true; do
-        response=$(make_api_call "${endpoint}${separator}page=${page}")
-        count=$(echo "$response" | jq 'length' 2>/dev/null || echo 0)
-        if [ "$count" -eq 0 ]; then break; fi
-        all_results=$(jq -s '.[0] + .[1]' <(echo "$all_results") <(echo "$response"))
+    while [ "$page" -le "$_MAX_PAGES" ]; do
+        if ! response=$(make_api_call "${endpoint}${separator}page=${page}"); then
+            break
+        fi
+        count=$(printf '%s' "$response" | jq 'length')
+        [ "$count" -eq 0 ] && break
+        all_results=$(jq -s '.[0] + .[1]' \
+            <(printf '%s' "$all_results") <(printf '%s' "$response"))
         page=$((page + 1))
     done
-    echo "$all_results"
+    if [ "$page" -gt "$_MAX_PAGES" ]; then
+        printf 'GET %s (stopped at the %s-page cap)\n' "$endpoint" "$_MAX_PAGES" >> "$_FAILURE_LOG"
+    fi
+    printf '%s' "$all_results"
 }
 
-echo '{
-  "results": {
-    "users": [],
-    "enrollments": [],
-    "user_training_status": {},
-    "user_retraining_required": {},
-    "summary": {
-      "total_users": 0,
-      "completed_training": 0,
-      "in_progress": 0,
-      "past_due": 0,
-      "not_started": 0,
-      "needs_retraining": 0,
-      "completion_rate": 0
-    }
-  }
-}' > "$OUTPUT_JSON"
+# Requested vs present, computed by jq from data. The names are never spliced into
+# a jq program, so quotes, backslashes and $ in a title are just text.
+resolve_names() {
+    local present_json="$1"; shift
+    jq -n -c --argjson present "$present_json" --args '
+        ($ARGS.positional) as $req
+        | {
+            requested: $req,
+            matched:   [ $req[] | select(. as $n | $present | any(. == $n)) ],
+            unmatched: [ $req[] | select(. as $n | $present | any(. == $n) | not) ]
+          }
+    ' -- "$@"
+}
 
-users_response=$(make_paginated_api_call "users")
-enrollments_response=$(make_paginated_api_call "training/enrollments?exclude_archived_users=true&include_campaign_id=true")
-
-security_awareness_enrollments=$(echo "$enrollments_response" | jq -c \
-  --arg campaign "$SECURITY_AWARENESS_CAMPAIGN" \
-  '[.[] | select(.campaign_name == $campaign)]')
-
-echo "$users_response" | jq -c '.[] | select(.status == "active")' | while read -r user; do
-    user_id=$(echo "$user" | jq -r '.id')
-    user_email=$(echo "$user" | jq -r '.email')
-
-    minimal_user=$(echo "$user" | jq '{id: .id, email: .email, status: .status}')
-    jq --argjson user "$minimal_user" \
-       '.results.users += [$user]' \
-       "$OUTPUT_JSON" > "$_FETCHER_TMP_JSON" && mv "$_FETCHER_TMP_JSON" "$OUTPUT_JSON"
-
-    user_enrollments=$(echo "$security_awareness_enrollments" | jq -c \
-        --arg user_id "$user_id" \
-        '[.[] | select(.user.id == ($user_id|tonumber))]')
-
-    user_status="not_started"
-    needs_retraining=false
-
-    if echo "$user_enrollments" | jq -e 'type=="array" and length > 0' >/dev/null; then
-        while read -r enrollment; do
-            jq --argjson enrollment "$enrollment" \
-               '.results.enrollments += [$enrollment]' \
-               "$OUTPUT_JSON" > "$_FETCHER_TMP_JSON" && mv "$_FETCHER_TMP_JSON" "$OUTPUT_JSON"
-        done < <(echo "$user_enrollments" | jq -c '.[]')
-
-        total_modules=$(echo "$user_enrollments" | jq 'length')
-        passed_modules=$(echo "$user_enrollments" | jq '[.[] | select(.status == "Passed")] | length')
-
-        if [ "$passed_modules" -eq "$total_modules" ] && [ "$total_modules" -gt 0 ]; then
-            user_status="completed"
-            latest_passed_date=$(echo "$user_enrollments" | jq -r '[.[] | .completion_date] | max')
-            # Portable date parse: try GNU date first, fall back to BSD/macOS
-            completed_epoch=$(date -u -d "$latest_passed_date" +%s 2>/dev/null \
-                          || date -j -u -f "%Y-%m-%dT%H:%M:%S" "${latest_passed_date%.*}" +%s 2>/dev/null \
-                          || echo "")
-            if [ -n "$completed_epoch" ] && [ "$completed_epoch" -lt "$ONE_YEAR_AGO" ]; then
-                needs_retraining=true
-            fi
-        elif echo "$user_enrollments" | jq -e 'any(.status == "Past Due")' >/dev/null; then
-            user_status="past_due"
-        elif echo "$user_enrollments" | jq -e 'any(.status == "In Progress" or .status == "Passed")' >/dev/null; then
-            user_status="in_progress"
-        fi
-    fi
-
-    jq --arg email "$user_email" \
-       --arg status "$user_status" \
-       --argjson retrain "$needs_retraining" \
-       '.results.user_training_status[$email] = $status
-        | .results.user_retraining_required[$email] = $retrain' \
-       "$OUTPUT_JSON" > "$_FETCHER_TMP_JSON" && mv "$_FETCHER_TMP_JSON" "$OUTPUT_JSON"
-done
-
-total_users=$(jq '.results.users | length' "$OUTPUT_JSON")
-completed_training=$(jq '.results.user_training_status | to_entries | map(select(.value == "completed")) | length' "$OUTPUT_JSON")
-in_progress=$(jq '.results.user_training_status | to_entries | map(select(.value == "in_progress")) | length' "$OUTPUT_JSON")
-past_due=$(jq '.results.user_training_status | to_entries | map(select(.value == "past_due")) | length' "$OUTPUT_JSON")
-not_started=$(jq '.results.user_training_status | to_entries | map(select(.value == "not_started")) | length' "$OUTPUT_JSON")
-needs_retraining=$(jq '.results.user_retraining_required | to_entries | map(select(.value == true)) | length' "$OUTPUT_JSON")
-completion_rate=0
-if [ "$total_users" -gt 0 ]; then
-    completion_rate=$((completed_training * 100 / total_users))
+split_config "${KNOWBE4_SECURITY_AWARENESS_CAMPAIGNS:-}"
+requested_campaigns=("${_SPLIT[@]}")
+if [ "${#requested_campaigns[@]}" -eq 0 ]; then
+    log_warn "KNOWBE4_SECURITY_AWARENESS_CAMPAIGNS is empty — there is no campaign to measure"
 fi
 
-jq --arg total "$total_users" \
-   --arg completed "$completed_training" \
-   --arg in_progress "$in_progress" \
-   --arg past_due "$past_due" \
-   --arg not_started "$not_started" \
-   --arg needs_retraining "$needs_retraining" \
-   --arg rate "$completion_rate" \
-   '.results.summary = {
-       "total_users": ($total|tonumber),
-       "completed_training": ($completed|tonumber),
-       "in_progress": ($in_progress|tonumber),
-       "past_due": ($past_due|tonumber),
-       "not_started": ($not_started|tonumber),
-       "needs_retraining": ($needs_retraining|tonumber),
-       "completion_rate": ($rate|tonumber)
-   }' "$OUTPUT_JSON" > "$_FETCHER_TMP_JSON" && mv "$_FETCHER_TMP_JSON" "$OUTPUT_JSON"
+users_response=$(make_paginated_api_call "users")
+campaigns_response=$(make_paginated_api_call "training/campaigns")
+enrollments_response=$(make_paginated_api_call \
+    "training/enrollments?exclude_archived_users=true&include_campaign_id=true")
 
-failure_count=$(wc -l < "$_FAILURE_LOG" 2>/dev/null | tr -d ' ')
-failure_count=${failure_count:-0}
-if [ "$failure_count" -gt 0 ]; then
-    log_error "Encountered $failure_count API failures during collection"
+campaigns_present=$(printf '%s' "$campaigns_response" | jq -c '[.[].name] | unique')
+campaign_res=$(resolve_names "$campaigns_present" "${requested_campaigns[@]}")
+
+# One jq pass builds the whole document. The previous version re-ran jq over the
+# growing output file once per record, which was quadratic — 3k enrollments blew
+# the runner's 600s cap.
+jq -n \
+   --argjson users "$users_response" \
+   --argjson enrollments "$enrollments_response" \
+   --argjson campaign_res "$campaign_res" \
+   --argjson campaigns_present "$campaigns_present" \
+   --argjson cutoff "$RETRAIN_CUTOFF_EPOCH" \
+   --argjson interval_days "$RETRAINING_INTERVAL_DAYS" '
+    ($campaign_res.matched) as $matched
+    # Measurable only if at least one requested campaign exists in the tenant.
+    # Nothing downstream of an unmatched name may be reported as a number.
+    | (($matched | length) > 0) as $measurable
+    | (if $measurable | not then "unresolved"
+       elif ($campaign_res.unmatched | length) == 0 then "resolved"
+       else "partial" end) as $status
+    | [ $users[] | select(.status == "active") ] as $active
+    | [ $enrollments[] | select(.campaign_name as $c | $matched | any(. == $c)) ] as $scoped
+    | ( $active | map(
+          . as $u
+          | ( [ $scoped[] | select(.user.id == $u.id) ] ) as $ue
+          | ( [ $ue[] | .completion_date | select(. != null)
+                | (try (sub("\\.[0-9]+";"") | fromdateiso8601) catch null)
+                | select(. != null) ] | max ) as $latest
+          | {
+              email: $u.email,
+              status: (
+                if   ($ue | length) == 0                 then "not_started"
+                elif ($ue | all(.status == "Passed"))    then "completed"
+                elif ($ue | any(.status == "Past Due"))  then "past_due"
+                elif ($ue | any(.status == "In Progress" or .status == "Passed"))
+                                                         then "in_progress"
+                else "not_started" end),
+              retrain: (
+                if ($ue | length) > 0 and ($ue | all(.status == "Passed")) and $latest != null
+                then ($latest < $cutoff) else false end)
+            } ) ) as $rows
+    | ($rows | map(select(.status == "completed"))   | length) as $completed
+    | ($rows | map(select(.status == "in_progress")) | length) as $in_progress
+    | ($rows | map(select(.status == "past_due"))    | length) as $past_due
+    | ($rows | map(select(.status == "not_started")) | length) as $not_started
+    | ($rows | map(select(.retrain))                 | length) as $needs_retraining
+    | ($active | length) as $total_users
+    | {
+        results: {
+          config_resolution: (
+            {
+              status: $status,
+              measurable: $measurable,
+              campaigns: $campaign_res,
+              retraining_interval_days: $interval_days
+            }
+            # Only when something failed to match, so a healthy run stays terse.
+            + (if ($campaign_res.unmatched | length) > 0
+               then { campaigns_present_in_tenant: $campaigns_present }
+               else {} end)
+          ),
+          users: [ $active[] | {id, email, status} ],
+          enrollments: [ $scoped[] | del(.policy_acknowledged) ],
+          user_training_status: (
+            if $measurable then ($rows | map({key: .email, value: .status}) | from_entries)
+            else {} end),
+          user_retraining_required: (
+            if $measurable then ($rows | map({key: .email, value: .retrain}) | from_entries)
+            else {} end),
+          summary: {
+            # Discovered counts stay real: 0 users found is an accurate 0.
+            total_users: $total_users,
+            total_campaigns: ($matched | length),
+            # Compliance metrics are null unless they were actually measurable.
+            completed_training: (if $measurable then $completed        else null end),
+            in_progress:        (if $measurable then $in_progress      else null end),
+            past_due:           (if $measurable then $past_due         else null end),
+            not_started:        (if $measurable then $not_started      else null end),
+            needs_retraining:   (if $measurable then $needs_retraining else null end),
+            completion_rate: (
+              if $measurable | not then null
+              elif $total_users == 0 then 0
+              else (($completed * 100 / $total_users) | floor) end)
+          }
+        }
+      }
+' > "$OUTPUT_JSON"
+
+if [ ! -s "$OUTPUT_JSON" ]; then
+    log_error "failed to assemble the evidence document"
     exit 1
 fi
 
+# A failed API call is still a failure. Only *config* that does not resolve is
+# reported as evidence instead of raised as an error.
+failure_count=$(wc -l < "$_FAILURE_LOG" 2>/dev/null | tr -d ' ')
+failure_count=${failure_count:-0}
+if [ "$failure_count" -gt 0 ]; then
+    log_error "encountered $failure_count API failure(s) during collection"
+    exit 1
+fi
+
+status=$(jq -r '.results.config_resolution.status' "$OUTPUT_JSON")
+if [ "$status" != "resolved" ]; then
+    log_warn "config_resolution.status=${status} — unmeasurable metrics are reported as null, not 0"
+    log_warn "campaign name(s) not found in tenant: $(jq -r '.results.config_resolution.campaigns.unmatched | join(", ")' "$OUTPUT_JSON")"
+    log_warn "campaign names present in tenant: $(jq -r '.results.config_resolution.campaigns_present_in_tenant // [] | join(", ")' "$OUTPUT_JSON")"
+fi
+
 log_info "Evidence saved to $OUTPUT_JSON"
+exit 0
