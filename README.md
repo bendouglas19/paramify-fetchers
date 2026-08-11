@@ -4,7 +4,7 @@
 [![CI](https://github.com/paramify/paramify-fetchers/actions/workflows/ci.yml/badge.svg)](https://github.com/paramify/paramify-fetchers/actions/workflows/ci.yml)
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-1467ff.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-1467ff.svg)](pyproject.toml)
-[![Version](https://img.shields.io/badge/version-0.2.0-1467ff.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.1--beta-1467ff.svg)](CHANGELOG.md)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/paramify/paramify-fetchers)
 
 Fetchers are small scripts that collect compliance evidence from your infrastructure and write it to disk as JSON. A separate uploader stage pushes that evidence to Paramify. This repo contains the fetchers, the runner that executes them, and the uploader — the fetchers themselves never talk to Paramify directly.
@@ -21,6 +21,7 @@ Fetchers are small scripts that collect compliance evidence from your infrastruc
 <div align="center">
 
 <a href="fetchers/aws/"><img src="fetchers/logos/aws.svg" alt="AWS" width="56" height="56" style="margin: 20px;"></a>
+<a href="fetchers/datadog/"><img src="fetchers/logos/datadog.png" alt="Datadog" width="56" height="56" style="margin: 20px;"></a>
 <a href="fetchers/okta/"><img src="fetchers/logos/okta.svg" alt="Okta" width="56" height="56" style="margin: 20px;"></a>
 <a href="fetchers/sentinelone/"><img src="fetchers/logos/sentinelone.svg" alt="SentinelOne" width="56" height="56" style="margin: 20px;"></a>
 <a href="fetchers/knowbe4/"><img src="fetchers/logos/knowbe4.svg" alt="KnowBe4" width="56" height="56" style="margin: 20px;"></a>
@@ -33,7 +34,8 @@ Fetchers are small scripts that collect compliance evidence from your infrastruc
 
 | Category | Fetchers | What it collects | Status |
 |---|---:|---|---|
-| **AWS** | 79 | Encryption at rest, IAM, high availability, logging, network segmentation — across the AWS service surface | ✅ complete |
+| **AWS** | 80 | Encryption at rest, IAM, high availability, logging, network segmentation — across the AWS service surface | ✅ complete |
+| **Datadog** | 13 | Cloud SIEM detection rules & signals, log pipelines/indexes/archives, host & container inventory, agent checks, APM services, and incidents with timelines | broad coverage |
 | **Okta** | 8 | Phishing-resistant MFA, authenticators, least privilege, just-in-time access, account management | starter set |
 | **SentinelOne** | 5 | Agents, activities, cloud detection rules, XDR assets, user config | starter set |
 | **KnowBe4** | 4 | Security-awareness, high-risk, developer, and module-based training summaries | starter set |
@@ -50,7 +52,6 @@ More integrations are in progress. To request a fetcher or upvote what should be
 
 <img src="fetchers/logos/qualys.svg" alt="SSL Labs" width="56" height="56" style="margin: 20px;">
 <img src="fetchers/logos/wiz.jpeg" alt="Wiz" width="56" height="56" style="margin: 20px;">
-<img src="fetchers/logos/datadog.png" alt="Datadog" width="56" height="56" style="margin: 20px;">
 <img src="fetchers/logos/crowdstrike.svg" alt="CrowdStrike" width="56" height="56" style="margin: 20px;">
 <img src="fetchers/logos/servicenow.svg" alt="ServiceNow" width="56" height="56" style="margin: 20px;">
 
@@ -161,8 +162,41 @@ paramify run      <manifest>   # run it
 paramify runs                  # past runs under an output dir (newest first)
 paramify evidence <file>       # read one evidence file (normalizing the envelope)
 paramify upload   [run-dir]    # push a run's evidence to Paramify (default: latest run)
+paramify programs <sub>        # list workspace programs; turn them into targets
 paramify manifest <sub>        # build/edit a manifest (see below)
 ```
+
+Fanning a fetcher out across the programs in a Paramify workspace is its own
+step, because the API takes project UUIDs while people know their programs by
+name. `paramify programs` closes that gap — list what's there, pick by name, and
+it writes the targets for you:
+
+```bash
+paramify programs list                       # name + UUID for every program
+paramify programs target                     # choose interactively, then wire them up
+paramify programs target --all \
+    --cert-uri https://example.gov/cpo --report-from 2026-01-01
+```
+
+With no fetcher argument it targets every manifest entry that takes a program, so
+one command fans all of them out at once. Re-running it tops the manifest up
+rather than duplicating targets.
+
+A target carries only what varies per program — `project_id` and its readable
+`program_name`. Everything shared is written once to `platforms.paramify.config`:
+the Certification Package Overview URI (not in Paramify's API, one value per
+workspace) and the report period start. Every interactive run shows both with
+whatever the manifest holds today as the prompt default — enter keeps it and
+writes nothing, typing over it updates it — so `paramify programs target` is
+equally how you add a program and how you roll the report window forward.
+Passing `--cert-uri`/`--report-from` overwrites what's there without asking.
+
+`--report-from` is checked for an ISO date up front — an unparseable one produces
+an empty report window, which drops every closed issue from the report without
+failing.
+
+Both subcommands need `PARAMIFY_API_TOKEN` with read scope and accept `--json`
+(under `--json` nothing prompts, so pass the flags).
 
 > Back-compat: `python -m framework.runner <cmd>` and `python -m framework.tui`
 > still work and are exactly equivalent to the corresponding `paramify`
@@ -188,6 +222,11 @@ Issues found — see above.
 `paramify manifest <sub>` edits a manifest file in place (`-f/--file`, default
 `./manifest.yaml`). It reads each `fetcher.yaml` and warns which secrets and
 config are still missing until the manifest is runnable.
+
+Nothing ships at `./manifest.yaml`, so the one you build there is yours — commit
+it or don't, as you prefer. For a worked reference see
+[`example_manifest.yaml`](example_manifest.yaml); [`examples/`](examples/) holds
+smaller per-scenario samples.
 
 ![Building a run manifest step by step with paramify manifest](docs/demo/manifest.gif)
 
@@ -231,6 +270,27 @@ talks Paramify REST v0 over HTTPS only, and reads `PARAMIFY_UPLOAD_API_TOKEN`
 for how to create a Paramify API key with the required permissions. Chaining the two stages is the
 customer's job, not the runner's; `run_and_upload.sh` at the repo root is
 example glue.
+
+### Show how evidence is generated (optional)
+
+Beyond the evidence itself, you can push each fetcher's **entry script** to
+Paramify and link it to that fetcher's evidence set — so the tenant shows *how*
+each piece of evidence was collected. This is a **provisioning** step, separate
+from upload: run it when `fetchers/**` change, not on every collection.
+
+```bash
+paramify scripts sync --dry-run     # preview the plan (read-only)
+paramify scripts sync               # push entry scripts + associate to evidence sets
+```
+
+It reconciles the tenant to the repo GitOps-style — keyed off a marker in each
+script's `description` and the `fetcher.yaml` `version`, with a sha256 drift guard
+(warn/skip unless `--force`) — and supports `--reassociate` and `--json`. Like the
+uploader it talks Paramify REST v0 over HTTPS only and reads
+`PARAMIFY_UPLOAD_API_TOKEN`. See
+[`uploaders/paramify_scripts/README.md`](uploaders/paramify_scripts/README.md) for
+the full model, or [`docs/uploader_design.md`](docs/uploader_design.md) for how it
+fits alongside evidence upload.
 
 ---
 
@@ -348,6 +408,7 @@ fetchers/
 comparators/                    # cross-source comparators (template only so far)
 uploaders/
   paramify_evidence/            # push evidence to Paramify (built)
+  paramify_scripts/             # push fetcher entry scripts + associate to evidence sets (built)
   paramify_issues/              # stub, not built yet
 examples/                       # sample run manifests
 tests/                          # framework test suite (pytest)
@@ -379,6 +440,8 @@ To add evidence collection for a new control or a new tool, see [`docs/authoring
 | [`fetchers/k8s/README.md`](fetchers/k8s/README.md) | Kubernetes / EKS credential setup |
 | [`fetchers/checkov/README.md`](fetchers/checkov/README.md) | Checkov setup + git token for IaC scanning |
 | [`uploaders/paramify_evidence/README.md`](uploaders/paramify_evidence/README.md) | Paramify API key setup + upload options |
+| [`uploaders/paramify_scripts/README.md`](uploaders/paramify_scripts/README.md) | Syncing fetcher entry scripts to Paramify + the association model |
+| [`docs/uploader_design.md`](docs/uploader_design.md) | How both uploaders work + the shared evidence-set identity model |
 | [`docs/authoring_a_fetcher.md`](docs/authoring_a_fetcher.md) | Writing a new fetcher from scratch |
 | [`docs/fetcher_contract.md`](docs/fetcher_contract.md) | The binding runner↔fetcher contract |
 | [`docs/run_manifest_reference.md`](docs/run_manifest_reference.md) | Manifest format reference |
@@ -386,6 +449,7 @@ To add evidence collection for a new control or a new tool, see [`docs/authoring
 | [`docs/design.md`](docs/design.md) | Why the framework is shaped this way + current state of the work |
 | [`docs/versioning.md`](docs/versioning.md) | How we version, the contract, and what 1.0 means |
 | [`docs/releasing.md`](docs/releasing.md) | How a release is cut |
+| [`docs/private_mirror_workflow.md`](docs/private_mirror_workflow.md) | Keeping a private copy of this repo that still receives upstream releases |
 
 ## License
 

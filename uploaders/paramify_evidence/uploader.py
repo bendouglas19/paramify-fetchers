@@ -167,7 +167,11 @@ def resolve_evidence_set(metadata: Dict, overrides: Dict) -> Optional[Dict]:
 
 
 # Target fields preferred as the single identifying suffix in an artifact title.
-_TITLE_KEYS = ("project_id", "name", "id", "region", "cluster", "host", "bucket", "account_id")
+# program_name leads: where a target carries both a readable label and an opaque
+# id (Paramify programs), the reviewer picking among artifacts needs the label.
+# Fetchers whose id IS readable (gitlab's group/project) declare no program_name,
+# so they fall through to project_id exactly as before.
+_TITLE_KEYS = ("program_name", "project_id", "name", "id", "region", "cluster", "host", "bucket", "account_id")
 
 
 def build_artifact_meta(metadata: Dict, es_name: str) -> Dict:

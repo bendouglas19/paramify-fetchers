@@ -50,7 +50,9 @@ class ManifestPage(Vertical):
     def compose(self) -> ComposeResult:
         with Horizontal(id="manifest-top"):
             yield Static("output dir:", classes="inline-label")
-            yield Input(placeholder="./evidence", id="manifest-output-dir")
+            # select_on_focus off: Textual selects the whole value on focus, so
+            # the first keystroke replaced the existing path wholesale.
+            yield Input(placeholder="./evidence", id="manifest-output-dir", select_on_focus=False)
             yield Button("Add fetcher", variant="primary", id="btn-add")
             yield Button("Save", id="btn-save")
         with Horizontal(id="manifest-body"):
@@ -64,6 +66,8 @@ class ManifestPage(Vertical):
     def on_mount(self) -> None:
         self._selected: Optional[str] = None
         self._errors: List[str] = []
+        # {use: merged config view}, rebuilt with the table (api.effective_config)
+        self._config_view: Dict[str, List[dict]] = {}
         self.query_one("#manifest-entries-panel", Vertical).border_title = "fetchers"
         self.query_one("#manifest-detail-scroll", VerticalScroll).border_title = "detail"
         dt = self.query_one("#manifest-entries", DataTable)
@@ -113,11 +117,25 @@ class ManifestPage(Vertical):
 
         descriptors = self._descriptors()
         entries = self._entries()
+        # One discovery pass shared by validate + effective_config: each would
+        # otherwise walk and schema-validate all ~125 fetcher.yaml files, and
+        # rebuild() runs on every mutation and tab switch.
         try:
-            self._errors = api.validate(self._manifest, self.app.root_path)
+            discovered = api.discover(self.app.root_path)
+        except Exception:  # never let a discovery failure kill the UI
+            discovered = {"fetchers": {}, "platforms": {}}
+        try:
+            self._errors = api.validate(self._manifest, self.app.root_path, **discovered)
         except Exception as exc:  # never let a validation crash kill the UI
             self._errors = [f"validation error: {exc}"]
         by_use = self._bucket_errors(self._errors, entries)
+        try:
+            self._config_view = api.effective_config(
+                self._manifest, [e.get("use", "") for e in entries],
+                self.app.root_path, **discovered,
+            )
+        except Exception:  # never let a config-merge failure kill the UI
+            self._config_view = {}
 
         dt.clear()
         row_keys: List[str] = []
@@ -126,7 +144,7 @@ class ManifestPage(Vertical):
             d = descriptors.get(use)
             fanout = bool(d and d.get("supports_targets"))
             sset, stot = self._secret_counts(d, e)
-            cset, ctot = self._config_counts(d, e)
+            cset, ctot = self._config_counts(self._config_view.get(use))
             ntargets = len(e.get("targets") or [])
             errs = by_use.get(use, [])
             status = palette.pill("✓", "ok") if not errs else palette.pill(f"⚠ {len(errs)}", "warn")
@@ -179,7 +197,7 @@ class ManifestPage(Vertical):
         # Bucket against the full entry list so index-prefixed (entry[i]) errors
         # attribute correctly, then take this entry's slice.
         errs = self._bucket_errors(self._errors, self._entries()).get(use, [])
-        detail.update(render.entry_detail(d, entry, errs))
+        detail.update(render.entry_detail(d, entry, errs, self._config_view.get(use)))
 
     def _set_issues(self, errors: List[str]) -> None:
         issues = self.query_one("#manifest-issues", Static)
@@ -203,12 +221,15 @@ class ManifestPage(Vertical):
         return (sum(1 for s in top if s["name"] in have), len(top))
 
     @staticmethod
-    def _config_counts(d: Optional[dict], e: dict) -> tuple:
-        if not d:
+    def _config_counts(view: Optional[List[dict]]) -> tuple:
+        """(explicitly set, total applicable) from api.effective_config()'s view.
+
+        "Set" means a value was supplied — in the entry or at the category level.
+        Counting only the entry's own block reported category config as unset.
+        """
+        if not view:
             return (0, 0)
-        fields = d.get("config", [])
-        have = e.get("config") or {}
-        return (sum(1 for f in fields if f["name"] in have), len(fields))
+        return (sum(1 for c in view if c.get("source") not in (None, "default")), len(view))
 
     @staticmethod
     def _bucket_errors(errors: List[str], entries: List[dict]) -> Dict[str, List[str]]:
@@ -261,11 +282,27 @@ class ManifestPage(Vertical):
         self._selected = event.row_key.value
         self._refresh_detail()
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        # Enter on a row edits it — what a table row implies, and previously the
+        # one key on this page that did nothing at all.
+        self.action_edit_entry()
+
     @on(Input.Submitted, "#manifest-output-dir")
     def _on_output_dir(self, event: Input.Submitted) -> None:
-        if self._manifest is None:
-            return
-        api.set_output_dir(self._manifest, event.value.strip() or "./evidence")
+        self._commit_output_dir(event.value.strip() or "./evidence")
+
+    @on(Input.Blurred, "#manifest-output-dir")
+    def _on_output_dir_blurred(self, event: Input.Blurred) -> None:
+        # Commit on blur as well as enter: an edit that was never submitted got
+        # silently reverted by the next rebuild(). A cleared field is left alone
+        # (that's an empty field, not a request for the default).
+        if event.value.strip():
+            self._commit_output_dir(event.value.strip())
+
+    def _commit_output_dir(self, value: str) -> None:
+        if self._manifest is None or value == (self._run().get("output_dir") or ""):
+            return  # blur fires on every focus change; only a real change commits
+        api.set_output_dir(self._manifest, value)
         self.notify("Output dir updated.")
         self.rebuild()
 
@@ -288,11 +325,14 @@ class ManifestPage(Vertical):
         groups = []
         if cat:
             for c in cat["categories"]:
-                names = [f["name"] for f in c["fetchers"] if f["name"] not in existing]
+                # Pass every fetcher (not just addable ones): the picker shows the
+                # already-added ones greyed out so a fully-added category — e.g.
+                # datadog once all 13 are in — still appears instead of vanishing.
+                names = [f["name"] for f in c["fetchers"]]
                 if names:
                     groups.append((c["name"], names))
         if not groups:
-            self.notify("Every discovered fetcher is already in the manifest.")
+            self.notify("No fetchers discovered.")
             return
 
         def done(names: Optional[List[str]]) -> None:
@@ -325,7 +365,8 @@ class ManifestPage(Vertical):
             MultiPickerModal(
                 "Add fetchers",
                 groups,
-                subtitle="enter/space opens a platform or toggles a fetcher · type to filter",
+                subtitle="enter/space opens a platform or toggles a fetcher · ✓ = already in manifest · type to filter",
+                disabled=existing,
             ),
             done,
         )

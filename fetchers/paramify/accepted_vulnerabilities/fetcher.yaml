@@ -1,0 +1,69 @@
+name: paramify_accepted_vulnerabilities
+version: 0.1.0
+description: >-
+  Generates the FedRAMP 20x Accepted Vulnerability Info (VER-RPT-AVI) report
+  from Paramify issues: vulnerabilities with an accepted deviation
+  (OPERATIONAL_REQUIREMENT / VENDOR_DEPENDENCY / RISK_ADJUSTMENT) or that are
+  open 192+ days past a real completed evaluation (VER-TFR-MAV).
+category: paramify
+
+supports_targets: true
+
+target_schema:
+  project_id:
+    type: string
+    required: true
+    env: PARAMIFY_PROJECT_ID
+    description: Paramify program (project) UUID. One target per program; from GET /projects.
+  program_name:
+    type: string
+    required: false
+    env: PARAMIFY_PROGRAM_NAME
+    description: >-
+      Human-readable program name from the Paramify workspace. Used for the
+      evidence filename and the uploaded artifact title; falls back to the
+      project UUID when absent. `paramify programs target` fills this in.
+
+runtime:
+  type: python
+  entry: fetcher.py
+  timeout: 600
+
+output:
+  type: json
+  path: paramify_accepted_vulnerabilities.json
+  aggregation: per_target
+
+secrets:
+  - name: api_token
+    env: PARAMIFY_API_TOKEN
+
+# Report-period knobs. Declared here (not under secrets) because every entry in
+# secrets[] is mandatory -- the runner raises when a manifest omits one -- while
+# config is optional and defaultable. Platform-wide knobs (cert_package_uri,
+# api_base_url, http_timeout) live in fetchers/_categories/paramify.yaml; a
+# manifest can still set any of these once under platforms.paramify.config.
+config_schema:
+  report_from:
+    type: string
+    required: true
+    env: PARAMIFY_REPORT_FROM
+    description: ISO start of the report period, date ("2026-01-01") or timestamp.
+  report_to:
+    type: string
+    required: false
+    env: PARAMIFY_REPORT_TO
+    description: ISO end of the report period. Defaults to run time when omitted.
+
+evidence_set:
+  reference_id: EVD-PARAMIFY-VER-RPT-AVI
+  name: Paramify Accepted Vulnerability Info (VER-RPT-AVI)
+  instructions: >-
+    Script: fetcher.py. Reads issues and deviations for PARAMIFY_PROJECT_ID from
+    the Paramify REST API (GET /issues), applies the shared accepted-vulnerability
+    definition (accepted deviation or 192-day-open per VER-TFR-MAV), and writes
+    the FedRAMP Accepted Vulnerability Info JSON.
+
+ksis:
+  - KSI-MLA-06
+  - KSI-MLA-03

@@ -18,6 +18,11 @@ Read / discover:
   paramify evidence <path> [--json]            # read one evidence file
   paramify upload [run-dir] [--dry-run] [--json]
 
+Paramify workspace (live lookups; needs PARAMIFY_API_TOKEN with read scope):
+  paramify programs list [--json]              # programs in the workspace: name + id
+  paramify programs target [fetcher ...] [--program NAME|ID ...] [--all]
+                           [--cert-uri URI] [--report-from DATE] [-f FILE] [--json]
+
 Manifest editing (writes the manifest file; -f/--file, default ./manifest.yaml;
 every subcommand accepts --json, emitting {"ok", "path", "errors"}):
   paramify manifest init [--output-dir DIR]
@@ -47,8 +52,11 @@ Outputs land in <output_dir>/run-<timestamp>/ with a _run_metadata.json.
 from __future__ import annotations
 
 import json
+import re
+import sys
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List, NoReturn, Optional
 
 import typer
 
@@ -80,6 +88,20 @@ validators_app = typer.Typer(
 )
 app.add_typer(validators_app, name="validators")
 
+scripts_app = typer.Typer(
+    no_args_is_help=True,
+    context_settings=_HELP_OPTS,
+    help="Sync fetcher entry scripts to Paramify and associate them to evidence sets.",
+)
+app.add_typer(scripts_app, name="scripts")
+
+programs_app = typer.Typer(
+    no_args_is_help=True,
+    context_settings=_HELP_OPTS,
+    help="List the workspace's programs and turn them into manifest targets.",
+)
+app.add_typer(programs_app, name="programs")
+
 
 # --------------------------------------------------------------------------- #
 # Small shared helpers (ported verbatim from the previous argparse CLI)
@@ -98,7 +120,7 @@ def _coerce(raw: str, typ: str):
     return raw
 
 
-def _fail(path, msg: str, json_out: bool):
+def _fail(path, msg: str, json_out: bool) -> NoReturn:
     """Report a command-level argument error honoring --json, then exit 1.
 
     Keeps the {ok, path, errors} contract on mutator argument-error paths (a
@@ -694,6 +716,99 @@ def validators_sync_cmd(
 
 
 # --------------------------------------------------------------------------- #
+# Scripts — sync fetcher entry scripts to Paramify + associate to evidence sets
+# --------------------------------------------------------------------------- #
+
+def _human_scripts_printer():
+    """Return an on_event callback for Paramify scripts-sync progress."""
+    _marks = {
+        "create": "NEW", "update": "UPD", "noop": "OK", "drift_skipped": "DRIFT",
+        "would_create": "DRY+", "would_update": "DRY~", "would_noop": "DRY=",
+        "would_drift": "DRY!", "error": "FAIL",
+    }
+
+    def on_event(ev: dict) -> None:
+        kind = ev["event"]
+        if kind == "sync_start":
+            mode = " (dry-run)" if ev.get("dry_run") else ""
+            typer.echo(f"Sync {ev['fetchers']} fetcher script(s) → {ev['base_url']}{mode}\n")
+        elif kind == "sync_item":
+            mark = _marks.get(ev.get("outcome"), "?")
+            assoc = " +assoc" if ev.get("associated") else ""
+            reason = ev.get("reason") or ev.get("error")
+            suffix = f"  {reason}" if reason else ""
+            typer.echo(f"        [{mark}] {ev.get('fetcher', '?')}  set={ev.get('reference_id')}{assoc}{suffix}")
+        elif kind == "sync_complete":
+            typer.echo(
+                "\nDone: "
+                f"created={ev['created']} updated={ev['updated']} drift={ev['drift']} "
+                f"noop={ev['noop']} associated={ev['associated']} errors={ev['errors']}"
+            )
+    return on_event
+
+
+@scripts_app.command("sync")
+def scripts_sync_cmd(
+    manifest: Optional[str] = typer.Argument(None, help=f"Sync only the fetchers this manifest uses (default: {_DEFAULT_MANIFEST}). Ignored with --all."),
+    config: Optional[str] = typer.Option(None, "--config", help="Uploader config YAML (base_url, overrides)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report the plan; read-only (no writes)"),
+    force: bool = typer.Option(False, "--force", help="Push scripts whose code drifted without a version bump"),
+    reassociate: bool = typer.Option(False, "--reassociate", help="Ensure the association for every fetcher, not just changed ones"),
+    all_fetchers: bool = typer.Option(False, "--all", help="Sync every fetcher in the repo, not just the manifest's"),
+    json_out: bool = typer.Option(False, "--json", help="Emit JSON summary"),
+):
+    """Sync fetcher entry scripts to Paramify and associate them to evidence sets.
+
+    Scoped to a manifest by default — it provisions scripts for the fetchers you
+    actually collect, mirroring how `upload` is run-scoped. Use --all to push the
+    whole catalog.
+    """
+    root = api.find_repo_root()
+    config_path = Path(config).resolve() if config else None
+    include = None
+    if not all_fetchers:
+        mpath = Path(manifest).resolve() if manifest else (root / _DEFAULT_MANIFEST)
+        m = api.read_manifest(mpath)
+        entries = (m.get("run") or {}).get("fetchers") or []
+        include = {e.get("use") for e in entries if e.get("use")}
+    try:
+        preflight = api.scripts_sync_preflight(root, config_path, dry_run=dry_run, include=include)
+    except Exception as e:  # noqa: BLE001 — surface setup errors to CLI users
+        if json_out:
+            typer.echo(json.dumps({"ok": False, "errors": [str(e)]}, indent=2))
+        else:
+            _err(f"Scripts sync setup failed: {e}")
+        raise typer.Exit(1)
+    if not preflight["ok"]:
+        if json_out:
+            typer.echo(json.dumps(preflight, indent=2, default=str))
+        else:
+            for err in preflight["errors"]:
+                _err(f"  ERROR  {err}")
+        raise typer.Exit(1)
+
+    try:
+        summary = api.scripts_sync(
+            root,
+            config_path,
+            dry_run=dry_run,
+            force=force,
+            reassociate=reassociate,
+            include=include,
+            on_event=None if json_out else _human_scripts_printer(),
+        )
+    except Exception as e:  # noqa: BLE001
+        if json_out:
+            typer.echo(json.dumps({"ok": False, "errors": [str(e)]}, indent=2))
+        else:
+            _err(f"Scripts sync failed: {e}")
+        raise typer.Exit(1)
+    if json_out:
+        typer.echo(json.dumps(summary, indent=2, default=str))
+    raise typer.Exit(0 if summary["ok"] else 1)
+
+
+# --------------------------------------------------------------------------- #
 # Manifest editing — every mutator emits {"ok", "path", "errors"} under --json
 # --------------------------------------------------------------------------- #
 
@@ -946,9 +1061,253 @@ def tui_cmd(
     try:
         from framework.tui.__main__ import launch
     except ImportError as e:
-        _err(f"The TUI requires the 'tui' extra (textual). Install it:  pip install 'paramify[tui]'\n  ({e})")
+        _err(
+            "The TUI requires the 'tui' extra (textual). Install it from the repo "
+            "root:  pip install -e '.[tui]'\n"
+            "  (do NOT run `pip install 'paramify[tui]'` — this project isn't on "
+            "PyPI, and that name resolves to an unrelated package.)\n"
+            f"  ({e})"
+        )
         raise typer.Exit(1)
     launch(manifest, at)
+
+# --------------------------------------------------------------------------- #
+# Paramify workspace — pick programs by name, target them by UUID
+#
+# The API only accepts project UUIDs; people know their programs by name. These
+# commands close that gap: list what's in the workspace, let the operator choose,
+# then reuse the manifest mutators to write the targets. Selection is interactive
+# by default and fully flag-driven under --json, so an AI caller never hits a
+# prompt it can't answer.
+# --------------------------------------------------------------------------- #
+
+def _is_iso_datish(value: str) -> bool:
+    """Accept what the fetchers' date parser accepts: an ISO date or timestamp,
+    with a trailing Z allowed. Mirrors ver_common._parse_iso — fetchers aren't an
+    importable package, so the rule is restated rather than shared."""
+    try:
+        datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def _can_prompt(json_out: bool) -> bool:
+    """--json has no way to answer a prompt, and neither does a piped stdin."""
+    return not json_out and sys.stdin.isatty()
+
+
+def _config_origin(state: dict) -> str:
+    """Where a shared config field's value comes from, for the line above its
+    prompt. The value itself is the prompt's default, so this says only what the
+    bracketed default can't: whether it's already stored, and where — an entry's
+    own config outranks the category value this command writes."""
+    labels = ", ".join(
+        "this entry's own config" if s == "entry" else
+        "the fetcher default" if s == "default" else s
+        for s in state["sources"]
+    )
+    if state["conflict"]:
+        return f"differs across entries ({labels}) — one value replaces them all"
+    return f"set in {labels}" if labels else "not set yet"
+
+
+def _programs_or_exit(json_out: bool) -> List[dict]:
+    try:
+        return api.list_programs()
+    except RuntimeError as e:
+        _fail(None, str(e), json_out)
+
+
+def _parse_selection(raw: str, count: int) -> List[int]:
+    """Parse "1,3,5", "1-3", "2 4", or "all" into zero-based indices.
+
+    Raises ValueError on anything out of range so a typo can't silently target
+    the wrong program.
+    """
+    text = raw.strip().lower()
+    if text in ("all", "*"):
+        return list(range(count))
+    picked: List[int] = []
+    for token in re.split(r"[,\s]+", text):
+        if not token:
+            continue
+        lo_s, _, hi_s = token.partition("-")
+        lo, hi = int(lo_s), int(hi_s or lo_s)
+        if not 1 <= lo <= hi <= count:
+            raise ValueError(f"{token!r} is outside 1-{count}")
+        picked.extend(range(lo - 1, hi))
+    ordered = list(dict.fromkeys(picked))  # de-dupe, keep the order typed
+    if not ordered:
+        raise ValueError("no programs selected")
+    return ordered
+
+
+@programs_app.command("list")
+def programs_list(json_out: bool = typer.Option(False, "--json", help="Emit JSON")):
+    """List the programs in the Paramify workspace (name + id)."""
+    programs = _programs_or_exit(json_out)
+    if json_out:
+        typer.echo(json.dumps({"ok": True, "programs": programs}, indent=2))
+        return
+    if not programs:
+        typer.echo("No programs found in this workspace.")
+        return
+    width = max(len(api.program_display_name(p)) for p in programs)
+    typer.echo(f"{len(programs)} program(s):\n")
+    for p in programs:
+        short = f"  [{p['short_name']}]" if p["short_name"] else ""
+        typer.echo(f"  {api.program_display_name(p):<{width}}  {p['id']}{short}")
+
+
+@programs_app.command("target")
+def programs_target(
+    fetchers: Optional[List[str]] = typer.Argument(
+        None, help="Fanout fetcher(s) to add targets to. Default: every manifest entry that takes a program."
+    ),
+    program: Optional[List[str]] = typer.Option(
+        None, "--program", "-p", help="Program name or id (repeatable). Omit to choose interactively."
+    ),
+    all_programs: bool = typer.Option(False, "--all", help="Target every program in the workspace"),
+    cert_uri: Optional[str] = typer.Option(
+        None, "--cert-uri",
+        help="Certification Package Overview URI for the workspace. Set once as category "
+             "config; shown for confirmation on every interactive run.",
+    ),
+    report_from: Optional[str] = typer.Option(
+        None, "--report-from",
+        help="Report period start (ISO date, e.g. 2026-01-01). Set once as category "
+             "config; shown for confirmation on every interactive run.",
+    ),
+    file: str = typer.Option(_DEFAULT_MANIFEST, "-f", "--file", help="Manifest path"),
+    json_out: bool = typer.Option(False, "--json", help="Emit JSON"),
+):
+    """Select programs from the workspace and add them as manifest targets."""
+    root = api.find_repo_root()
+    path = Path(file).resolve()
+    m = _read_for_edit(path, json_out)
+    # Discovered once and threaded through every api call below. Each of these
+    # walks + schema-validates all ~125 fetcher.yaml files; the tree is immutable
+    # for the life of the command, so one pass is enough.
+    discovered = api.discover(root)
+
+    uses = list(fetchers or [])
+    if not uses:
+        uses = api.program_target_fetchers(m, root, discovered["fetchers"])
+        if not uses:
+            _fail(
+                path,
+                "No manifest entry takes a program as a target. Add one first "
+                "(e.g. paramify manifest add paramify_accepted_vulnerabilities), "
+                "or name the fetcher explicitly.",
+                json_out,
+            )
+
+    programs = _programs_or_exit(json_out)
+    if not programs:
+        _fail(path, "No programs found in this workspace.", json_out)
+
+    # --- selection ---------------------------------------------------------- #
+    selected: List[dict] = []
+    if all_programs:
+        selected = programs
+    elif program:
+        for selector in program:
+            try:
+                selected.append(api.resolve_program(programs, selector))
+            except (LookupError, ValueError) as e:
+                _fail(path, str(e), json_out)
+        selected = list({p["id"]: p for p in selected}.values())
+    else:
+        if not _can_prompt(json_out):
+            _fail(
+                path,
+                "No programs chosen and no terminal to prompt on: pass --program "
+                "NAME|ID (repeatable) or --all.",
+                json_out,
+            )
+        typer.echo(f"Programs in this workspace (targeting: {', '.join(uses)})\n")
+        for i, p in enumerate(programs, 1):
+            short = f"  [{p['short_name']}]" if p["short_name"] else ""
+            typer.echo(f"  {i:>3}. {api.program_display_name(p)}{short}")
+        typer.echo("")
+        try:
+            indices = _parse_selection(
+                typer.prompt("Select programs (e.g. 1,3 or 1-3 or all)"), len(programs)
+            )
+        except ValueError as e:
+            _fail(path, f"Invalid selection: {e}", json_out)
+        selected = [programs[i] for i in indices]
+
+    # --- shared config ------------------------------------------------------- #
+    # Values that don't vary per program are written once to
+    # platforms.<category>.config, where every fetcher in the category picks them
+    # up. Interactively each one is shown on every run with the value in force as
+    # the prompt default, because a re-run is also how you fix a wrong URI or roll
+    # the report window forward — enter keeps what's there and writes nothing.
+    # Nothing is asked when the flag supplied it (that's an override) or when
+    # there's no terminal, where only a genuinely missing value is an error.
+    fields = [
+        (name, flag, prompt_text, is_date, supplied,
+         api.shared_config_state(m, uses, name, root, **discovered))
+        for name, flag, prompt_text, is_date, supplied in (
+            ("cert_package_uri", "--cert-uri",
+             "Certification Package Overview URI (used for every program)", False, cert_uri),
+            ("report_from", "--report-from",
+             "Report period start — ISO date, e.g. 2026-01-01 (used for every program)", True, report_from),
+        )
+    ]
+    # The header promises "enter keeps it" only when something is actually stored
+    # to keep — on a first run there is nothing to show and every prompt is bare.
+    header = "\nShared config — one value for every program." + (
+        " Enter keeps what's shown." if any(s["value"] for *_, s in fields) else ""
+    )
+    announced = False
+    for field_name, flag, prompt_text, is_date, supplied, state in fields:
+        if not state["categories"]:
+            continue
+        current = "" if state["conflict"] else str(state["value"] or "")
+        value = (supplied or "").strip()
+        if not value:
+            if not _can_prompt(json_out):
+                if state["missing"]:
+                    _fail(
+                        path,
+                        f"{field_name} is not set for "
+                        + ", ".join(f"platforms.{c}.config" for c in state["missing"])
+                        + f". Pass {flag} <value>.",
+                        json_out,
+                    )
+                continue
+            if not announced:
+                typer.echo(header)
+                announced = True
+            typer.echo(f"\n  {field_name}: {_config_origin(state)}")
+            value = typer.prompt(prompt_text, default=current or None).strip()
+            if not value:
+                _fail(path, f"No {field_name} given; nothing written.", json_out)
+        if is_date and not _is_iso_datish(value):
+            # A date the fetcher can't parse yields an empty report window, which
+            # silently drops every closed issue rather than failing — so reject it
+            # here, where it's still a typo instead of a wrong report.
+            _fail(
+                path,
+                f"{field_name}: {value!r} is not an ISO date or timestamp "
+                "(e.g. 2026-01-01 or 2026-01-01T00:00:00Z).",
+                json_out,
+            )
+        if value == current and not state["missing"] and not supplied:
+            continue  # enter on a value already in force everywhere: leave it be
+        for category in state["categories"]:
+            api.set_platform_config(m, category, field_name, value)
+
+    report = api.add_program_targets(m, uses, selected, fetchers=discovered["fetchers"])
+    if not json_out:
+        for rec in report["added"]:
+            typer.echo(f"  + {rec['use']}  ->  {rec['program_name']} ({rec['program_id']})")
+        for rec in report["skipped"]:
+            typer.echo(f"  = {rec['use']}  ->  {rec['program_name']} ({rec['reason']})")
+    _save_and_report(m, path, root, json_out, verb="Updated")
 
 
 if __name__ == "__main__":

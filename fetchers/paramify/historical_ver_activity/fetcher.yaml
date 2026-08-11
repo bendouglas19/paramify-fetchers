@@ -1,0 +1,74 @@
+name: paramify_historical_ver_activity
+version: 0.1.0
+description: >-
+  Generates the FedRAMP 20x Historical VER Activity (VER-TFR-MRH) snapshot from
+  Paramify issues: a point-in-time document containing both active (non-accepted)
+  and accepted vulnerabilities, partitioned by the shared accepted definition so
+  the two arrays are consistent by construction.
+category: paramify
+
+supports_targets: true
+
+target_schema:
+  project_id:
+    type: string
+    required: true
+    env: PARAMIFY_PROJECT_ID
+    description: Paramify program (project) UUID. One target per program; from GET /projects.
+  program_name:
+    type: string
+    required: false
+    env: PARAMIFY_PROGRAM_NAME
+    description: >-
+      Human-readable program name from the Paramify workspace. Used for the
+      evidence filename and the uploaded artifact title; falls back to the
+      project UUID when absent. `paramify programs target` fills this in.
+
+runtime:
+  type: python
+  entry: fetcher.py
+  timeout: 600
+
+output:
+  type: json
+  path: paramify_historical_ver_activity.json
+  aggregation: per_target
+
+secrets:
+  - name: api_token
+    env: PARAMIFY_API_TOKEN
+
+# Report-period knobs. Declared here (not under secrets) because every entry in
+# secrets[] is mandatory -- the runner raises when a manifest omits one -- while
+# config is optional and defaultable. Platform-wide knobs (cert_package_uri,
+# api_base_url, http_timeout) live in fetchers/_categories/paramify.yaml; a
+# manifest can still set any of these once under platforms.paramify.config.
+config_schema:
+  report_from:
+    type: string
+    required: true
+    env: PARAMIFY_REPORT_FROM
+    description: >-
+      ISO start of the issue-coverage window, date ("2026-01-01") or timestamp.
+      The snapshot itself is point-in-time; this bounds which non-open issues it
+      carries.
+  report_to:
+    type: string
+    required: false
+    env: PARAMIFY_REPORT_TO
+    description: ISO end of the coverage window. Defaults to run time when omitted.
+
+evidence_set:
+  reference_id: EVD-PARAMIFY-VER-TFR-MRH
+  name: Paramify Historical VER Activity (VER-TFR-MRH)
+  instructions: >-
+    Script: fetcher.py. Reads all project issues for PARAMIFY_PROJECT_ID from the
+    Paramify REST API (GET /issues) once, partitions into active (non-accepted)
+    and accepted vulnerabilities using the shared accepted definition, and writes
+    the FedRAMP Historical VER Activity snapshot JSON. Per VER-TFR-MRH, Class C
+    providers should refresh this at least every 14 days (scheduling is
+    operational, outside the fetcher).
+
+ksis:
+  - KSI-MLA-06
+  - KSI-MLA-03

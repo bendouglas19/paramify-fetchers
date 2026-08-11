@@ -1,9 +1,21 @@
 name: knowbe4_developer_specific_training
 version: 0.1.0
-description: Validates completion of developer-specific security training campaigns in KnowBe4. Identifies users in developer-related groups, checks their enrollment and completion status, and reports per-user training status with summary metrics.
+description: Validates completion of the developer-specific training campaign(s) named in config for members of the developer groups named in config. Reports per-user training status with summary metrics. Names are matched exactly; when one matches nothing in the tenant, every compliance metric is reported as null (not 0) and results.config_resolution names what did not resolve.
 category: knowbe4
 
 supports_targets: false
+
+config_schema:
+  developer_groups:
+    type: string
+    required: true
+    env: KNOWBE4_DEVELOPER_GROUPS
+    description: Comma-separated KnowBe4 group names whose members are treated as developers (e.g. "Engineering,Developers"). Matched exactly against the group titles in your tenant, not as substrings. Whitespace around each name is trimmed.
+  developer_campaigns:
+    type: string
+    required: true
+    env: KNOWBE4_DEVELOPER_CAMPAIGNS
+    description: Comma-separated training campaign names those users are required to complete, matched exactly against the campaign titles in your tenant.
 
 runtime:
   type: bash

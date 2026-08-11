@@ -1,7 +1,0 @@
-run:
-  output_dir: ./evidence
-  fetchers:
-  - use: knowbe4_module_based_summary
-    secrets:
-      api_key: ${env:KNOWBE4_API_KEY}
-      region: ${env:KNOWBE4_REGION}

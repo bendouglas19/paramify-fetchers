@@ -26,6 +26,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 import yaml
 
@@ -104,6 +105,18 @@ def _fetcher_descriptor(f) -> dict:
         "secrets": [_secret_descriptor(s) for s in f.secrets],
         "target_schema": [_target_descriptor(t) for t in f.target_schema.values()],
     }
+
+
+def discover(root: Path) -> Dict[str, dict]:
+    """One discovery pass, as {"fetchers": …, "platforms": …}.
+
+    Every api function that needs these takes them as optional arguments so a
+    caller can scan once and thread the result through. Worth doing: each scan
+    walks and jsonschema-validates all ~125 fetcher.yaml files (~165 ms), and the
+    tree is immutable for the life of a command or a TUI redraw. Splat it into a
+    call — `api.validate(m, root, **discovered)`.
+    """
+    return {"fetchers": discover_fetchers(root), "platforms": discover_platforms(root)}
 
 
 def catalog(root: Path) -> dict:
@@ -835,6 +848,107 @@ def upload_run(
 
 
 # --------------------------------------------------------------------------- #
+# Scripts — Paramify scripts sync facade (powers CLI; provisioning, not per-run)
+# --------------------------------------------------------------------------- #
+
+def _load_paramify_scripts_uploader(root: Path):
+    """Load the source-tree scripts uploader without packaging uploaders/."""
+    path = Path(root) / "uploaders" / "paramify_scripts" / "uploader.py"
+    if not path.exists():
+        raise RuntimeError(f"Paramify scripts uploader not found at {path}")
+    spec = importlib.util.spec_from_file_location("paramify_scripts_uploader", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load Paramify scripts uploader from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def scripts_sync_preflight(
+    root: Path,
+    config_path: Optional[Path] = None,
+    *,
+    dry_run: bool = False,
+    include: Optional[set] = None,
+) -> dict:
+    """Inspect scripts-sync readiness without making Paramify API calls.
+
+    ``include`` restricts the fetcher count to those names (a manifest's
+    fetchers); ``None`` counts every discovered fetcher.
+    """
+    uploader = _load_paramify_scripts_uploader(root)
+    uploader.load_dotenv()
+    config = uploader.load_config(str(config_path)) if config_path else {}
+    paramify_cfg = config.get("paramify") or {}
+    base_url = (
+        paramify_cfg.get("base_url")
+        or os.environ.get("PARAMIFY_API_BASE_URL")
+        or uploader.DEFAULT_BASE_URL
+    )
+
+    errors: List[str] = []
+    fetcher_count = 0
+    for f in discover_fetchers(root).values():
+        if include is not None and f.name not in include:
+            continue
+        if f.evidence_set and f.entry_path.exists():
+            fetcher_count += 1
+    if fetcher_count == 0:
+        scope = "in the manifest " if include is not None else ""
+        errors.append(f"No fetchers {scope}with an evidence_set and a readable entry file to sync")
+
+    url_error = uploader._base_url_error(base_url)
+    if url_error:
+        errors.append(url_error)
+
+    token_present = bool(os.environ.get("PARAMIFY_UPLOAD_API_TOKEN"))
+    # A token is required to write; dry-run still wants one to diff the tenant,
+    # but tolerates its absence (it then reports every fetcher as a create).
+    if not token_present and not dry_run:
+        errors.append("PARAMIFY_UPLOAD_API_TOKEN is not set")
+
+    return {
+        "ok": not errors,
+        "base_url": base_url,
+        "fetcher_count": fetcher_count,
+        "token_present": token_present,
+        "dry_run": dry_run,
+        "errors": errors,
+    }
+
+
+def scripts_sync(
+    root: Path,
+    config_path: Optional[Path] = None,
+    *,
+    dry_run: bool = False,
+    force: bool = False,
+    reassociate: bool = False,
+    include: Optional[set] = None,
+    on_event: Optional[Callable[[dict], None]] = None,
+) -> dict:
+    """Sync fetcher entry scripts to Paramify and associate them to evidence sets.
+
+    Fires sync_start / sync_item / sync_complete so front-ends can render
+    progress. Raises ValueError for setup errors; returns the uploader summary.
+
+    ``include`` restricts the sweep to those fetcher names (a manifest's
+    fetchers); ``None`` syncs every discovered fetcher.
+    """
+    uploader = _load_paramify_scripts_uploader(root)
+    config = uploader.load_config(str(config_path)) if config_path else {}
+    return uploader.sync_scripts(
+        root,
+        config=config,
+        dry_run=dry_run,
+        force=force,
+        reassociate=reassociate,
+        include=include,
+        on_event=on_event,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Evidence — read produced run outputs (powers the TUI evidence browser)
 # --------------------------------------------------------------------------- #
 
@@ -1026,3 +1140,289 @@ def new_manifest_path(root, name: str, output_dir: str = "./evidence") -> Path:
         raise FileExistsError(str(path))
     path.write_text(yaml.safe_dump(init_manifest(output_dir), sort_keys=False))
     return path
+
+
+# --------------------------------------------------------------------------- #
+# Paramify workspace — program (project) discovery
+#
+# The Paramify API identifies programs by UUID, but the product UI shows people
+# names. These helpers let a front-end offer the readable pick list and hand the
+# UUID to the manifest, so nobody has to copy a UUID by hand.
+# --------------------------------------------------------------------------- #
+
+_PROGRAMS_PATH = "/projects"  # the UI's "programs" are the API's projects
+_PROGRAMS_TIMEOUT = 30
+
+
+def program_display_name(program: dict) -> str:
+    """Best human-readable label for a program, falling back to its UUID."""
+    return (
+        program.get("name")
+        or program.get("system_name")
+        or program.get("short_name")
+        or program.get("id", "")
+    )
+
+
+def list_programs() -> List[dict]:
+    """Fetch the workspace's programs via GET /projects.
+
+    Returns [{"id", "name", "system_name", "short_name"}] sorted by display name.
+    Raises RuntimeError with an actionable message on missing credentials, a
+    non-https endpoint, or a transport/HTTP failure — the CLI turns that into
+    {"ok": false, "errors": [...]}.
+    """
+    import requests  # local: keeps `paramify list`/`tui` startup free of it
+
+    token = os.environ.get("PARAMIFY_API_TOKEN") or os.environ.get("PARAMIFY_UPLOAD_API_TOKEN")
+    if not token:
+        raise RuntimeError(
+            "No Paramify API token: set PARAMIFY_API_TOKEN (or "
+            "PARAMIFY_UPLOAD_API_TOKEN) to a token with read scope on the workspace"
+        )
+    base_url = os.environ.get("PARAMIFY_API_BASE_URL") or "https://app.paramify.com/api/v0"
+    # Same rule the uploader enforces (uploader._base_url_error): a Bearer token
+    # must not go out over plaintext. Localhost is exempt so a local stub works.
+    host = urlparse(base_url).hostname or ""
+    if urlparse(base_url).scheme != "https" and host not in ("localhost", "127.0.0.1", "::1"):
+        raise RuntimeError(
+            f"PARAMIFY_API_BASE_URL must be https to protect the API token (got {base_url!r}); "
+            "only localhost may use http"
+        )
+    url = f"{base_url.rstrip('/')}{_PROGRAMS_PATH}"
+    try:
+        resp = requests.get(
+            url,
+            headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+            timeout=_PROGRAMS_TIMEOUT,
+        )
+    except Exception as e:  # noqa: BLE001 — transport errors become one clean message
+        raise RuntimeError(f"could not reach {url}: {e}") from e
+    if resp.status_code in (401, 403):
+        raise RuntimeError(
+            f"Paramify rejected the token (HTTP {resp.status_code}) for {url}; "
+            "check that it has read scope on this workspace"
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"GET {url} failed (HTTP {resp.status_code}): {resp.text[:300]}")
+    try:
+        payload = resp.json()
+    except ValueError as e:
+        raise RuntimeError(f"GET {url} returned a non-JSON body: {resp.text[:200]}") from e
+
+    # List endpoints wrap in {"projects": [...]}; tolerate a bare list.
+    raw = payload.get("projects", []) if isinstance(payload, dict) else payload
+    programs = [
+        {
+            "id": p.get("id", ""),
+            "name": p.get("name") or "",
+            "system_name": p.get("systemName") or "",
+            "short_name": p.get("systemShortName") or "",
+        }
+        for p in raw
+        if isinstance(p, dict) and p.get("id")
+    ]
+    programs.sort(key=lambda p: program_display_name(p).lower())
+    return programs
+
+
+def resolve_program(programs: List[dict], selector: str) -> dict:
+    """Resolve one program from a user-supplied id or name.
+
+    Exact id, then exact case-insensitive display name, then a unique
+    case-insensitive substring of the display name. Raises LookupError when
+    nothing matches and ValueError when a substring is ambiguous — an ambiguous
+    pick must never silently target the wrong program.
+    """
+    needle = selector.strip()
+    for p in programs:
+        if p["id"] == needle:
+            return p
+    lowered = needle.lower()
+    exact = [p for p in programs if program_display_name(p).lower() == lowered]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        raise ValueError(
+            f"{selector!r} matches {len(exact)} programs by name; use the program id instead"
+        )
+    partial = [p for p in programs if lowered in program_display_name(p).lower()]
+    if len(partial) == 1:
+        return partial[0]
+    if len(partial) > 1:
+        names = ", ".join(f"{program_display_name(p)} ({p['id']})" for p in partial[:5])
+        raise ValueError(f"{selector!r} is ambiguous — matches: {names}")
+    raise LookupError(f"no program matches {selector!r}")
+
+
+# Fetchers whose target IS a Paramify program. Scoped by category, not by field
+# name alone: gitlab's fetchers also declare a `project_id` target field, and
+# selecting on that name would write Paramify program UUIDs into gitlab targets
+# in any manifest holding both. The category is the honest discriminator while
+# this command group is Paramify-specific; a target_schema field declaring what
+# it identifies would let it generalize (follow-up).
+PROGRAM_CATEGORY = "paramify"
+PROGRAM_ID_FIELD = "project_id"
+PROGRAM_NAME_FIELD = "program_name"
+
+
+def program_target_fetchers(m: dict, root: Path, fetchers: Optional[dict] = None) -> List[str]:
+    """Manifest entries whose target is a Paramify program — the default set, so
+    `programs target` with no fetcher argument does the obvious thing.
+
+    `fetchers` is the {name: Fetcher} mapping from discover_fetchers(), passed in
+    when the caller already has one."""
+    discovered = fetchers if fetchers is not None else discover_fetchers(root)
+    return [
+        entry["use"] for entry in _entries(m)
+        if (f := discovered.get(entry.get("use"))) is not None
+        and f.category == PROGRAM_CATEGORY
+        and f.supports_targets
+        and PROGRAM_ID_FIELD in f.target_schema
+    ]
+
+
+def _targeted_program_ids(m: dict, use: str) -> List[str]:
+    """project_id values already targeted on a fetcher entry — so re-running
+    `programs target` tops up the manifest instead of duplicating targets."""
+    entry = _find_entry(m, use) or {}
+    return [t[PROGRAM_ID_FIELD] for t in (entry.get("targets") or []) if t.get(PROGRAM_ID_FIELD)]
+
+
+def add_program_targets(
+    m: dict, uses: List[str], programs: List[dict], root: Optional[Path] = None,
+    fetchers: Optional[dict] = None,
+) -> dict:
+    """Add one target per (fetcher x program), skipping programs already targeted.
+
+    A target carries only what varies per program: project_id and its readable
+    program_name. Everything uniform across the workspace — the Certification
+    Package Overview URI, the API base URL — is category config, set once under
+    platforms.<category>.config.
+
+    Mutates `m` in place and returns a JSON-able report rather than the manifest:
+    this is a composite of add_target() calls, and the caller needs to know what
+    landed and what was already there.
+    """
+    discovered = fetchers if fetchers is not None else (discover_fetchers(root) if root else {})
+    added: List[dict] = []
+    skipped: List[dict] = []
+    for use in uses:
+        existing = set(_targeted_program_ids(m, use))
+        for program in programs:
+            label = program_display_name(program)
+            if program["id"] in existing:
+                skipped.append({"use": use, "program_id": program["id"], "program_name": label,
+                                "reason": "already targeted"})
+                continue
+            values: Dict[str, Any] = {PROGRAM_ID_FIELD: program["id"]}
+            f = discovered.get(use)
+            declares_name = f is not None and PROGRAM_NAME_FIELD in f.target_schema
+            if declares_name and label and label != program["id"]:
+                values[PROGRAM_NAME_FIELD] = label
+            add_target(m, use, values)
+            existing.add(program["id"])
+            added.append({"use": use, "program_id": program["id"], "program_name": label})
+    return {"added": added, "skipped": skipped}
+
+
+def effective_config(
+    m: dict, uses: List[str], root: Path, fetchers: Optional[dict] = None,
+    platforms: Optional[dict] = None,
+) -> Dict[str, List[dict]]:
+    """Per entry, every config field that applies to it, with its value and where
+    that value comes from — the merge the runner actually performs:
+
+        platform defaults <- platform values <- per-fetcher values
+
+    Returns {use: [descriptor + {"value", "source"}]}, where source is "entry",
+    "platforms.<category>", "default", or None when nothing supplies it. A field
+    the category declares (and the fetcher doesn't) is included too, since it is
+    injected into that fetcher's environment just the same.
+
+    Front-ends need this to render config honestly: reading only the entry's own
+    `config` block reports a value set once at the category level as unset on
+    every entry that inherits it. Batched over `uses` so a caller redrawing a
+    table scans the fetcher tree once, not once per row.
+    """
+    discovered = fetchers if fetchers is not None else discover_fetchers(root)
+    specs = platforms if platforms is not None else discover_platforms(root)
+    all_platforms = _run(m).get("platforms") or {}
+
+    out: Dict[str, List[dict]] = {}
+    for use in uses:
+        f = discovered.get(use)
+        if f is None:
+            out[use] = []
+            continue
+        spec = specs.get(f.category) if f.category else None
+        schema: Dict[str, ConfigField] = {}
+        if spec:
+            schema.update(spec.config_schema)
+        schema.update(f.config_schema)  # fetcher overrides platform on a name clash
+
+        platform_values = ((all_platforms.get(f.category or "") or {}).get("config")) or {}
+        entry_values = (_find_entry(m, use) or {}).get("config") or {}
+
+        fields: List[dict] = []
+        for name, fdef in schema.items():
+            d = _config_descriptor(fdef)
+            d["category"] = f.category
+            if name in entry_values:
+                d["value"], d["source"] = entry_values[name], "entry"
+            elif name in platform_values:
+                d["value"], d["source"] = platform_values[name], f"platforms.{f.category}"
+            elif fdef.default is not None:
+                d["value"], d["source"] = fdef.default, "default"
+            else:
+                d["value"], d["source"] = None, None
+            fields.append(d)
+        out[use] = fields
+    return out
+
+def shared_config_state(
+    m: dict, uses: List[str], field_name: str, root: Path, *,
+    fetchers: Optional[dict] = None, platforms: Optional[dict] = None,
+) -> dict:
+    """What a front-end needs to show and edit one config field shared across
+    `uses` — the kind set once per category rather than per entry:
+
+        categories  every category among `uses` that accepts `field_name`
+        value       the value they all resolve to today, or None when nothing
+                    supplies one or the entries disagree
+        sources     where those values come from ("entry", "platforms.<cat>",
+                    "default"), distinct, in the order met
+        conflict    True when the entries resolve to different values
+        missing     categories where nothing supplies a required value
+
+    A view over effective_config() rather than a second merge, so "is it set"
+    can't mean membership here and truthiness there — which is exactly how the
+    two functions this replaced had already drifted apart. Offering `value` as an
+    edit default is honest only while `conflict` is False: one entry's override
+    presented as the manifest's answer would misreport the other entries.
+    """
+    categories: List[str] = []
+    missing: List[str] = []
+    values: List[Any] = []
+    sources: List[str] = []
+    for fields in effective_config(m, uses, root, fetchers, platforms).values():
+        for d in fields:
+            if d["name"] != field_name or not d["category"]:
+                continue
+            if d["category"] not in categories:
+                categories.append(d["category"])
+            if d["required"] and d["source"] is None and d["category"] not in missing:
+                missing.append(d["category"])
+            if d["source"] is None:
+                continue
+            if d["value"] not in values:
+                values.append(d["value"])
+            if d["source"] not in sources:
+                sources.append(d["source"])
+    return {
+        "categories": categories,
+        "value": values[0] if len(values) == 1 else None,
+        "sources": sources,
+        "conflict": len(values) > 1,
+        "missing": missing,
+    }
