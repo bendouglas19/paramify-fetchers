@@ -31,7 +31,7 @@
     },
     "regex": {
       "type": "string",
-      "description": "Regex matched against the whole evidence envelope (schema_version + metadata + payload, as written to disk). Its capture groups feed validation_rules. Required for AUTOMATED validators."
+      "description": "ECMAScript (JavaScript) regex matched against the whole evidence envelope (schema_version + metadata + payload, as written to disk). Its capture groups feed validation_rules. Required for AUTOMATED validators. FLAVOR: Paramify's engine is JavaScript, not Python `re` or PCRE — it applies the `g` and `s` flags automatically but NOT `m`, so `^`/`$` match the whole document and lines are spanned with `[\\s\\S]*?`. Named groups are `(?<name>…)`; the Python form `(?P<name>…)` is a hard compile error. NAMING: name every capture group, in snake_case derived from the key it captures (`\"BackupRetentionPeriod\"` -> `backup_retention_period`), unique within the pattern. Naming does not renumber anything — `(?<x>…)` is still group 1 — so validation_rules keeps referencing groups by number. Test with `node`, not Python."
     },
     "rules_summary": {
       "type": "string",
@@ -39,12 +39,18 @@
     },
     "validation_rules": {
       "type": "array",
-      "description": "Structured pass/fail logic for AUTOMATED validators. Maps 1:1 to the REST API v0.6.0 `validationRules` (native YAML instead of a JSON string). Rules evaluate in index order.",
+      "description": "Structured pass/fail/error logic for AUTOMATED validators. Maps 1:1 to the REST API v0.6.0 `validationRules` (native YAML instead of a JSON string). Rules evaluate in index order (array order here), but Paramify resolves ERROR rules before FAIL before PASS — so an error short-circuits the compliance rules regardless of position. Every AUTOMATED validator should carry the two ERROR rules described under `disposition`; see docs/validators_design.md.",
       "items": {
         "type": "object",
         "additionalProperties": true,
         "required": ["regexOperation", "criteria", "value"],
         "properties": {
+          "disposition": {
+            "type": "string",
+            "enum": ["PASS", "FAIL", "ERROR"],
+            "default": "PASS",
+            "description": "Outcome when this rule's comparison holds. Omitted means PASS (a compliance rule), which is what keeps this addition non-breaking — every pre-existing rule keeps working untouched. ERROR means the evidence never arrived, so compliance is UNKNOWN — distinct from FAIL, which means evidence was collected and the control looks bad. Without ERROR rules an expired token is indistinguishable from a real compliance failure. Anchor them on the envelope's `exit_code` (numeric, appears once, and redundant with `status` which `wrap_outputs` derives from it): rule 1 = MATCH_COUNT EQUALS 0 -> ERROR (the drift canary — the anchor itself is gone), rule 2 = MATCH_GROUP on the exit_code group NOT_EQUALS 0 -> ERROR (collection failed). This is the one sanctioned exception to the rule against anchoring on envelope metadata."
+          },
           "regexOperation": {
             "type": "object",
             "description": "How the regex result is extracted before comparison.",

@@ -52,12 +52,21 @@ name: ALB Encryption In Transit
 type: AUTOMATED
 role: configuration
 statement: Ensures that all application load balancers are encrypting data in transit.
-regex: '"alb_total":\s*(\d+)[\s\S]*?"alb_encrypted":\s*(\d+)'
-rules_summary: MATCH_GROUP[1] EQUALS MATCH_GROUP[2]
+regex: '"exit_code":\s*(?<exit_code>-?\d+)(?:[\s\S]*?"alb_total":\s*(?<alb_total>\d+)[\s\S]*?"alb_encrypted":\s*(?<alb_encrypted>\d+))?'
+rules_summary: MATCH_COUNT EQUALS 0 -> ERROR; MATCH_GROUP[1] NOT_EQUALS 0 -> ERROR; MATCH_GROUP[2] EQUALS MATCH_GROUP[3]
 validation_rules:
-  - regexOperation: { type: MATCH_GROUP, groupNumber: 1 }
+  - regexOperation: { type: MATCH_COUNT }
     criteria: EQUALS
-    value: { type: MATCH_GROUP, groupNumber: 2 }
+    value: { type: CUSTOM_TEXT, customText: "0" }
+    disposition: ERROR
+  - regexOperation: { type: MATCH_GROUP, groupNumber: 1 }   # exit_code
+    criteria: NOT_EQUALS
+    value: { type: CUSTOM_TEXT, customText: "0" }
+    disposition: ERROR
+  - regexOperation: { type: MATCH_GROUP, groupNumber: 2 }   # alb_total
+    criteria: EQUALS
+    value: { type: MATCH_GROUP, groupNumber: 3 }            # alb_encrypted
+    disposition: PASS
 attestation_rules: []
 evidence_sets:                          # <- the link lives HERE
   - EVD-LB-ENC-STATUS
@@ -88,6 +97,98 @@ Validators carry a regex, a human `rules_summary`, and a structured
 — could not dedupe a shared validator. The old inline `validators` block is
 removed from `fetcher_schema.json`; `fetcher.yaml` keeps only its `evidence_set`
 identity and `ksis`.
+
+---
+
+## Writing the regex: flavor, named groups, and the error state
+
+Three rules govern every `regex` in this registry. They exist because each has a
+failure mode that is silent — the validator looks fine and reports the wrong
+thing.
+
+### 1. The engine is ECMAScript, not Python
+
+**Paramify evaluates validator regexes with JavaScript**, so that is the flavor
+these files are written in. It applies the `g` and `s` flags automatically but
+**not `m`** — `^`/`$` therefore match the whole document, and lines are spanned
+with `[\s\S]*?`. The common constructs (`\s`, `(?:…)`, classes, lookaheads) are
+identical to Python's, so most patterns port cleanly, but **named groups do
+not**: JS is `(?<name>…)`, Python is `(?P<name>…)`, and each fails to compile in
+the other. Always write `(?<name>…)`.
+
+Verify in Node, never Python `re` — a Python test both uses the wrong engine and
+cannot compile our named groups at all:
+
+```bash
+node -e '
+const t = require("fs").readFileSync("<run-dir>/<evidence>.json", "utf8");
+const re = new RegExp(String.raw`<regex>`, "gs");   // gs mirrors Paramify
+let m, n = 0;
+while ((m = re.exec(t)) !== null) { if (n < 5) console.log(m.groups); n++; }
+console.log(n + " match(es)");'
+```
+
+### 2. Name every capture group
+
+`(?<alb_total>\d+)` is self-documenting where a bare `(\d+)` forces the reader to
+count parentheses across a long pattern. Derive the name from the key being
+captured, in `snake_case` (`BackupRetentionPeriod` → `backup_retention_period`);
+names must be unique within one pattern.
+
+Naming does **not** renumber anything — `(?<x>…)` is still group 1 — so
+`validation_rules`, which references groups by `groupNumber`, is unaffected. The
+names are for the human reading the YAML; the numbers still drive the rules.
+
+### 3. Carry an error state, anchored on `exit_code`
+
+Validation rules have a **disposition** of `PASS`, `FAIL`, or `ERROR`. The
+distinction is the point: `FAIL` means evidence was collected and the control
+looks bad; `ERROR` means the evidence never arrived, so compliance is
+**unknown**. Without an `ERROR` rule an expired token or a network timeout is
+indistinguishable from a real compliance failure — the fetcher returns no
+payload, the regex finds nothing, and the artifact reports a clean Fail.
+
+The envelope already carries the signal. `wrap_outputs` sets
+`"status": "success" if exit_code == 0 else "failed"`, so `status` and
+`exit_code` are perfectly redundant — anchor on `exit_code` alone. It is numeric,
+appears exactly once, and avoids the `status` key collision (the envelope says
+`failed` while a payload may say `error` — two vocabularies for one event).
+
+Build the pattern as **the error anchor first, then the compliance pattern in an
+optional group**, so it matches exactly once whether or not the payload arrived
+(`metadata` always precedes `payload` in the envelope, so the ordering holds):
+
+```
+"exit_code":\s*(?<exit_code>-?\d+)(?:[\s\S]*?<compliance pattern>)?
+```
+
+| # | Operation | Criteria | Value | Disposition |
+|---|-----------|----------|-------|-------------|
+| 1 | `MATCH_COUNT` | `EQUALS` | `0` | `ERROR` |
+| 2 | `MATCH_GROUP` 1 (`exit_code`) | `NOT_EQUALS` | `0` | `ERROR` |
+| 3+ | your compliance group(s) | … | … | `PASS` |
+
+Rules evaluate in array order, but Paramify resolves `ERROR` before `FAIL`
+before `PASS`, so an error short-circuits the compliance rules regardless of
+position.
+
+Rule 1 is the **drift canary**. Because the compliance half is optional, a
+well-formed envelope always yields exactly one match — so zero matches means the
+`exit_code` anchor itself is gone (envelope restructured, file truncated, wrong
+artifact). That case would otherwise pass silently, since a `MATCH_GROUP` rule
+with nothing to read does not fail. Rule 1 turns that silence into an `ERROR`.
+
+**Do not pin `schema_version`** as version-safety. It fails in the dangerous
+direction: a bump to `2.0` that leaves `exit_code` untouched would stop the
+pattern matching entirely, and a zero-match validator passes silently. Rule 1 is
+strictly better — it fires on *any* structural change that breaks the anchor, not
+just a version bump, and it fails loudly. A workspace that wants an explicit
+envelope-contract check should put it in one dedicated validator applied across
+all fetcher evidence sets, not duplicate it into every per-fetcher validator.
+
+Anchoring on `exit_code` is the **one sanctioned exception** to the rule against
+matching envelope metadata instead of payload: here the envelope *is* the
+subject of the check.
 
 ---
 

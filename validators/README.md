@@ -25,5 +25,30 @@ Copy [`_template/validator.yaml`](_template/validator.yaml) to
 `validators/<category>/<key>.yaml` and fill it in. `_`-prefixed directories
 (like `_template`) are not part of the registry.
 
+Three rules for the `regex` of an AUTOMATED validator — each guards a failure
+mode that is otherwise silent (full rationale in
+[`docs/validators_design.md`](../docs/validators_design.md)):
+
+- **Write ECMAScript, not Python.** Paramify's engine is JavaScript. It applies
+  `g` and `s` automatically but never `m`, so span lines with `[\s\S]*?`. Named
+  groups are `(?<name>…)` — the Python `(?P<name>…)` is a hard compile error.
+  Test with `node`, not `python -c 'import re'`.
+- **Name every capture group**, in `snake_case` from the key it captures.
+  Naming does not renumber anything, so `validation_rules` still references
+  groups by number.
+- **Carry an error state.** Anchor on the envelope's `exit_code` and add two
+  `disposition: ERROR` rules, so a failed *collection* reports as unknown rather
+  than as a compliance failure:
+
+  ```
+  "exit_code":\s*(?<exit_code>-?\d+)(?:[\s\S]*?<compliance pattern>)?
+  ```
+
+  `MATCH_COUNT EQUALS 0 -> ERROR` (the anchor is gone) and
+  `MATCH_GROUP[1] NOT_EQUALS 0 -> ERROR` (collection failed). Your compliance
+  groups then start at 2. See
+  [`aws/alb_encryption_in_transit.yaml`](aws/alb_encryption_in_transit.yaml) for
+  a worked example.
+
 - **Shape / field reference:** [`framework/schemas/validator_schema.json`](../framework/schemas/validator_schema.json)
 - **Design & rationale:** [`docs/validators_design.md`](../docs/validators_design.md)
