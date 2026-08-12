@@ -15,3 +15,13 @@ textual>=8,<9
 # Checkov category (fetchers/checkov/*) — the bash fetchers shell out to the
 # `checkov` CLI. Also requires system `git` (clone) + `jq`, which are not pip deps.
 checkov
+
+# GCP category (fetchers/gcp/*) — official Google Cloud client libraries. Auth is
+# Application Default Credentials (google-auth is pulled in transitively); no
+# service-account key files. Cloud SQL Admin has no stable GAPIC client, so it
+# uses the official discovery client (google-api-python-client).
+# NOTE: google-cloud-kms is added with the KMS fetcher (held back pending a live
+# re-run), so it is not listed here yet.
+google-cloud-compute
+google-cloud-storage
+google-api-python-client

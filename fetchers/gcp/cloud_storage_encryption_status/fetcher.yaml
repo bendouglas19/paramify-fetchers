@@ -1,0 +1,53 @@
+name: gcp_cloud_storage_encryption_status
+version: 0.1.0
+description: >
+  For each Cloud Storage bucket in the project, reports whether the default
+  encryption uses a customer-managed key (CMEK) or the Google-managed key, the
+  KMS key name where set, plus data-protection posture (uniform bucket-level
+  access, versioning, retention policy, public-access prevention). Cloud Storage
+  is always encrypted at rest by default, so the evidence that varies is CMEK vs
+  Google-managed, not "encrypted: true/false".
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_cloud_storage_encryption_status.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+ksis:
+  - KSI-SVC-03       # Protection of data at rest (mirrors aws s3_encryption_status)
+  - KSI-RPL-03       # Server-side protection — versioning / retention
+
+evidence_set:
+  reference_id: EVD-GCP-STORAGE-ENC
+  name: Cloud Storage Encryption
+  instructions: >
+    Script: fetcher.py. Google Cloud client library call: storage buckets.list
+    (encryption.defaultKmsKeyName, iamConfiguration.uniformBucketLevelAccess,
+    versioning, retentionPolicy). CMEK present ⇒ customer-managed; absent ⇒
+    Google-managed default encryption. The list response already carries the
+    encryption block, so no per-bucket GET is needed.

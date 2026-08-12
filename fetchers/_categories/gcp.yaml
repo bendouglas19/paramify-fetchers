@@ -1,0 +1,30 @@
+description: >
+  GCP evidence fetchers (python, official Google Cloud client libraries). Each
+  fetcher authenticates with Application Default Credentials (ADC) — there is no
+  handed-over secret. A manifest target scopes a run to a specific GCP project
+  (multi-project fanout); when a target omits `project` (or a fetcher entry has
+  no targets[] at all) the fetcher falls back to the ADC default project
+  ("collect where deployed").
+
+# ADC resolution order (google.auth.default):
+#   1. GOOGLE_APPLICATION_CREDENTIALS  — a service-account key FILE. We do NOT
+#      wire this by design: the brief forbids exported SA JSON keys. It is left
+#      OUT of passthrough_env so a stray key file can't silently become the auth
+#      path. Local dev uses `gcloud auth application-default login` (well-known
+#      ADC file under $HOME, which the runner already inherits); in-cluster uses
+#      Workload Identity (the GKE metadata server, no env var needed).
+#   2. gcloud ADC well-known file at ~/.config/gcloud/application_default_credentials.json
+#      — resolves because the runner inherits HOME. CLOUDSDK_CONFIG relocates it.
+#   3. Attached service account via the metadata server (GKE Workload Identity,
+#      Cloud Run, GCE) — no env var, works in-cluster automatically.
+#
+# The runner strips ambient env by default; these non-sensitive selectors opt the
+# ADC path back in. They only take effect when actually set in the runner's
+# environment, so listing them is safe. None are secrets.
+auth:
+  passthrough_env:
+    # Relocates the gcloud config dir (and thus the ADC file) — non-sensitive path.
+    - CLOUDSDK_CONFIG
+    # Default/quota project fallback for ADC when a target omits `project`.
+    - GOOGLE_CLOUD_PROJECT
+    - GCLOUD_PROJECT
