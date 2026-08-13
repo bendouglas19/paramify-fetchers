@@ -2,6 +2,7 @@
 
 The runner's contract with a fetcher:
 - Set EVIDENCE_DIR to the per-run output directory
+- Set FETCHER_STATUS_FILE to a path the fetcher reports its failure reason to
 - Resolve every declared secret and set the corresponding env var
 - For fanout: also set target_schema fields → env vars per target_schema.<field>.env
 - Exec the fetcher's entry script
@@ -10,14 +11,16 @@ The runner's contract with a fetcher:
 - Continue on per-target failures (each target is its own failure domain)
 """
 
+import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from framework.contract import (
     Fetcher,
@@ -50,6 +53,14 @@ _TIMEOUT_EXIT_CODE = 124
 _REDACTION_PLACEHOLDER = "***REDACTED***"
 _MIN_SECRET_LEN_TO_MASK = 5
 
+# Env var naming the path a fetcher writes its failure report to. Deliberately
+# OUTSIDE EVIDENCE_DIR: outputs are discovered by diffing that directory, so a
+# .json dropped there would be collected as evidence and enveloped.
+_STATUS_FILE_ENV = "FETCHER_STATUS_FILE"
+# Bound on the reported reason. Truncates the tail, not the head — the useful
+# part of an error message is the front (stderr is the opposite; see envelope.py).
+_STATUS_ERROR_MAX_CHARS = 4000
+
 
 def _redact(text: str, secret_values) -> str:
     """Replace each known secret value in `text` with a placeholder. Longest
@@ -66,6 +77,38 @@ def _redact(text: str, secret_values) -> str:
         if value in text:
             text = text.replace(value, _REDACTION_PLACEHOLDER)
     return text
+
+
+def _read_status_file(path: Path, secret_values) -> Tuple[Optional[str], Optional[str]]:
+    """Read the failure reason a fetcher reported via $FETCHER_STATUS_FILE.
+
+    Returns (error, code), either of which may be None.
+
+    The file is fetcher-authored text, so it gets the same masking as captured
+    stderr — this is the only place the injected secret values are still in
+    scope, which is the whole reason the read happens here and not in
+    framework/envelope.py.
+
+    A missing, unreadable, malformed, or empty file is NOT an error. It means
+    the fetcher didn't use the channel, and the envelope falls back to the
+    stderr tail — the behavior every fetcher had before this existed. A fetcher
+    must not be able to break a run by writing a bad status file.
+    """
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None, None
+    if not isinstance(raw, dict):
+        return None, None
+    error = raw.get("error")
+    code = raw.get("code")
+    error = (
+        _redact(error, secret_values)[:_STATUS_ERROR_MAX_CHARS]
+        if isinstance(error, str) and error.strip()
+        else None
+    )
+    code = code if isinstance(code, str) and code.strip() else None
+    return error, code
 
 
 # passthrough_env mixes credential material (AWS_SECRET_ACCESS_KEY,
@@ -255,34 +298,48 @@ def _invoke(
     before = {p.name for p in output_dir.iterdir()} if output_dir.exists() else set()
 
     timeout = fetcher.runtime_timeout or _DEFAULT_TIMEOUT_SEC
-    proc = subprocess.Popen(
-        cmd,
-        env=env,
-        cwd=str(fetcher.path),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,  # line-buffered so on_line fires per line
-    )
 
-    stdout_lines: List[str] = []
-    stderr_lines: List[str] = []
-    t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_lines, on_line, secret_values))
-    t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_lines, None, secret_values))
-    t_out.start()
-    t_err.start()
+    # The status file lives in a per-invocation temp dir that goes away with the
+    # invocation, so it can never be mistaken for evidence or outlive the run.
+    # Cleanup errors are swallowed: a fetcher that leaves something undeletable
+    # in there must not fail an invocation that otherwise succeeded.
+    with tempfile.TemporaryDirectory(prefix="paramify-status-", ignore_cleanup_errors=True) as status_dir:
+        status_path = Path(status_dir) / "status.json"
+        env = {**env, _STATUS_FILE_ENV: str(status_path)}
 
-    timed_out = False
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        proc.kill()
-        proc.wait()
+        proc = subprocess.Popen(
+            cmd,
+            env=env,
+            cwd=str(fetcher.path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,  # line-buffered so on_line fires per line
+        )
 
-    # Threads finish once the pipes hit EOF (which the kill guarantees).
-    t_out.join()
-    t_err.join()
+        stdout_lines: List[str] = []
+        stderr_lines: List[str] = []
+        t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_lines, on_line, secret_values))
+        t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_lines, None, secret_values))
+        t_out.start()
+        t_err.start()
+
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            proc.kill()
+            proc.wait()
+
+        # Threads finish once the pipes hit EOF (which the kill guarantees).
+        t_out.join()
+        t_err.join()
+
+        # Read before the temp dir is removed. Skipped on timeout: the runner's
+        # own "killed" message below is the accurate reason, and a status file
+        # the fetcher managed to write first would only hide it.
+        error, error_code = (None, None) if timed_out else _read_status_file(status_path, secret_values)
 
     exit_code = _TIMEOUT_EXIT_CODE if timed_out else proc.returncode
     stdout = _redact("".join(stdout_lines), secret_values)
@@ -307,6 +364,8 @@ def _invoke(
         stdout=stdout,
         stderr=stderr,
         outputs=outputs,
+        error=error,
+        error_code=error_code,
     )
 
 
@@ -351,6 +410,10 @@ def run_entry(
             results.append(_invoke(fetcher, env, target, output_dir, on_line, secrets_seen))
         except (RuntimeError, SecretResolutionError) as e:
             now = _utc_now()
+            # The fetcher never ran, so it had no chance to report anything. The
+            # runner knows exactly what went wrong here, so it fills the channel
+            # in itself rather than leaving the envelope to guess from stderr.
+            reason = _redact(f"runner: failed to set up target invocation: {e}", secrets_seen)
             results.append(InvocationResult(
                 fetcher_name=fetcher.name,
                 fetcher_version=fetcher.version,
@@ -360,7 +423,9 @@ def run_entry(
                 duration_sec=0.0,
                 exit_code=255,
                 stdout="",
-                stderr=_redact(f"runner: failed to set up target invocation: {e}", secrets_seen),
+                stderr=reason,
                 outputs=[],
+                error=reason,
+                error_code="runner_setup_failed",
             ))
     return results

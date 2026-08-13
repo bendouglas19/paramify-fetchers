@@ -18,7 +18,14 @@
         "collected_at": { "type": "string" },
         "status": { "type": "string", "enum": ["success", "failed"] },
         "exit_code": { "type": "integer" },
-        "error": { "type": "string" },
+        "error": {
+          "type": "string",
+          "description": "Why the collection failed. Present only on a non-zero exit. Sourced from the fetcher's $FETCHER_STATUS_FILE report when it wrote one, else the tail of its stderr."
+        },
+        "error_code": {
+          "type": "string",
+          "description": "Machine-readable failure category the fetcher reported alongside `error` (e.g. auth_failed, target_unreachable, partial_failure). Absent when the fetcher reported no code."
+        },
         "evidence_set": {
           "type": "object",
           "description": "Paramify evidence-set identity copied from the fetcher's fetcher.yaml, so the file is self-describing for upload. Present only when the fetcher declares an evidence_set block.",

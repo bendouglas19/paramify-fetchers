@@ -261,3 +261,104 @@ def test_real_subprocess_nonzero_exit_is_captured(tmp_path):
 
     assert len(results) == 1
     assert results[0].exit_code == 3
+
+
+# --------------------------------------------------------------------------- #
+# $FETCHER_STATUS_FILE — the failure-reason channel (issue #24)
+# --------------------------------------------------------------------------- #
+
+_REPORTING_FETCHER = """\
+import json, os, sys
+# What every fetcher used to do: log a success line last, then exit non-zero.
+# The stderr tail is therefore useless as a failure reason.
+print("2026-01-01 INFO t_fetcher Evidence saved to out.json", file=sys.stderr)
+with open(os.environ["FETCHER_STATUS_FILE"], "w") as f:
+    json.dump({"error": "the real reason", "code": "target_unreachable"}, f)
+open(os.path.join(os.environ["EVIDENCE_DIR"], "t_fetcher.json"), "w").write("{}")
+sys.exit(1)
+"""
+
+
+def test_reported_failure_reason_reaches_the_result(tmp_path):
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text(_REPORTING_FETCHER)
+
+    r = run_entry(make_fetcher(fdir), ManifestEntry(use="t_fetcher"), tmp_path / "out")[0]
+
+    assert r.exit_code == 1
+    assert r.error == "the real reason"
+    assert r.error_code == "target_unreachable"
+    # The stderr tail — what the envelope used to use — is still the wrong answer.
+    assert "Evidence saved" in r.stderr
+
+
+def test_status_file_is_not_collected_as_evidence(tmp_path):
+    """It lives outside EVIDENCE_DIR, so the output diff can't pick it up.
+
+    If it were written into the evidence dir it would be enveloped and uploaded
+    as if it were collected evidence.
+    """
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text(_REPORTING_FETCHER)
+
+    out_dir = tmp_path / "out"
+    r = run_entry(make_fetcher(fdir), ManifestEntry(use="t_fetcher"), out_dir)[0]
+
+    assert r.outputs == ["t_fetcher.json"]
+    assert not any("status" in n for n in r.outputs)
+    assert [p.name for p in out_dir.iterdir()] == ["t_fetcher.json"]
+
+
+def test_status_file_path_is_per_invocation_and_cleaned_up(tmp_path):
+    """The temp dir goes away with the invocation — nothing outlives the run."""
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text(
+        "import os\n"
+        "p = os.environ['FETCHER_STATUS_FILE']\n"
+        "open(os.path.join(os.environ['EVIDENCE_DIR'], 'ev.json'), 'w').write('\"%s\"' % p)\n"
+    )
+
+    out_dir = tmp_path / "out"
+    run_entry(make_fetcher(fdir), ManifestEntry(use="t_fetcher"), out_dir)
+
+    reported_path = json.loads((out_dir / "ev.json").read_text())
+    assert not os.path.exists(reported_path)             # cleaned up
+    assert str(out_dir.resolve()) not in reported_path   # and never inside EVIDENCE_DIR
+
+
+@pytest.mark.parametrize("body", [
+    "{ not json",                     # malformed
+    '["error", "boom"]',              # right JSON, wrong shape
+    '{"code": "auth_failed"}',        # code without an error
+    '{"error": "   "}',               # blank message
+    '{"error": 42}',                  # wrong type
+])
+def test_unusable_status_file_falls_back_silently(tmp_path, body):
+    """A fetcher must not be able to break a run by writing a bad status file."""
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text(
+        "import os, sys\n"
+        f"open(os.environ['FETCHER_STATUS_FILE'], 'w').write({body!r})\n"
+        "print('stderr reason', file=sys.stderr)\n"
+        "sys.exit(1)\n"
+    )
+
+    r = run_entry(make_fetcher(fdir), ManifestEntry(use="t_fetcher"), tmp_path / "out")[0]
+
+    assert r.exit_code == 1        # the run still reports the failure
+    assert r.error is None         # ...and falls back to the stderr tail
+    assert "stderr reason" in r.stderr
+
+
+def test_no_status_file_written_is_not_an_error(tmp_path):
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text("import sys\nsys.exit(1)\n")
+
+    r = run_entry(make_fetcher(fdir), ManifestEntry(use="t_fetcher"), tmp_path / "out")[0]
+    assert r.exit_code == 1
+    assert r.error is None and r.error_code is None

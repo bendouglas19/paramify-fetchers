@@ -364,15 +364,62 @@ or data-collection style — there's no one-size-fits-all check:
   `main()`. Same shape as Okta but no shared module — the failures list
   lives in the entry script.
 
-What does NOT yet exist (and is deferred per design.md:73): **structured
-exit-code categories** distinguishing auth-failure vs. target-unreachable
-vs. partial-success vs. internal. v0.x is binary: 0 = clean, non-zero = at
-least one thing went wrong.
+Exit codes stay binary: 0 = clean, non-zero = at least one thing went wrong.
+The failure *category* is not encoded there — it goes in the `code` field of
+the status file below, so the exit-code space stays uncarved.
 
 Pick the pattern that fits your shared module; if no clear failure signal
 exists, that's a hint the shared module needs a minor additive change to
 expose one (the Okta `api_failures` list was added this way — additive,
 non-breaking).
+
+### Say why you failed
+
+Whichever detection pattern you use, **report the reason** — otherwise the
+runner falls back to the tail of your stderr, and if your last log line is a
+"wrote the evidence file" INFO message, that success message becomes the failure
+reason an operator reads in Paramify. Two things on the failure path: log it (so
+it shows up live) and write it to `$FETCHER_STATUS_FILE` (so the envelope gets
+it verbatim). Log it *after* any "saved" line — the fallback takes the tail.
+
+Python — no framework import needed, this is stdlib:
+
+```python
+def report_failure(msg: str, code: str | None = None) -> None:
+    """Tell the runner why this run failed. See docs/fetcher_contract.md."""
+    path = os.environ.get("FETCHER_STATUS_FILE")
+    if not path:
+        return
+    body = {"error": msg} | ({"code": code} if code else {})
+    Path(path).write_text(json.dumps(body))
+
+...
+
+if result.get("status") != "success":
+    logger.error("collection failed: %s", result["message"])
+    report_failure(result["message"], "target_unreachable")
+    return 1
+return 0
+```
+
+Bash — next to the `log_error` helper the category scripts already define:
+
+```bash
+report_failure() {  # $1 = reason, $2 = optional code
+    log_error "$1"
+    [ -n "${FETCHER_STATUS_FILE:-}" ] && \
+        jq -n --arg e "$1" --arg c "${2:-}" \
+           '{error:$e} + (if $c == "" then {} else {code:$c} end)' > "$FETCHER_STATUS_FILE"
+}
+
+if [ "$failure_count" -gt 0 ]; then
+    report_failure "$failure_count API failures during collection" partial_failure
+    exit 1
+fi
+```
+
+Codes in use: `auth_failed`, `not_authorized`, `target_unreachable`,
+`rate_limited`, `bad_config`, `partial_failure`, `internal_error`.
 
 ## Known interim violations
 
