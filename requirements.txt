@@ -15,3 +15,14 @@ textual>=8,<9
 # Checkov category (fetchers/checkov/*) — the bash fetchers shell out to the
 # `checkov` CLI. Also requires system `git` (clone) + `jq`, which are not pip deps.
 checkov
+
+# Azure category (fetchers/azure/*) — official azure-mgmt-* SDKs. Auth is the
+# ambient credential chain via DefaultAzureCredential (service principal env,
+# workload-identity federation, managed identity, or a cached `az login`); no
+# secret is handed over and the `az` CLI is NOT required at runtime.
+# azure-core / azure-mgmt-core arrive transitively.
+azure-identity
+azure-mgmt-subscription
+azure-mgmt-storage
+azure-mgmt-network
+azure-mgmt-security
