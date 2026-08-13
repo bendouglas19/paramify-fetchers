@@ -25,6 +25,18 @@ from dotenv import load_dotenv
 logger = logging.getLogger("gitlab_merge_request_summary")
 
 
+def report_failure(reason: str, code: str | None = None) -> None:
+    """Report why this run failed; the runner puts it in the envelope's metadata.error.
+
+    Without it the runner falls back to the tail of stderr — which on the way out
+    is the "Evidence saved" line. See docs/fetcher_contract.md § Output.
+    """
+    path = os.environ.get("FETCHER_STATUS_FILE")
+    if not path:
+        return
+    Path(path).write_text(json.dumps({"error": reason} | ({"code": code} if code else {})))
+
+
 def current_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -324,6 +336,7 @@ def main() -> int:
         project_id = get_env("GITLAB_PROJECT_ID")
     except RuntimeError as e:
         logger.error("%s", e)
+        report_failure(str(e), "bad_config")
         return 1
 
     state = os.environ.get("GITLAB_MR_STATE", "merged")
@@ -350,7 +363,9 @@ def main() -> int:
     logger.info("Evidence saved to %s", output_path)
     # Last line on stderr wins: the runner reads its tail into the envelope's metadata.error.
     if result.get("status") != "success":
-        logger.error("collection failed: %s", result.get("message", "unknown error"))
+        reason = result.get("message", "unknown error")
+        logger.error("collection failed: %s", reason)
+        report_failure(reason)
         return 1
     return 0
 
