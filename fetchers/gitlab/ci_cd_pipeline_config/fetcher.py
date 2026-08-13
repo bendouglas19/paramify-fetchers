@@ -212,7 +212,11 @@ def main() -> int:
         json.dump(result_with_metadata, f, indent=2, default=str)
 
     logger.info("Evidence saved to %s", output_path)
-    return 0 if result.get("status") in {"success", "not_found"} else 1
+    # Last line on stderr wins: the runner reads its tail into the envelope's metadata.error.
+    if result.get("status") not in {"success", "not_found"}:
+        logger.error("collection failed: %s", result.get("message", "unknown error"))
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

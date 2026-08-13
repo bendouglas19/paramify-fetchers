@@ -135,7 +135,11 @@ def main() -> int:
 
     logger.info("Evidence saved to %s", output_json)
 
-    return 0 if result.get("status") in {"success", "partial_or_empty"} else 1
+    # Last line on stderr wins: the runner reads its tail into the envelope's metadata.error.
+    if result.get("status") not in {"success", "partial_or_empty"}:
+        logger.error("collection failed: %s", result.get("message", "unknown error"))
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
