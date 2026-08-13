@@ -1,0 +1,69 @@
+name: azure_storage_encryption_status
+version: 0.1.0
+description: >
+  For each storage account in the subscription, reports whether the encryption key
+  is customer-managed (Key Vault) or platform-managed, whether infrastructure
+  (double) encryption is on, and the posture around it: HTTPS-only and minimum TLS
+  version, blob public access, public network access and network rule set, private
+  endpoint connections, access-key expiration policy, shared-key vs Entra
+  authorization, replication SKU, cross-tenant replication, plus blob versioning /
+  container soft delete and file share soft delete / SMB channel encryption. Azure
+  Storage is always encrypted at rest, so the evidence that varies is CMK vs
+  Microsoft-managed, not "encrypted: true/false".
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_storage_encryption_status.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+ksis:
+  - KSI-SVC-02       # Encrypt network traffic in transit — HTTPS-only, minimum TLS version
+  - KSI-SVC-03       # Encrypt data at rest — CMK vs platform key, infrastructure encryption
+  - KSI-SVC-06       # Automate key management and rotation — access-key expiration policy
+  - KSI-RPL-03       # Server-side protection — blob versioning, container / share soft delete
+
+evidence_set:
+  reference_id: EVD-AZURE-STORAGE-ENC
+  name: Azure Storage Encryption
+  instructions: >
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-storage
+    StorageManagementClient): storage_accounts.list() for the encryption, transit,
+    network and key-policy projection (encryption.key_source,
+    encryption.require_infrastructure_encryption, enable_https_traffic_only,
+    minimum_tls_version, allow_blob_public_access, public_network_access,
+    network_rule_set, private_endpoint_connections, key_policy, sku.name,
+    allow_cross_tenant_replication, allow_shared_key_access,
+    default_to_o_auth_authentication); then per account
+    blob_services.get_service_properties(resource_group, name) for versioning and
+    container soft delete, and file_services.get_service_properties(resource_group,
+    name) for share soft delete and SMB channel encryption. key_source
+    "Microsoft.Keyvault" ⇒ customer-managed key; "Microsoft.Storage" ⇒
+    Microsoft-managed default encryption. An account kind with no Blob or File
+    endpoint answers "… is not supported for the account." and is skipped — that is
+    expected, not a collection failure.

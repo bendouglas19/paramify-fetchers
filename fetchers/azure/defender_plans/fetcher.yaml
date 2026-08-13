@@ -1,0 +1,64 @@
+name: azure_defender_plans
+version: 0.1.0
+description: >
+  Every Microsoft Defender for Cloud pricing plan on the subscription (Servers,
+  Storage Accounts, Containers, SQL, Key Vault, App Services, …) with its pricing
+  tier, remaining free trial, and which per-plan extensions (agentless VM scanning,
+  vulnerability assessment, file integrity monitoring, …) are enabled — the
+  evidence that vulnerability detection and host/container hardening are switched
+  on, not merely available. A subscription that never registered the
+  Microsoft.Security resource provider reports
+  provider_registration_status: not_registered, which is valid evidence ("not in
+  use") rather than a collection failure.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_defender_plans.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+ksis:
+  - KSI-CNA-07       # Enforce security best practices on hosts and containers
+  - KSI-MLA-03       # Detect and remediate vulnerabilities
+  - KSI-MLA-04       # Perform authenticated vulnerability scanning
+
+evidence_set:
+  reference_id: EVD-AZURE-DEFENDER
+  name: Microsoft Defender for Cloud Plans
+  instructions: >
+    Script: fetcher.py. Azure SDK call (azure-mgmt-security SecurityCenter):
+    pricings.list(scope_id="subscriptions/<subscription_id>") — one subscription-
+    scoped call returning a PricingList whose .value carries every plan. Per plan
+    the evidence keeps resource_id, resource_name, pricing_tier,
+    free_trial_remaining_time, and extensions collapsed to {name: is_enabled}.
+    pricing_tier "Standard" ⇒ the plan is actively protecting; "Free" ⇒ the default
+    no-op tier. If the call answers ResourceNotFoundError "Subscription Not
+    Registered", Microsoft.Security was never registered on the subscription and
+    Defender for Cloud is not in use: the evidence records
+    provider_registration_status: not_registered with an empty plan list and the run
+    still succeeds.
