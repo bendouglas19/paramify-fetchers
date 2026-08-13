@@ -25,3 +25,11 @@ checkov
 google-cloud-compute
 google-cloud-storage
 google-api-python-client
+# Wave 2 — GKE, Cloud Logging and IAM service-account evidence. resourcemanager
+# resolves project ancestry (org/folder) for the logging + GKE fetchers, and
+# monitoring covers the alert policies that pair with log-based metrics.
+google-cloud-container
+google-cloud-resource-manager
+google-cloud-iam
+google-cloud-logging
+google-cloud-monitoring
