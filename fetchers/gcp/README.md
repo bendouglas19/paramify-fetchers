@@ -1,9 +1,11 @@
 # GCP
 
-GCP fetchers pull encryption-at-rest evidence from your GCP projects using the
+GCP fetchers pull configuration evidence from your GCP projects using the
 official Google Cloud client libraries. All fetchers are **read-only** and
 authenticate with **Application Default Credentials (ADC)** — there is no static
 API token or service-account key file to hand over.
+
+Encryption at rest:
 
 | Fetcher | Evidence | GCP API |
 |---------|----------|---------|
@@ -12,10 +14,22 @@ API token or service-account key file to hand over.
 | `gcp_cloud_sql_encryption_status` | Cloud SQL: CMEK vs Google-managed + backup config | `sqladmin.instances.list` |
 | `gcp_kms_key_rotation` | KMS keys: rotation, algorithm, protection level (SOFTWARE/HSM), location | `cloudkms.{locations,keyRings,cryptoKeys}.list` |
 
-> **Status:** the first three fetchers are verified against a live project and
-> ship now. `gcp_kms_key_rotation` is written and unit-tested but **held back
-> until one green live-tenant re-run** (its first run hit a `list_locations` bug,
-> since fixed); the rows/sections referencing it below apply once it ships.
+Platform posture:
+
+| Fetcher | Evidence | GCP API |
+|---------|----------|---------|
+| `gcp_gke_cluster_configuration` | GKE clusters: private nodes/endpoint, network policy, legacy ABAC, Workload Identity, shielded nodes, etcd CMEK, release channel, per node pool auto-upgrade/repair + boot-disk CMEK | `container.clusters.list` |
+| `gcp_cloud_logging_configuration` | Log sinks (destination, filter, include_children), log buckets (retention, locked, CMEK), log-router settings, log metrics paired with alert policies | `logging.{sinks,buckets,settings,metrics}`, `monitoring.alertPolicies.list`, `cloudresourcemanager.{projects,folders}.get` |
+| `gcp_iam_service_accounts` | Service accounts: user- vs system-managed keys with age/expiry, project roles (primitive/admin), who can impersonate each account | `iam.serviceAccounts.{list,keys.list,getIamPolicy}`, `cloudresourcemanager.projects.getIamPolicy` |
+
+> **Status:** the three encryption-at-rest fetchers are verified against a live
+> project and ship now. `gcp_kms_key_rotation` is written and unit-tested but
+> **held back until one green live-tenant re-run** (its first run hit a
+> `list_locations` bug, since fixed); the rows/sections referencing it below apply
+> once it ships. The three platform-posture fetchers are unit-tested against
+> fixtures and smoke-tested with deliberately-bogus credentials, but have **not
+> had a live-tenant run** — treat their permission list below as unconfirmed and
+> reconcile it against the first real run (any 403 is a permission to add).
 
 ## The one thing to get right
 
@@ -26,6 +40,10 @@ actually varies: **CMEK vs Google-managed** (`kms_key_name` present or not),
 **which key**, **rotation**, **location**, and **protection level**. Write
 validators against those fields — see [`DRAFT_VALIDATORS.md`](DRAFT_VALIDATORS.md).
 
+The same rule shapes the posture fetchers: they report the fields that differ
+between a hardened and a default configuration (legacy ABAC on/off, a locked log
+bucket, a user-managed key's age), not facts that are true of every project.
+
 ## Prerequisites
 
 1. **Enable the APIs** in each project you collect from:
@@ -34,11 +52,25 @@ validators against those fields — see [`DRAFT_VALIDATORS.md`](DRAFT_VALIDATORS
      compute.googleapis.com \
      storage.googleapis.com \
      sqladmin.googleapis.com \
-     cloudkms.googleapis.com
+     cloudkms.googleapis.com \
+     container.googleapis.com \
+     logging.googleapis.com \
+     monitoring.googleapis.com \
+     iam.googleapis.com \
+     cloudresourcemanager.googleapis.com
    ```
-2. **Python deps** (already in the top-level `requirements.txt`):
-   `google-cloud-compute`, `google-cloud-storage`, `google-cloud-kms`,
-   `google-api-python-client`. `google-auth` comes transitively.
+   `container.googleapis.com` is the exception you can skip: a project that runs
+   no GKE records "API not enabled" as evidence (`metadata.skipped_calls`,
+   `summary.gke_api_readable: false`) and still exits 0, because GCP answers a
+   never-enabled service with a 403 rather than an empty list.
+2. **Python deps.** The encryption-at-rest fetchers use `google-cloud-compute`,
+   `google-cloud-storage` and `google-api-python-client` (Cloud SQL Admin has no
+   stable GAPIC client), which the top-level `requirements.txt` already carries;
+   `google-cloud-kms` lands with the KMS fetcher. The platform-posture fetchers
+   add five more GAPIC clients — `google-cloud-container`,
+   `google-cloud-logging`, `google-cloud-monitoring`, `google-cloud-iam` and
+   `google-cloud-resource-manager` — which must be in `requirements.txt` before
+   they can run. `google-auth` comes transitively.
 
 ## Credential setup (ADC — no key files)
 
@@ -79,6 +111,24 @@ are needed:
 | `cloudkms.keyRings.list` | KMS |
 | `cloudkms.cryptoKeys.list` | KMS |
 | `cloudkms.locations.list` | KMS (enumerate locations) — ⚠ **verify; if denied, set `GCP_KMS_LOCATIONS` to skip enumeration (see note below)** |
+| `container.clusters.list` | GKE clusters |
+| `logging.sinks.list` | log sinks |
+| `logging.buckets.list` | log buckets |
+| `logging.settings.get` | log-router CMEK / storage location |
+| `logging.logMetrics.list` | log-based metrics |
+| `monitoring.alertPolicies.list` | alert policies paired with those metrics |
+| `iam.serviceAccounts.list` | service accounts |
+| `iam.serviceAccountKeys.list` | their keys (metadata only — never key material) |
+| `iam.serviceAccounts.getIamPolicy` | who can impersonate each service account |
+| `resourcemanager.projects.getIamPolicy` | project role bindings |
+| `resourcemanager.projects.get` | the project's ancestry (for org/folder sinks) |
+
+The posture rows are **unverified against a live least-privilege run** — see the
+status note at the top. Two of them are also optional by design: the ancestry
+walk (`resourcemanager.projects.get`, `resourcemanager.folders.get`) and the
+ancestor sink listing are tolerated when denied, so a project-scoped role
+collects project-level logging evidence and records the gap in
+`metadata.skipped_calls` rather than failing.
 
 Create the role and bind it (project-level; repeat per project or set at the org):
 
@@ -96,6 +146,18 @@ includedPermissions:
   - cloudkms.keyRings.list
   - cloudkms.cryptoKeys.list
   - cloudkms.locations.list        # ⚠ verify — remove if unrecognized (see note)
+  # Platform posture — ⚠ not yet confirmed against a live run
+  - container.clusters.list
+  - logging.sinks.list
+  - logging.buckets.list
+  - logging.settings.get
+  - logging.logMetrics.list
+  - monitoring.alertPolicies.list
+  - iam.serviceAccounts.list
+  - iam.serviceAccountKeys.list
+  - iam.serviceAccounts.getIamPolicy
+  - resourcemanager.projects.get
+  - resourcemanager.projects.getIamPolicy
 YAML
 
 gcloud iam roles create paramifyEvidenceReader \
@@ -121,7 +183,11 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
 > Broad predefined fallbacks (looser than least privilege) if you need to unblock
 > a demo fast: `roles/compute.viewer`, `roles/cloudsql.viewer`,
 > `roles/cloudkms.viewer`, and `roles/storage.admin` (there is no narrow
-> bucket-metadata read role). Prefer the custom role for the actual package.
+> bucket-metadata read role). For the posture fetchers the nearest predefined
+> roles are `roles/container.clusterViewer`, `roles/logging.admin` (the read-only
+> logging roles do not all cover `settings.get`), `roles/monitoring.viewer` and
+> `roles/iam.securityReviewer` — each still to be confirmed against a real run.
+> Prefer the custom role for the actual package.
 
 ## Wiring into a manifest
 
@@ -135,9 +201,14 @@ paramify validate manifest.yaml
 paramify run manifest.yaml
 ```
 
-A ready-to-edit manifest for the three shipping fetchers (with the KMS entry
-commented out until it is verified) is at
-[`examples/gcp_data_at_rest.yaml`](../../examples/gcp_data_at_rest.yaml).
+Two ready-to-edit manifests, split by theme rather than by wiring — merge them
+into one run if you prefer:
+
+- [`examples/gcp_data_at_rest.yaml`](../../examples/gcp_data_at_rest.yaml) — the
+  three encryption-at-rest fetchers (with the KMS entry commented out until it is
+  verified).
+- [`examples/gcp_platform_posture.yaml`](../../examples/gcp_platform_posture.yaml)
+  — GKE cluster configuration, Cloud Logging configuration, IAM service accounts.
 
 ## Per-fetcher env vars
 
@@ -146,6 +217,7 @@ commented out until it is verified) is at
 | `GOOGLE_CLOUD_PROJECT` | Project to collect from (optional — falls back to the ADC default project) | `target_schema.project` |
 | `GCP_ENVIRONMENT` | Environment label (prod / preprod) written into the evidence metadata | `target_schema.environment` |
 | `EVIDENCE_DIR` | Output directory (defaults to `./evidence`) | runner-set |
+| `FETCHER_STATUS_FILE` | Where a failing fetcher writes its reason (`{error, code}`) | runner-set |
 | `CLOUDSDK_CONFIG` | Optional: relocate the gcloud/ADC config dir | platform `passthrough_env` |
 
 ## Output & failure semantics
@@ -159,6 +231,19 @@ commented out until it is verified) is at
   in `payload.metadata.api_failures`, sets `payload.metadata.partial_failure:
   true`, and exits non-zero — so the runner marks that target's envelope
   `status: failed`. One inaccessible project of five does not silently exit 0.
+- **A failing run says why.** On the way out it writes a one-line reason and a
+  category to `$FETCHER_STATUS_FILE` (`{"error": "...", "code":
+  "auth_failed"}`), which the runner masks for secrets and puts in the envelope's
+  `metadata.error` — the field Paramify shows whoever is triaging. Codes come from
+  the contract's fixed set; `gcp_common.Collector.failure_report()` picks the
+  unanimous cause (expired ADC ⇒ `auth_failed`) or `partial_failure` when the
+  causes disagree. The exit code stays binary. Writing is a no-op when the env var
+  is unset, so running a fetcher by hand is unchanged.
+- **"Not enabled" is evidence, not failure.** A call that fails because the API
+  was never enabled on the project, or because a read above the project (the
+  org/folder ancestry) is outside the granted role, is recorded in
+  `payload.metadata.skipped_calls` and does **not** fail the run. That key is
+  absent entirely when nothing was skipped.
 - `environment` lives in `payload.metadata.environment`. The runner-built
   envelope schema has no `environment` field, so it is carried in the payload
   (alongside `project`) rather than the envelope wrapper — see the note in

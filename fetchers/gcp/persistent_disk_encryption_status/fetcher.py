@@ -32,6 +32,7 @@ from gcp_common import (  # noqa: E402
     resolve_project,
     sanitize_for_filename,
     write_evidence,
+    write_status,
 )
 
 logger = logging.getLogger("gcp_persistent_disk_encryption_status")
@@ -159,7 +160,12 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        logger.error("Encountered %d GCP API failure(s) during collection", len(collector.failures))
+        # Reported before any success log line: the runner takes the TAIL of
+        # stderr as metadata.error when the status file is empty, so an "Evidence
+        # saved" INFO line last would become the reported failure reason.
+        reason, code = collector.failure_report()
+        logger.error("%s", reason)
+        write_status(reason, code)
         return 1
     logger.info("Evidence saved to %s", path)
     return 0

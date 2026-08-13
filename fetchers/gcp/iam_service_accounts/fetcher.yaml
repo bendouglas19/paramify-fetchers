@@ -1,0 +1,61 @@
+name: gcp_iam_service_accounts
+version: 0.1.0
+description: >
+  For each service account in the project, reports its key inventory split by key
+  type (user-managed vs system-managed, with each key's origin, age, remaining
+  validity and whether it ever expires), the project-level roles the account
+  holds — flagging primitive and administrative ones — and the bindings on the
+  account itself that let another identity impersonate it. The finding this
+  evidence surfaces is the user-managed key that never rotates.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_iam_service_accounts.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+ksis:
+  - KSI-IAM-03       # Secure non-user / service-account authentication — key type and age
+  - KSI-IAM-04       # Least privilege — primitive/admin roles held by service accounts
+  - KSI-SVC-06       # Key management and rotation — user-managed key age vs the 90-day interval
+
+evidence_set:
+  reference_id: EVD-GCP-IAM-SA
+  name: IAM Service Accounts and Keys
+  instructions: >
+    Script: fetcher.py. Google Cloud client library calls: iam
+    serviceAccounts.list (email, displayName, uniqueId, disabled),
+    serviceAccounts.keys.list per account (keyType USER_MANAGED vs
+    SYSTEM_MANAGED, keyOrigin, keyAlgorithm, validAfterTime, validBeforeTime,
+    disabled), serviceAccounts.getIamPolicy per account (who holds
+    serviceAccountUser / serviceAccountTokenCreator on it) and
+    cloudresourcemanager projects.getIamPolicy (the project bindings each account
+    appears in). Key ages are computed against collection time; the summary counts
+    user-managed keys older than 90 days. No key material is read — only a key's
+    identity and validity window. Project bindings name their serviceAccount:
+    members and count everything else, so this evidence set does not become a user
+    inventory.
