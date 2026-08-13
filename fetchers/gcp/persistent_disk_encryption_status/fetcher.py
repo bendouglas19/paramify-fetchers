@@ -27,7 +27,6 @@ from gcp_common import (  # noqa: E402
     build_payload,
     coverage_percentage,
     credentials,
-    dig,
     first,
     resolve_project,
     sanitize_for_filename,

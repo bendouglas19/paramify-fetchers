@@ -28,7 +28,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent / "_shared"))
 from gcp_common import (  # noqa: E402
     Collector,
-    basename,
     build_payload,
     coverage_percentage,
     credentials,
