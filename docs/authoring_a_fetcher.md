@@ -176,10 +176,29 @@ def call_api(...):
 # ... collect ...
 
 if failures:
-    logger.error("Encountered %d API failures during collection", len(failures))
+    reason = f"{len(failures)} API failures during collection"
+    logger.error("%s", reason)
+    report_failure(reason, "partial_failure")
     return 1
 return 0
 ```
+
+Non-zero is only half of it — you also have to say **why**. `report_failure`
+writes the reason to `$FETCHER_STATUS_FILE`, which the runner masks for secrets
+and puts in the envelope's `metadata.error`, the field Paramify shows to whoever
+is triaging. It's four lines of stdlib (no framework import) — see
+[`porting_playbook.md`](porting_playbook.md) § "Say why you failed" for the
+Python and bash versions.
+
+Two things to get right:
+
+- **Log the error after any "Evidence saved" line.** If you write nothing to the
+  status file, the runner falls back to the *tail* of your stderr — so an INFO
+  line logged last becomes the reported failure reason. That was issue #24: runs
+  that failed reported "Evidence saved to …" as their error.
+- **Don't rely on the payload.** Recording failure state in your evidence is
+  useful for anyone reading the file, but the runner never looks inside the
+  payload, so it can't reach `metadata.error` from there.
 
 Catch transient errors at the API-call boundary, track them, exit non-zero if non-empty.
 
