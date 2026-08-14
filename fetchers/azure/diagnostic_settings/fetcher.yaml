@@ -1,0 +1,67 @@
+name: azure_diagnostic_settings
+version: 0.1.0
+description: >
+  The subscription-scope diagnostic settings that export the Azure Activity Log — the
+  Azure analogue of AWS CloudTrail configuration. For each setting: which log
+  categories and category groups are enabled (Administrative, Security, ServiceHealth,
+  Alert, Recommendation, Policy, Autoscale, ResourceHealth), the legacy per-setting
+  retention policy, and where the records land (storage account, Log Analytics
+  workspace, event hub or partner solution). Summarized as which categories any
+  setting covers, which of the four required for control-plane audit are missing, and
+  whether the Activity Log is exported at all — without a setting it is kept for 90
+  days and then discarded.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_diagnostic_settings.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-DIAG-SETTINGS
+  name: Azure Activity Log Diagnostic Settings
+  instructions: >
+    Script: fetcher.py. Azure SDK calls: resource.providers.get("Microsoft.Insights")
+    for the resource-provider registration state, then azure-mgmt-monitor
+    MonitorManagementClient diagnostic_settings.list(resource_uri="subscriptions/<id>/")
+    — the SUBSCRIPTION scope, which is where the Activity Log's own export settings
+    live. Per setting: id, name, storage_account_id (and its short storage account
+    name), workspace_id, event_hub_name, event_hub_authorization_rule_id,
+    service_bus_rule_id, marketplace_partner_id, log_analytics_destination_type, and
+    logs[] with each entry's category, category_group, enabled flag and
+    retention_policy (enabled, days). A setting selects categories individually or by
+    group; category_group "allLogs" captures every category, so it is read as covering
+    the required four (Administrative, Security, Alert, Policy) rather than none. The
+    summary reports category coverage as the union across settings, and separately how
+    many single settings carry all four required categories — Prowler's stricter
+    reading in monitor_diagnostic_setting_with_appropriate_categories. Scope is the
+    subscription only: diagnostic_settings.list takes one resource URI, so
+    per-resource settings (Key Vault audit logs, SQL auditing) belong to that
+    service's own evidence set. Needs azure-mgmt-monitor < 7 — the 7.0.0 rewrite
+    removed the diagnostic_settings operation group, and its absence is reported as a
+    named failure.
