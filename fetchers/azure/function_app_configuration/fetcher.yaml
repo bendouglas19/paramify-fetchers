@@ -1,0 +1,76 @@
+name: azure_function_app_configuration
+version: 0.1.0
+description: >
+  For each function app in the subscription, reports network exposure (public
+  network access, VNet integration), transport posture (HTTPS-only, FTP/FTPS state,
+  minimum TLS version, HTTP/2), the declared runtime, the managed identity, whether
+  function access keys are configured, and which application settings exist. Access
+  keys are reported as presence plus key names, and application settings as names
+  only — no key material and no application-setting value is ever written to the
+  evidence. Needs two permissions beyond Reader (see instructions); an app whose
+  privileged calls are refused is reported with status not_authorized rather than
+  failing the run.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_function_app_configuration.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-FUNCAPP-CONFIG
+  name: Azure Function App Configuration
+  instructions: >
+    Script: fetcher.py. **Permissions: the built-in Reader role is NOT sufficient.**
+    Two of the calls are ARM POST /action operations, not GETs:
+    web_apps.list_host_keys() is POST .../host/listkeys and needs
+    Microsoft.Web/sites/host/listkeys/action;
+    web_apps.list_application_settings() is POST .../config/appsettings/list and
+    needs Microsoft.Web/sites/config/list/Action. Grant Reader plus a custom role
+    carrying exactly those two actions (the same custom role Prowler documents for
+    its function-app checks). A ReadOnly resource lock also rejects both POSTs. When
+    either call is refused, that app's block is reported as status "not_authorized"
+    with the reason, the booleans stay null rather than false, and the run still
+    exits 0 — a missing permission is a legible gap in the evidence, not a failed
+    collection. Azure SDK calls (azure-mgmt-web WebSiteManagementClient):
+    resource.providers.get("Microsoft.Web") first, so a zero-app result is
+    distinguishable from "Functions is not in use"; then web_apps.list(), keeping
+    only apps whose kind starts with "functionapp", for kind, state,
+    public_network_access, virtual_network_subnet_id, https_only and identity
+    (principal_id / tenant_id / type); then per function app
+    web_apps.get_configuration(resource_group_name, name) (GET config/web) for
+    linux_fx_version, windows_fx_version, net_framework_version, ftps_state,
+    min_tls_version, http20_enabled, remote_debugging_enabled and always_on;
+    web_apps.list_host_keys(resource_group_name, name) for whether function keys
+    exist plus the key NAMES and whether a master key is set — key VALUES are dropped
+    at the SDK boundary and never written; and
+    web_apps.list_application_settings(resource_group_name, name) for the application
+    setting NAMES only, from which presence of FUNCTIONS_EXTENSION_VERSION,
+    FUNCTIONS_WORKER_RUNTIME and Application Insights is derived. Setting VALUES are
+    never written, so the runtime version in the evidence is the one from
+    get_configuration, not the Functions host version from the settings.

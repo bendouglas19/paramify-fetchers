@@ -1,0 +1,67 @@
+name: azure_policy_assignments
+version: 0.1.0
+description: >
+  Every Azure Policy assignment in effect on the subscription — its own and the ones
+  inherited from a management group: display name, the referenced policy definition
+  or initiative, the assignment scope and any excluded (notScopes) scopes, the
+  assignment parameters, and whether the assignment is ENFORCED (enforcementMode
+  Default) or audit-only (DoNotEnforce). Each referenced definition is resolved to
+  its display name and to BuiltIn vs Custom where the run's permissions allow;
+  a definition that cannot be read is reported as unavailable rather than failing
+  the collection.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_policy_assignments.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-POLICY-ASSIGN
+  name: Azure Policy Assignments
+  instructions: >
+    Script: fetcher.py. Permissions: the built-in **Reader** role on the
+    subscription is sufficient for the assignments themselves; a policy definition
+    custom to a management group additionally needs read access at that management
+    group, and without it the assignment is still reported with
+    policy_definition.status "unavailable". Azure SDK calls (azure-mgmt-resource-policy
+    PolicyClient — the class moved out of azure-mgmt-resource, so
+    azure.mgmt.resource.policy is tried first and the pre-25.x root re-export second):
+    resource.providers.get("Microsoft.Authorization") for the provider registration
+    state; then policy_assignments.list(), which returns the subscription's own
+    assignments and the ones inherited from its management groups, for id, name,
+    display_name, description, policy_definition_id, scope, not_scopes,
+    enforcement_mode, parameters (unwrapped from the SDK's ParameterValuesValue
+    holders), location and identity.type; then, once per distinct
+    policy_definition_id, policy_definitions.get_built_in(name) /
+    policy_definitions.get(name) / policy_definitions.get_at_management_group(mg, name)
+    — or the policy_set_definitions equivalents when the reference is an initiative —
+    for the definition's display_name and policy_type (BuiltIn / Custom / Static).
+    enforcementMode "Default" means the policy's effect is enforced; "DoNotEnforce"
+    means it evaluates and reports compliance only. An assignment whose scope is a
+    management group is flagged as inherited, not as assigned here.
