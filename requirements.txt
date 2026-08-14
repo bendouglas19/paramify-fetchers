@@ -19,9 +19,7 @@ checkov
 # GCP category (fetchers/gcp/*) — official Google Cloud client libraries. Auth is
 # Application Default Credentials (google-auth is pulled in transitively); no
 # service-account key files. Cloud SQL Admin has no stable GAPIC client, so it
-# uses the official discovery client (google-api-python-client).
-# NOTE: google-cloud-kms is added with the KMS fetcher (held back pending a live
-# re-run), so it is not listed here yet.
+# uses the official discovery client (google-api-python-client), as does Cloud DNS.
 google-cloud-compute
 google-cloud-storage
 google-api-python-client
@@ -33,3 +31,10 @@ google-cloud-resource-manager
 google-cloud-iam
 google-cloud-logging
 google-cloud-monitoring
+# Wave 3 — data-platform and identity/key evidence. google-cloud-kms is no longer
+# held back: kms_key_configuration is the fetcher it was waiting on.
+google-cloud-bigquery
+# distribution is hyphenated; the import is `google.cloud.secretmanager`
+google-cloud-secret-manager
+google-cloud-kms
+google-cloud-api-keys
