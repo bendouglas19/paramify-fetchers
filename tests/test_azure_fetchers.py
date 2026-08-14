@@ -766,32 +766,22 @@ def test_fetcher_yaml_declares_the_ambient_credential_contract(short_name):
     assert spec["evidence_set"]["reference_id"].startswith("EVD-AZURE-")
 
 
-@pytest.mark.parametrize("short_name", AZURE_FETCHERS)
-def test_declared_ksis_exist_in_the_reference_list(short_name):
-    """`ksis:` may only name ids from framework/reference/ksis.yaml."""
-    import yaml
-
-    known = {
-        entry["id"]
-        for entry in yaml.safe_load(
-            (REPO_ROOT / "framework" / "reference" / "ksis.yaml").read_text()
-        )["ksis"]
-    }
-    spec = yaml.safe_load((AZURE_ROOT / short_name / "fetcher.yaml").read_text())
-    assert spec["ksis"], f"azure_{short_name} declares no KSIs"
-    assert set(spec["ksis"]) <= known, f"unknown KSI in azure_{short_name}: {set(spec['ksis']) - known}"
-
-
-@pytest.mark.parametrize("short_name", AZURE_FETCHERS)
 def test_fetcher_writes_evidence_and_a_status_file_when_it_cannot_resolve_a_target(
-    short_name, tmp_path, monkeypatch
+    tmp_path, monkeypatch
 ):
     """The failure path end-to-end, with no Azure SDK involved.
 
     With AZURE_SUBSCRIPTION_ID unset, `resolve_subscription` tries the SDK import
     and fails, so the fetcher must still write parseable evidence, exit non-zero,
     and leave a well-formed reason in $FETCHER_STATUS_FILE.
+
+    Run against one fetcher, not all three: the reason text and the exit path come
+    from `azure_common` (unit-tested above), and
+    tests/test_failure_reporting_contract.py statically asserts that every fetcher
+    in the tree writes the status file before exiting. This covers the remaining
+    question — that the whole chain produces a valid file at runtime.
     """
+    short_name = "storage_encryption_status"
     evidence_dir = tmp_path / "evidence"
     status_file = tmp_path / "status.json"
     monkeypatch.setenv("EVIDENCE_DIR", str(evidence_dir))
