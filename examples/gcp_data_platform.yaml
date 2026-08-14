@@ -1,0 +1,75 @@
+# GCP data-platform evidence — the managed data stores and the secret store, and
+# the configuration that decides who can reach them and whether they can be
+# recovered: Cloud SQL network/auth posture, Cloud SQL backup + high
+# availability, BigQuery dataset encryption and ACLs, and Secret Manager
+# replication + rotation.
+#
+# Kept separate from examples/gcp_data_at_rest.yaml (encryption at rest) and
+# examples/gcp_platform_posture.yaml (GKE / logging / IAM) because the theme is
+# different, not because the wiring is: same ADC auth, same per-project fanout,
+# and any of these manifests can be merged into one run if you'd rather.
+#
+# The two Cloud SQL fetchers here and gcp_cloud_sql_encryption_status all read the
+# same sqladmin instances.list response, projecting a different slice of it. They
+# are separate evidence sets on purpose (1 fetcher = 1 evidence set); running all
+# three costs three API calls, not three inventories.
+#
+# Auth is Application Default Credentials (ADC) — there is no secret to set.
+#   - Local:      gcloud auth application-default login
+#   - In-cluster: GKE Workload Identity (metadata server; nothing to wire)
+#
+# Read-only permissions each fetcher needs, beyond project browse:
+#   gcp_cloud_sql_network_configuration  cloudsql.instances.list  (roles/cloudsql.viewer)
+#   gcp_cloud_sql_backup_configuration   cloudsql.instances.list  (roles/cloudsql.viewer)
+#   gcp_bigquery_dataset_configuration   bigquery.datasets.get/list (roles/bigquery.metadataViewer)
+#   gcp_secret_manager_configuration     secretmanager.secrets.list,
+#                                        secretmanager.versions.list,
+#                                        secretmanager.secrets.getIamPolicy
+#                                        (roles/secretmanager.viewer — NOT
+#                                        secretAccessor: nothing here reads a value)
+# These four fetchers have NOT yet had a live-tenant run — expect to reconcile
+# the permission list on your first one.
+#
+# Fanout is per PROJECT. Each fetcher lists one target per project; `environment`
+# labels that project's evidence (prod / preprod) and is written into the payload
+# metadata. Omitting `project` would fall back to the ADC default project
+# ("collect where deployed") — here we name it explicitly so the run is
+# reproducible and multi-project-ready.
+#
+# Replace the project id below with your own.
+run:
+  output_dir: ./evidence
+
+  platforms:
+    gcp:
+      # Optional: let the non-sensitive ADC selectors through the runner's env
+      # whitelist. Only take effect if actually set. No secret here by design.
+      auth:
+        passthrough_env:
+          - CLOUDSDK_CONFIG
+          - GOOGLE_CLOUD_PROJECT
+
+  fetchers:
+    # A project with no Cloud SQL instances is fine: if sqladmin.googleapis.com is
+    # disabled the fetcher records that (metadata.skipped_calls,
+    # summary.cloud_sql_api_readable: false) and still exits 0. Same for the
+    # BigQuery and Secret Manager fetchers below.
+    - use: gcp_cloud_sql_network_configuration
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    - use: gcp_cloud_sql_backup_configuration
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    - use: gcp_bigquery_dataset_configuration
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    - use: gcp_secret_manager_configuration
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod

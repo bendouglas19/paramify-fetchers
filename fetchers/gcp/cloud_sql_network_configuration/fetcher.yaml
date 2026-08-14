@@ -1,0 +1,62 @@
+name: gcp_cloud_sql_network_configuration
+version: 0.1.0
+description: >
+  For each Cloud SQL instance in the project, reports the boundary posture:
+  whether a public IP exists, which authorized networks reach the instance
+  (0.0.0.0/0 being the finding), whether SSL/TLS is required and at what minimum
+  version, how private connectivity is wired (VPC peering, Private Service
+  Connect, the private path for Google Cloud services), and the per-engine
+  database flags that decide connection logging and cross-database
+  authentication. Instance IP addresses are not copied — the posture fact is
+  whether a public one exists, not what it is.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_cloud_sql_network_configuration.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+evidence_set:
+  reference_id: EVD-GCP-CLOUDSQL-NET
+  name: Cloud SQL Network Configuration
+  instructions: >
+    Script: fetcher.py. Google Cloud client library call: sqladmin (Cloud SQL
+    Admin, discovery v1beta4) instances.list — one call, paginated internally.
+    Per instance: ipAddresses[].type (a PRIMARY address means a public IP),
+    settings.ipConfiguration.ipv4Enabled / requireSsl / sslMode /
+    authorizedNetworks[] / privateNetwork / allocatedIpRange /
+    enablePrivatePathForGoogleCloudServices / pscConfig / serverCaMode, and
+    settings.databaseFlags[]. An authorized network of 0.0.0.0/0 is reported as
+    open_to_internet. SSL enforcement reads sslMode first and falls back to the
+    legacy requireSsl toggle when sslMode is unset; both raw fields are in the
+    evidence. Minimum TLS version comes from the engine's database flag
+    (tls_version on MySQL, ssl_min_protocol_version on PostgreSQL) because Cloud
+    SQL has no ipConfiguration field for it. Database flags are reported, not
+    judged: every flag the instance sets is listed by its API name, and the
+    engine-relevant security flags are listed with their value or null when
+    unset. A project with the Cloud SQL Admin API disabled is recorded as not
+    readable rather than failing.

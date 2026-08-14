@@ -1,0 +1,58 @@
+name: gcp_cloud_sql_backup_configuration
+version: 0.1.0
+description: >
+  The recovery-planning evidence for Cloud SQL. For each instance in the project,
+  reports whether automated backups run and in which window, whether
+  point-in-time recovery is on (binary logging on MySQL, the PITR toggle
+  elsewhere), how many backups and how many days of transaction log are retained,
+  and whether the instance is regional (standby in a second zone, automatic
+  failover) or zonal — plus the replica topology and deletion protection.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_cloud_sql_backup_configuration.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+evidence_set:
+  reference_id: EVD-GCP-CLOUDSQL-BACKUP
+  name: Cloud SQL Backup Configuration
+  instructions: >
+    Script: fetcher.py. Google Cloud client library call: sqladmin (Cloud SQL
+    Admin, discovery v1beta4) instances.list — one call, paginated internally.
+    Per instance: settings.backupConfiguration (enabled, startTime, location,
+    pointInTimeRecoveryEnabled, binaryLogEnabled, transactionLogRetentionDays,
+    transactionalLogStorageState, backupRetentionSettings.retainedBackups /
+    retentionUnit), settings.availabilityType (REGIONAL = standby replica in a
+    second zone with automatic failover; ZONAL = neither),
+    settings.deletionProtectionEnabled, gceZone / secondaryGceZone,
+    failoverReplica, replicaNames and masterInstanceName. Point-in-time recovery
+    is read per engine — binaryLogEnabled on MySQL, pointInTimeRecoveryEnabled on
+    PostgreSQL and SQL Server — and both raw fields are kept alongside the derived
+    answer. The high-availability percentage covers primary instances only; a read
+    replica inherits availability from its primary. A project with the Cloud SQL
+    Admin API disabled is recorded as not readable rather than failing.
