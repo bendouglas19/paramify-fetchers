@@ -1,0 +1,68 @@
+name: azure_sql_encryption_status
+version: 0.1.0
+description: >
+  For each Azure SQL logical server in the subscription, reports the transparent
+  data encryption (TDE) key source — the encryption protector's server_key_type
+  ("AzureKeyVault" = a customer-managed Key Vault key, "ServiceManaged" = the
+  platform key), the bound key name and URI, and whether key auto-rotation is on —
+  plus the per-database TDE state underneath it. TDE is enabled by default on Azure
+  SQL, so the evidence that varies is the key source, not "encrypted: true/false";
+  per-database state is still collected because a restored or explicitly disabled
+  database can be unencrypted under an otherwise CMK-protected server. The
+  Azure-managed `master` database is flagged and excluded from the user-database
+  counts.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_sql_encryption_status.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-SQL-ENC
+  name: Azure SQL Transparent Data Encryption
+  instructions: >
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-sql SqlManagementClient):
+    servers.list() for every logical server (id, name, location, version, state,
+    fully_qualified_domain_name); then per server
+    encryption_protectors.get(resource_group, server, "current") for server_key_name,
+    server_key_type, uri and auto_rotation_enabled; databases.list_by_server(
+    resource_group, server) for each database (id, name, type, location, managed_by,
+    status); and per database transparent_data_encryptions.get(resource_group,
+    server, database, "current") for the TDE state. server_key_type "AzureKeyVault"
+    ⇒ TDE protected by a customer-managed key; "ServiceManaged" ⇒ the platform key.
+    TDE state "Enabled" ⇒ the database is encrypted at rest. The `master` database is
+    created and managed by Azure and its TDE state is not customer-controlled, so it
+    is marked is_system_database and excluded from the user-database counts. On
+    azure-mgmt-sql 4.0.0 the TDE state field is `state` (Prowler reads the older
+    `status`), and the protector name is passed positionally because 4.0.0 renamed
+    that parameter to `tde_name`. An optional sub-resource Azure answers with a 404
+    is recorded as absent, not as a collection failure. A subscription that never
+    registered the Microsoft.Sql resource provider reports
+    provider_registration_status: not_registered, which is valid evidence ("Azure
+    SQL not in use") rather than an empty result that looks like full coverage.
