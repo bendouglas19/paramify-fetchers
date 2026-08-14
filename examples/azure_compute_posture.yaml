@@ -1,0 +1,64 @@
+# Azure compute and container posture — the encryption and hardening state of the
+# VMs, managed disks, AKS clusters and container registries in one subscription.
+#
+# Auth is azure-identity's DefaultAzureCredential — there is no secret to set.
+#   - Local:      az login          (cached CLI token under $HOME)
+#   - In-cluster: AKS workload identity (AZURE_TENANT_ID + AZURE_CLIENT_ID +
+#                 AZURE_FEDERATED_TOKEN_FILE; no stored secret)
+#   - Azure VM / App Service: managed identity via IMDS (nothing to wire)
+# See fetchers/_categories/azure.yaml for the full resolution order.
+#
+# Read-only access needed: the built-in **Reader** role on each subscription in
+# `targets`. Nothing here writes, and nothing reaches into a guest OS, a Kubernetes
+# API server or a registry's image data — only ARM control-plane configuration.
+#
+# pip deps beyond the three the existing Azure fetchers use:
+#   azure-mgmt-compute            (disk_encryption_status, vm_hardening_status)
+#   azure-mgmt-containerservice   (aks_cluster_configuration)
+#   azure-mgmt-containerregistry  (container_registry_configuration)
+#   azure-mgmt-monitor>=6.0.2,<7  (container_registry_configuration — 7.0.0 removed
+#                                  the diagnostic_settings operation group)
+#
+# Fanout is per SUBSCRIPTION. Each fetcher lists one target per subscription;
+# `environment` labels that subscription's evidence (prod / preprod) and is written
+# into the payload metadata. Omitting `subscription_id` falls back to the first
+# enabled subscription the ambient credential can see ("collect where deployed") —
+# here it is named explicitly so the run is reproducible and multi-subscription
+# ready.
+#
+# Replace the subscription id below with your own.
+run:
+  output_dir: ./evidence
+
+  platforms:
+    azure:
+      # Optional: let the ambient credential-chain selectors through the runner's
+      # env whitelist. They only take effect if actually set, and none is a secret
+      # on the workload-identity / managed-identity paths. The category file
+      # already declares this set; repeating it here documents the run's auth path.
+      auth:
+        passthrough_env:
+          - AZURE_TENANT_ID
+          - AZURE_CLIENT_ID
+          - AZURE_FEDERATED_TOKEN_FILE
+
+  fetchers:
+    - use: azure_disk_encryption_status
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod
+
+    - use: azure_vm_hardening_status
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod
+
+    - use: azure_aks_cluster_configuration
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod
+
+    - use: azure_container_registry_configuration
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod

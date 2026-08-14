@@ -1,0 +1,67 @@
+name: azure_aks_cluster_configuration
+version: 0.1.0
+description: >
+  For every AKS managed cluster in the subscription, reports the control-plane
+  configuration: the public and private API server FQDNs, whether it is a private
+  cluster and whether the API server has authorized IP ranges, Kubernetes RBAC and
+  Entra-integrated Azure RBAC, whether local (certificate) admin accounts are
+  disabled, workload identity and the OIDC issuer, the network policy and plugin, the
+  requested and running Kubernetes versions with the cluster and node-OS auto-upgrade
+  channels, Microsoft Defender for Containers and Azure Monitor metrics, and each
+  agent pool's size, OS, version and whether its nodes get public IPs.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_aks_cluster_configuration.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-AKS-CONFIG
+  name: Azure Kubernetes Service Cluster Configuration
+  instructions: >
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-containerservice
+    ContainerServiceClient): managed_clusters.list() for the whole projection — fqdn
+    and private_fqdn, public_network_access, api_server_access_profile
+    (enable_private_cluster, authorized_ip_ranges, disable_run_command), enable_rbac,
+    aad_profile (managed, enable_azure_rbac), disable_local_accounts,
+    security_profile.workload_identity.enabled, oidc_issuer_profile.enabled,
+    network_profile (network_policy, network_plugin, outbound_type),
+    kubernetes_version and current_kubernetes_version, auto_upgrade_profile
+    (upgrade_channel, node_os_upgrade_channel),
+    security_profile.defender.security_monitoring.enabled and its log analytics
+    workspace, azure_monitor_profile.metrics.enabled, disk_encryption_set_id,
+    node_resource_group, and each agent_pool_profiles entry (name,
+    enable_node_public_ip, mode, count, vm_size, os_type, os_sku, os_disk_type,
+    enable_encryption_at_host, enable_auto_scaling, orchestrator_version,
+    vnet_subnet_id). Preceded by
+    resource.providers.get("Microsoft.ContainerService") so that zero clusters is
+    distinguishable from the provider not being registered. API server access counts
+    as restricted when the cluster is private OR has authorized IP ranges; an absent
+    network_policy means pod-to-pod traffic is unrestricted; an absent or "none"
+    upgrade channel means no automatic upgrades.

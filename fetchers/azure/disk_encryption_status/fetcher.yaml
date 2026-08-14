@@ -1,0 +1,63 @@
+name: azure_disk_encryption_status
+version: 0.1.0
+description: >
+  For every managed disk in the subscription, reports which key encrypts it at rest
+  — the platform key (Microsoft-managed default), a customer-managed key held in a
+  disk encryption set, or both (double encryption) — plus whether Azure Disk
+  Encryption (dm-crypt / BitLocker) is on for the guest volume and which Key Vault
+  holds its keys, the disk's size / OS type / SKU / state, and its export exposure
+  (network access policy, public network access). Attached and unattached disks are
+  reported and summarized separately: an unattached disk still holds the data of the
+  VM it was detached from. Managed disks are always encrypted at rest, so the
+  evidence that varies is CMK vs platform key, not "encrypted: true/false".
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_disk_encryption_status.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-DISK-ENC
+  name: Azure Managed Disk Encryption
+  instructions: >
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-compute ComputeManagementClient):
+    disks.list() for the whole projection — encryption.type,
+    encryption.disk_encryption_set_id, encryption_settings_collection (enabled,
+    encryption_settings_version, and each element's disk/key encryption key source
+    vault id), os_type, disk_size_gb, disk_state, sku.name, managed_by and
+    managed_by_extended (the VMs the disk is attached to), network_access_policy and
+    public_network_access. Preceded by resource.providers.get("Microsoft.Compute") so
+    that zero disks is distinguishable from the provider not being registered.
+    encryption.type "EncryptionAtRestWithPlatformKey" ⇒ Microsoft-managed default;
+    "EncryptionAtRestWithCustomerKey" or "EncryptionAtRestWithPlatformAndCustomerKeys"
+    ⇒ customer-managed key from a disk encryption set (the latter is double
+    encryption). Disks with no attached VM are summarized separately from attached
+    ones, because an orphaned disk keeps its former VM's data under whatever key it
+    was created with. Key Vault secret/key URLs are deliberately not collected — only
+    the vault ids.
