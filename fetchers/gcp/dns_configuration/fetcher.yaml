@@ -1,0 +1,60 @@
+name: gcp_dns_configuration
+version: 0.1.0
+description: >
+  Every Cloud DNS managed zone in the project: DNSSEC state (on / off /
+  transferring), the key-signing and zone-signing algorithms — RSASHA1 in either
+  position is the finding — zone visibility (public vs private, which decides
+  whether DNSSEC applies at all), query logging, and the private-network,
+  forwarding and peering topology. Also reports the project's DNS policies, where
+  logging and inbound forwarding are configured per network.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_dns_configuration.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+evidence_set:
+  reference_id: EVD-GCP-DNS
+  name: Cloud DNS Zone and DNSSEC Configuration
+  instructions: >
+    Script: fetcher.py. Google API client (discovery: dns v1 — the handwritten
+    google-cloud-dns library does not surface dnssecConfig, so the discovery client
+    is used here as it is for Cloud SQL) calls: managedZones.list and policies.list,
+    both paginated by pageToken. Per zone this reports name, id, dnsName,
+    creationTime, visibility, dnssecConfig state and nonExistence, every entry in
+    dnssecConfig defaultKeySpecs (keyType, algorithm, keyLength),
+    cloudLoggingConfig enableLogging, nameServers, the networks and GKE clusters in
+    privateVisibilityConfig, forwardingConfig targetNameServers and peeringConfig
+    targetNetwork. Key-signing and zone-signing algorithms are reported separately
+    because they are configured independently and either can be RSASHA1. DNSSEC
+    coverage is measured over PUBLIC zones only, since a private zone has no public
+    resolution path for DNSSEC to protect. Per policy this reports enableLogging,
+    enableInboundForwarding, the attached networks, and any alternative name
+    servers. When dns.googleapis.com is not enabled on the project the calls are
+    tolerated and reported as summary.dns_api_readable: false rather than as a
+    collection failure.

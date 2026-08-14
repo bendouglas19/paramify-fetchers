@@ -1,0 +1,65 @@
+name: gcp_api_keys_inventory
+version: 0.1.0
+description: >
+  Every API key in the project, with its creation and last-update time, its age
+  against the 90-day rotation interval, and both restriction axes unpacked: which
+  API services it may call (flagging the cloudapis.googleapis.com wildcard, which
+  restricts nothing) and which referrers, IP ranges, Android packages or iOS bundle
+  ids may present it. A key with neither axis set is unrestricted — a bearer
+  credential that works against every enabled API from anywhere. No key string is
+  ever read.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_api_keys_inventory.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+evidence_set:
+  reference_id: EVD-GCP-API-KEYS
+  name: API Keys Inventory and Restrictions
+  instructions: >
+    Script: fetcher.py. Google Cloud client library call: apikeys v2
+    projects.locations.keys.list against projects/<id>/locations/global (the only
+    location API keys exist in). Per key this reports uid, resource name,
+    displayName, createTime, updateTime, deleteTime, the derived age in days and
+    days since last update, and the restrictions block unpacked into its axes —
+    apiTargets (service plus the methods each target is narrowed to),
+    browserKeyRestrictions allowedReferrers, serverKeyRestrictions allowedIps,
+    androidKeyRestrictions allowed application package names, and
+    iosKeyRestrictions allowedBundleIds. A key whose only API target is
+    cloudapis.googleapis.com counts as having no API restriction, since that
+    wildcard grants every Cloud API. A key with neither an API restriction nor a
+    client restriction is reported as unrestricted. Key age is computed against
+    collection time and counted against a 90-day rotation interval, because an API
+    key has no expiry. No key material is read: the v2 API returns key strings only
+    from the separate GetKeyString method, which this fetcher never calls, and every
+    field is projected by name so a key string could not reach the evidence file
+    even if keys.list began returning one — recorded as
+    summary.key_material_collected: false. When apikeys.googleapis.com is not
+    enabled on the project the call is tolerated and reported as
+    summary.api_keys_api_readable: false rather than as a collection failure.
