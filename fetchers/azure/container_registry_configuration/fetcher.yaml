@@ -1,0 +1,67 @@
+name: azure_container_registry_configuration
+version: 0.1.0
+description: >
+  For every container registry in the subscription, reports who can reach it and who
+  can pull from it: the SKU and login server, whether the shared admin account is
+  enabled (a standing finding — it bypasses Entra ID, so pulls and pushes through it
+  are not attributable), whether anonymous pull is on, public network access with the
+  network rule set's default action and IP allow-list, the private endpoint
+  connections and their approval state, customer-managed-key encryption and zone
+  redundancy, the content-trust / quarantine / retention / export / ARM-audience
+  policies, and the diagnostic settings that ship the registry's login and repository
+  audit logs.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_container_registry_configuration.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-ACR-CONFIG
+  name: Azure Container Registry Configuration
+  instructions: >
+    Script: fetcher.py. Azure SDK calls: registries.list()
+    (azure-mgmt-containerregistry ContainerRegistryManagementClient) for sku.name,
+    login_server, admin_user_enabled, anonymous_pull_enabled, public_network_access,
+    network_rule_bypass_options, network_rule_set (default_action and each ip_rules
+    entry), data_endpoint_enabled, private_endpoint_connections (id, name, type,
+    private_link_service_connection_state.status, provisioning_state),
+    encryption.status, zone_redundancy and policies (quarantine, trust, retention,
+    export, azure_ad_authentication_as_arm); then, per registry,
+    diagnostic_settings.list(resource_uri=<the registry's ARM id without its leading
+    slash>) (azure-mgmt-monitor MonitorManagementClient) for the log and metric
+    categories, the destination workspace / storage account / event hub. Preceded by
+    resource.providers.get("Microsoft.ContainerRegistry") so that zero registries is
+    distinguishable from the provider not being registered. public_network_access
+    "Disabled" is the only value that counts as not publicly reachable — the field is
+    omitted when it sits at its "Enabled" default. Needs
+    azure-mgmt-monitor>=6.0.2,<7: 7.0.0 removed the diagnostic_settings operation
+    group. The diagnostic settings collected here overlap with the dedicated Azure
+    diagnostic settings evidence set, which lists subscription-scoped settings; a
+    subscription-scoped listing does not include a registry's own settings.
