@@ -12,6 +12,10 @@ fetcher's `collect_*()`, so the pure transform functions (and their tests) impor
 with only the standard library present.
 
 Design notes:
+- **SDK models are read by attribute, never via `as_dict()`.** Each fetcher has one
+  projection function per resource type that turns an azure-mgmt model into a flat
+  snake_case dict; every transform downstream is pure dict-in/dict-out. See
+  `model_attr()` below for why attribute access is the portable choice.
 - **Auth is the ambient credential chain only.** `DefaultAzureCredential()`
   resolves the token; no secret is declared or read. See
   fetchers/_categories/azure.yaml for the resolution order and which env vars the
@@ -35,6 +39,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -100,23 +105,6 @@ def resource_group_from_id(resource_id: Optional[str]) -> Optional[str]:
     return None
 
 
-def first(obj: Optional[Dict[str, Any]], *keys: str) -> Any:
-    """Return the first present, non-None value among `keys` in `obj`.
-
-    Defensive against the snake_case spellings `Model.as_dict()` produces and the
-    camelCase wire names `Model.serialize()` / raw REST responses use for the same
-    field (`enable_https_traffic_only` vs `supportsHttpsTrafficOnly`), so the pure
-    transforms work on whichever shape the collector hands in.
-    """
-    if not isinstance(obj, dict):
-        return None
-    for key in keys:
-        val = obj.get(key)
-        if val is not None:
-            return val
-    return None
-
-
 def dig(obj: Any, *path: str) -> Any:
     """Walk a nested dict by keys, tolerating a missing link at any level."""
     cur = obj
@@ -127,26 +115,48 @@ def dig(obj: Any, *path: str) -> Any:
     return cur
 
 
-def to_dict(model: Any) -> Dict[str, Any]:
-    """Best-effort plain dict from an azure-mgmt model.
+# --------------------------------------------------------------------------- #
+# The SDK boundary: reading azure-mgmt model objects
+# --------------------------------------------------------------------------- #
+#
+# Each fetcher has ONE projection function per resource type that reads the SDK
+# model's attributes into a flat snake_case dict; everything downstream is a pure
+# dict-in/dict-out transform. `model_attr` is the single primitive those
+# projections are built from.
+#
+# Why attributes and not `as_dict()`: the azure-mgmt packages are not all on the
+# same code generator, and `as_dict()` is where that shows.
+#   - azure-mgmt-storage 25.x / azure-mgmt-network 31.x use the newer
+#     `_model_base` runtime, whose `as_dict()` emits the WIRE shape — camelCase
+#     keys nested under "properties" (NSG rules nested twice).
+#   - azure-mgmt-security 7.0.0 is still on the msrest generator, whose
+#     `as_dict()` emits FLAT snake_case.
+# Attribute access is snake_case and flat on BOTH: the msrest generator flattens
+# `properties.*` onto the model, and the `_model_base` generator emits a
+# `__getattr__` that forwards the same flattened names to `self.properties`
+# (returning None when `properties` is absent). So `account.encryption.key_source`
+# reads identically on either generator — which is why Prowler reads models this
+# way — and no camelCase/nesting tolerance is needed anywhere.
 
-    msrest/azure-core models expose `as_dict()` (snake_case attribute keys, nested
-    models recursed). Fall back to `serialize()` (camelCase wire names) and then to
-    `__dict__` so a model from a differently-generated SDK still yields something
-    the transforms can read via `first()`/`dig()`.
+def model_attr(model: Any, name: str) -> Any:
+    """Read ONE attribute off an azure-mgmt model, normalized to a plain value.
+
+    Deliberately takes a single name: there are no alternate spellings to try and
+    no `properties` bag to fall back into. Two normalizations happen here because
+    this is the boundary where the SDK's own types stop:
+
+    - **Absent reads as None.** Returns None when `model` is None or has no such
+      attribute, so a nested model the API omitted (`encryption`, `key_policy`,
+      `protocol_settings`) doesn't raise partway down a projection.
+    - **Enum members unwrap to their wire string.** azure-mgmt types many fields
+      as `str` enums (`KeySource`, `SecurityRuleProtocol`, `MinimumTlsVersion`).
+      They compare equal to their value, but `str()` renders them as
+      "KeySource.MICROSOFT_KEYVAULT", not "Microsoft.Keyvault" — which would
+      silently break a downstream `str(...).lower()` comparison and put an enum
+      repr in the evidence. `as_dict()` used to do this unwrapping for us.
     """
-    for attr in ("as_dict", "serialize"):
-        fn = getattr(model, attr, None)
-        if callable(fn):
-            try:
-                result = fn()
-            except Exception:  # noqa: BLE001 — fall through to the next strategy
-                continue
-            if isinstance(result, dict):
-                return result
-    if isinstance(model, dict):
-        return model
-    return dict(getattr(model, "__dict__", {}) or {})
+    value = getattr(model, name, None)
+    return value.value if isinstance(value, Enum) else value
 
 
 class Collector:

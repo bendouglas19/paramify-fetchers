@@ -1,27 +1,28 @@
 """Fixture-based tests for the Azure evidence fetchers.
 
-These exercise each fetcher's PURE transform functions against fixture responses
-(no live API calls, no credentials, no azure-* packages needed — the heavy
-`azure.*` imports live inside `azure_common.credential()` and each fetcher's
-`collect_*()` and are never triggered here), plus the shared helpers in
-`fetchers/azure/_shared/azure_common.py`.
+No live API calls, no credentials, and no azure-* package needs to be installed:
+the heavy `azure.*` imports live inside `azure_common.credential()` and each
+fetcher's `collect_*()`, and are never triggered here. Two layers are covered.
 
-**Fixture provenance.** No live Azure tenant was available, so the fixtures are
-SYNTHETIC — but not guessed. Each was produced by constructing the real SDK model
-(azure-mgmt-storage 25.1.0, azure-mgmt-network 31.0.1, azure-mgmt-security 7.0.0)
-and dumping `model.as_dict()`, so the key names and nesting are the SDK's own. That
-matters because the three packages are NOT on the same generator:
+**The projection layer** (`project_*`) is each fetcher's only code that touches an
+azure-mgmt model. It reads model ATTRIBUTES into a flat snake_case dict. Its tests
+drive it with `SimpleNamespace` stand-ins that mimic attribute access, including
+the `None` intermediates the real API hands back constantly (`encryption` absent,
+a subnet with no NSG, a plan with no extensions).
 
-- azure-mgmt-storage / azure-mgmt-network are on the newer `_model_base` runtime,
-  whose `as_dict()` emits the WIRE shape — camelCase keys nested under
-  `"properties"` (and security rules are nested twice: nsg.properties.securityRules
-  [i].properties.destinationPortRange).
-- azure-mgmt-security is still msrest, whose `as_dict()` emits FLAT snake_case
-  (`pricing_tier`, `is_enabled`).
+Attribute access is what makes that layer portable. The three packages are not on
+the same code generator, and `as_dict()` is where that shows: azure-mgmt-storage
+25.x / azure-mgmt-network 31.x use the `_model_base` runtime and emit the camelCase
+WIRE shape nested under "properties" (NSG rules nested twice), while
+azure-mgmt-security 7.0.0 is still msrest and emits flat snake_case. Attributes are
+flat snake_case on BOTH — msrest flattens `properties.*` onto the model, and
+`_model_base` generates a `__getattr__` forwarding the same names to
+`self.properties` — so the projections need no spelling or nesting tolerance.
 
-The transforms therefore read both spellings and both nestings; the tests below
-pin that tolerance, because an SDK bump that flips a package between generators
-would otherwise silently empty the evidence rather than fail.
+**The pure transforms** (`*_record`, `summarize`, and friends) take the projection's
+output and are plain dict-in/dict-out, so they are tested from literal fixtures.
+Those fixtures are SYNTHETIC but not guessed: they are the projections' verified
+output shape for the SDK versions above.
 
 Run: pytest tests/test_azure_fetchers.py  (needs `pip install -e .`)
 """
@@ -30,7 +31,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -86,6 +89,29 @@ def test_basename_and_sanitize():
     )
     assert common.sanitize_for_filename("sub/with space") == "sub_with_space"
     assert common.sanitize_for_filename("") == "unknown"
+
+
+def test_model_attr_is_none_tolerant_and_unwraps_enums():
+    """The single primitive every projection is built from."""
+    from enum import Enum
+
+    class Tier(str, Enum):
+        STANDARD = "Standard"
+
+    common = _load_shared()
+    model = SimpleNamespace(name="acct", tier=Tier.STANDARD, nothing=None)
+
+    assert common.model_attr(model, "name") == "acct"
+    # An absent attribute and an absent parent both read as None rather than raising,
+    # which is what lets a projection chain through omitted nested models.
+    assert common.model_attr(model, "never_set") is None
+    assert common.model_attr(None, "name") is None
+    assert common.model_attr(model, "nothing") is None
+    # Enum members are `str` subclasses that compare equal to their value, but
+    # `str()` on one yields "Tier.STANDARD" — so they must not survive the boundary.
+    assert common.model_attr(model, "tier") == "Standard"
+    assert type(common.model_attr(model, "tier")) is str
+    assert str(common.model_attr(model, "tier")).lower() == "standard"
 
 
 def test_collector_swallows_and_records():
@@ -243,38 +269,37 @@ def test_coverage_percentage_is_zero_when_empty():
 
 
 # --------------------------------------------------------------------------- #
-# Storage accounts — azure-mgmt-storage 25.1.0 StorageAccount.as_dict()
-# (wire shape: camelCase under "properties")
+# Storage accounts — project_storage_account() output, then the transforms
 # --------------------------------------------------------------------------- #
 
-CMK_ACCOUNT = {  # SYNTHETIC, dumped from StorageAccount(...).as_dict()
+CMK_ACCOUNT = {  # SYNTHETIC — project_storage_account()'s output shape
     "id": (
         "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/paramify-rg"
         "/providers/Microsoft.Storage/storageAccounts/pfcmk"
     ),
     "name": "pfcmk",
     "location": "eastus",
-    "sku": {"name": "Standard_GRS"},
-    "properties": {
-        "networkAcls": {"bypass": "Logging", "defaultAction": "Deny"},
-        "allowSharedKeyAccess": False,
-        "keyPolicy": {"keyExpirationPeriodInDays": 90},
-        "encryption": {"keySource": "Microsoft.Keyvault", "requireInfrastructureEncryption": True},
-        "minimumTlsVersion": "TLS1_2",
-        "publicNetworkAccess": "Disabled",
-        "defaultToOAuthAuthentication": True,
-        "allowBlobPublicAccess": False,
-        "supportsHttpsTrafficOnly": True,
-        "allowCrossTenantReplication": False,
-        "privateEndpointConnections": [
-            {"id": "/subscriptions/s/rg/pec1", "name": "pec1", "type": "Microsoft.Storage/x"}
-        ],
-    },
+    "encryption_type": "Microsoft.Keyvault",
+    "infrastructure_encryption": True,
+    "enable_https_traffic_only": True,
+    "minimum_tls_version": "TLS1_2",
+    "allow_blob_public_access": False,
+    "public_network_access": "Disabled",
+    "network_rule_set": {"bypass": "Logging", "default_action": "Deny"},
+    "private_endpoint_connections": [
+        {"id": "/subscriptions/s/rg/pec1", "name": "pec1", "type": "Microsoft.Storage/x"}
+    ],
+    "key_expiration_period_in_days": 90,
+    "allow_shared_key_access": False,
+    "default_to_entra_authorization": True,
+    "replication_settings": "Standard_GRS",
+    "allow_cross_tenant_replication": False,
 }
 
 # The permissive default account: the API OMITS allowCrossTenantReplication /
 # allowSharedKeyAccess / the whole networkAcls block when they sit at their
-# service defaults, so "absent" must read as the default, not as None.
+# service defaults, so the projection reports None and "absent" must read as the
+# default, not as None.
 DEFAULT_ACCOUNT = {  # SYNTHETIC
     "id": (
         "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/paramify-rg"
@@ -282,53 +307,39 @@ DEFAULT_ACCOUNT = {  # SYNTHETIC
     ),
     "name": "pfdefault",
     "location": "eastus",
-    "sku": {"name": "Standard_LRS"},
-    "properties": {
-        "encryption": {"keySource": "Microsoft.Storage"},
-        "minimumTlsVersion": "TLS1_0",
-        "supportsHttpsTrafficOnly": True,
-        "allowBlobPublicAccess": True,
-    },
-}
-
-# The same account as the FLAT snake_case shape an msrest-generation SDK would
-# emit — proves the transform survives a generator flip.
-FLAT_ACCOUNT = {  # SYNTHETIC
-    "id": (
-        "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/other-rg"
-        "/providers/Microsoft.Storage/storageAccounts/pfflat"
-    ),
-    "name": "pfflat",
-    "location": "westus2",
-    "sku": {"name": "Premium_ZRS"},
-    "encryption": {"key_source": "Microsoft.Keyvault", "require_infrastructure_encryption": False},
-    "minimum_tls_version": "TLS1_2",
+    "encryption_type": "Microsoft.Storage",
+    "infrastructure_encryption": None,
     "enable_https_traffic_only": True,
-    "allow_blob_public_access": False,
-    "network_rule_set": {"bypass": "AzureServices", "default_action": "Deny"},
-    "key_policy": {"key_expiration_period_in_days": 30},
+    "minimum_tls_version": "TLS1_0",
+    "allow_blob_public_access": True,
+    "public_network_access": None,
+    "network_rule_set": {"bypass": None, "default_action": None},
+    "private_endpoint_connections": [],
+    "key_expiration_period_in_days": None,
+    "allow_shared_key_access": None,
+    "default_to_entra_authorization": None,
+    "replication_settings": "Standard_LRS",
+    "allow_cross_tenant_replication": None,
 }
 
-BLOB_PROPERTIES = {  # SYNTHETIC, from BlobServiceProperties(...).as_dict()
+BLOB_PROPERTIES = {  # SYNTHETIC — project_blob_service_properties()'s output shape
     "id": "/subscriptions/s/blobServices/default",
     "name": "default",
     "type": "Microsoft.Storage/storageAccounts/blobServices",
-    "properties": {
-        "defaultServiceVersion": "2021-04-10",
-        "containerDeleteRetentionPolicy": {"enabled": True, "days": 14},
-        "isVersioningEnabled": True,
-    },
+    "default_service_version": "2021-04-10",
+    "container_delete_retention_policy": {"enabled": True, "days": 14},
+    "is_versioning_enabled": True,
 }
 
-FILE_PROPERTIES = {  # SYNTHETIC, from FileServiceProperties(...).as_dict()
+FILE_PROPERTIES = {  # SYNTHETIC — project_file_service_properties()'s output shape
     "id": "/subscriptions/s/fileServices/default",
     "name": "default",
     "type": "Microsoft.Storage/storageAccounts/fileServices",
-    "properties": {
-        "shareDeleteRetentionPolicy": {"enabled": True, "days": 7},
-        "protocolSettings": {
-            "smb": {"versions": "SMB3.0;SMB3.1.1", "channelEncryption": "AES-256-GCM;"}
-        },
+    "share_delete_retention_policy": {"enabled": True, "days": 7},
+    # The SDK hands SMB settings over as one ";"-delimited string per field.
+    "smb_protocol_settings": {
+        "channel_encryption": "AES-256-GCM;",
+        "supported_versions": "SMB3.0;SMB3.1.1",
     },
 }
 
@@ -366,16 +377,138 @@ def test_storage_platform_key_and_permissive_defaults():
     assert rec["network_rule_set"] == {"bypass": "AzureServices", "default_action": "Allow"}
 
 
-def test_storage_transform_reads_the_flat_snake_case_shape():
-    """An SDK generator flip must not silently empty the evidence."""
+def test_project_storage_account_reads_sdk_attributes():
+    """The projection's output IS the fixture the transforms are tested against.
+
+    Asserting the whole dict (not a few keys) is deliberate: if the projection's
+    key names ever drift from what `account_record` reads, the evidence would go
+    quietly null rather than fail, so the two must be pinned to each other.
+    """
     st = _load("storage_encryption_status")
-    rec = st.account_record(FLAT_ACCOUNT)
-    assert rec["customer_managed_key"] is True
-    assert rec["enable_https_traffic_only"] is True
-    assert rec["minimum_tls_version"] == "TLS1_2"
-    assert rec["key_expiration_period_in_days"] == 30
-    assert rec["resource_group"] == "other-rg"
-    assert rec["network_rule_set"]["default_action"] == "Deny"
+    account = SimpleNamespace(
+        id=CMK_ACCOUNT["id"],
+        name="pfcmk",
+        location="eastus",
+        encryption=SimpleNamespace(
+            key_source="Microsoft.Keyvault", require_infrastructure_encryption=True
+        ),
+        enable_https_traffic_only=True,
+        minimum_tls_version="TLS1_2",
+        allow_blob_public_access=False,
+        public_network_access="Disabled",
+        network_rule_set=SimpleNamespace(bypass="Logging", default_action="Deny"),
+        private_endpoint_connections=[
+            SimpleNamespace(
+                id="/subscriptions/s/rg/pec1", name="pec1", type="Microsoft.Storage/x"
+            )
+        ],
+        key_policy=SimpleNamespace(key_expiration_period_in_days=90),
+        allow_shared_key_access=False,
+        # The SDK still spells Entra ID by its former name.
+        default_to_o_auth_authentication=True,
+        sku=SimpleNamespace(name="Standard_GRS"),
+        allow_cross_tenant_replication=False,
+    )
+    assert st.project_storage_account(account) == CMK_ACCOUNT
+
+
+def test_project_storage_account_survives_absent_nested_models():
+    """`encryption` / `key_policy` / `sku` absent must read as None, not raise.
+
+    The API omits whole blocks when a feature was never configured, so every hop
+    in the projection is None-tolerant. The permissive Prowler defaults are then
+    the transform's job, not the projection's.
+    """
+    st = _load("storage_encryption_status")
+    bare = SimpleNamespace(id=DEFAULT_ACCOUNT["id"], name="pfdefault", location="eastus")
+    projected = st.project_storage_account(bare)  # must not raise
+
+    assert projected["encryption_type"] is None
+    assert projected["infrastructure_encryption"] is None
+    assert projected["key_expiration_period_in_days"] is None
+    assert projected["replication_settings"] is None
+    assert projected["network_rule_set"] == {"bypass": None, "default_action": None}
+    assert projected["private_endpoint_connections"] == []
+
+    # ... and the transform still lands on the permissive service defaults.
+    rec = st.account_record(projected)
+    assert rec["customer_managed_key"] is False
+    assert rec["allow_shared_key_access"] is True
+    assert rec["allow_cross_tenant_replication"] is True
+    assert rec["default_to_entra_authorization"] is False
+    assert rec["network_rule_set"] == {"bypass": "AzureServices", "default_action": "Allow"}
+
+
+def test_project_storage_account_unwraps_the_sdk_string_enums():
+    """azure-mgmt types `key_source` as a `str` enum; `str()` on it is a trap.
+
+    A member compares equal to its value, but `str(KeySource.MICROSOFT_KEYVAULT)`
+    is "KeySource.MICROSOFT_KEYVAULT" — so leaving the enum in place would make
+    `account_record`'s lowercased comparison report a CMK account as
+    platform-managed, and would put an enum repr in the evidence. The removed
+    `as_dict()` used to unwrap these, so the projection must.
+    """
+    from enum import Enum
+
+    class FakeKeySource(str, Enum):
+        MICROSOFT_KEYVAULT = "Microsoft.Keyvault"
+
+    st = _load("storage_encryption_status")
+    account = SimpleNamespace(
+        id=CMK_ACCOUNT["id"],
+        name="pfcmk",
+        encryption=SimpleNamespace(key_source=FakeKeySource.MICROSOFT_KEYVAULT),
+    )
+    projected = st.project_storage_account(account)
+    assert projected["encryption_type"] == "Microsoft.Keyvault"
+    assert type(projected["encryption_type"]) is str
+    assert st.account_record(projected)["customer_managed_key"] is True
+
+
+def test_project_blob_and_file_service_properties_read_sdk_attributes():
+    st = _load("storage_encryption_status")
+    blob = SimpleNamespace(
+        id=BLOB_PROPERTIES["id"],
+        name="default",
+        type="Microsoft.Storage/storageAccounts/blobServices",
+        default_service_version="2021-04-10",
+        container_delete_retention_policy=SimpleNamespace(enabled=True, days=14),
+        is_versioning_enabled=True,
+    )
+    assert st.project_blob_service_properties(blob) == BLOB_PROPERTIES
+
+    files = SimpleNamespace(
+        id=FILE_PROPERTIES["id"],
+        name="default",
+        type="Microsoft.Storage/storageAccounts/fileServices",
+        share_delete_retention_policy=SimpleNamespace(enabled=True, days=7),
+        protocol_settings=SimpleNamespace(
+            smb=SimpleNamespace(channel_encryption="AES-256-GCM;", versions="SMB3.0;SMB3.1.1")
+        ),
+    )
+    assert st.project_file_service_properties(files) == FILE_PROPERTIES
+
+
+def test_project_file_service_properties_survives_absent_protocol_settings():
+    """`protocol_settings.smb` is the deepest optional chain — both hops can be None."""
+    st = _load("storage_encryption_status")
+    projected = st.project_file_service_properties(
+        SimpleNamespace(id="x", name="default", type="t")
+    )  # must not raise
+    assert projected["smb_protocol_settings"] == {
+        "channel_encryption": None,
+        "supported_versions": None,
+    }
+    assert projected["share_delete_retention_policy"] == {"enabled": None, "days": None}
+    # An SMB block present but with no `smb` child must be just as safe.
+    half = st.project_file_service_properties(
+        SimpleNamespace(id="x", name="default", type="t", protocol_settings=SimpleNamespace())
+    )
+    assert half["smb_protocol_settings"]["supported_versions"] is None
+
+    rec = st.file_service_properties_record(projected)
+    assert rec["share_delete_retention_policy"] == {"enabled": False, "days": 0}
+    assert rec["smb_protocol_settings"] == {"channel_encryption": [], "supported_versions": []}
 
 
 def test_storage_blob_and_file_service_enrichment():
@@ -442,117 +575,180 @@ def test_storage_summary_empty_subscription():
 
 
 # --------------------------------------------------------------------------- #
-# Network security groups — azure-mgmt-network 31.0.1 as_dict()
-# (rules nested TWICE: nsg.properties.securityRules[i].properties.*)
+# Network security groups — project_security_group() / project_virtual_network()
+# output, then the transforms
 # --------------------------------------------------------------------------- #
 
-NSG_SSH_OPEN = {  # SYNTHETIC, from NetworkSecurityGroup(...).as_dict()
+NSG_SSH_OPEN = {  # SYNTHETIC — project_security_group()'s output shape
     "id": NSG_ID,
     "name": "nsg-app",
     "location": "eastus",
-    "properties": {
-        "securityRules": [
-            {
-                "id": f"{NSG_ID}/securityRules/allow-ssh",
-                "name": "allow-ssh",
-                "properties": {
-                    "protocol": "Tcp",
-                    "sourceAddressPrefix": "Internet",
-                    "destinationPortRange": "22",
-                    "access": "Allow",
-                    "direction": "Inbound",
-                    "priority": 100,
-                },
-            },
-            {
-                "id": f"{NSG_ID}/securityRules/deny-rdp",
-                "name": "deny-rdp",
-                "properties": {
-                    "protocol": "Tcp",
-                    "sourceAddressPrefix": "*",
-                    "destinationPortRange": "3389",
-                    "access": "Deny",
-                    "direction": "Inbound",
-                    "priority": 200,
-                },
-            },
-        ]
-    },
+    "security_rules": [
+        {
+            "id": f"{NSG_ID}/securityRules/allow-ssh",
+            "name": "allow-ssh",
+            "destination_port_range": "22",
+            "destination_port_ranges": None,
+            "protocol": "Tcp",
+            "source_address_prefix": "Internet",
+            "source_address_prefixes": None,
+            "access": "Allow",
+            "direction": "Inbound",
+        },
+        {
+            "id": f"{NSG_ID}/securityRules/deny-rdp",
+            "name": "deny-rdp",
+            "destination_port_range": "3389",
+            "destination_port_ranges": None,
+            "protocol": "Tcp",
+            "source_address_prefix": "*",
+            "source_address_prefixes": None,
+            "access": "Deny",
+            "direction": "Inbound",
+        },
+    ],
 }
 
 NSG_LOCKED_DOWN = {  # SYNTHETIC — SSH only from a corporate range, RDP via a range
     "id": NSG_ID.replace("nsg-app", "nsg-db"),
     "name": "nsg-db",
     "location": "eastus",
-    "properties": {
-        "securityRules": [
-            {
-                "id": "r1",
-                "name": "allow-ssh-corp",
-                "properties": {
-                    "protocol": "Tcp",
-                    "sourceAddressPrefix": "10.0.0.0/8",
-                    "destinationPortRange": "22",
-                    "access": "Allow",
-                    "direction": "Inbound",
-                },
-            },
-            {
-                # Plural, list-valued form: the singular field is null when a rule
-                # uses ranges, so ignoring it would hide a real open rule.
-                "id": "r2",
-                "name": "allow-range-from-anywhere",
-                "properties": {
-                    "protocol": "*",
-                    "sourceAddressPrefixes": ["0.0.0.0/0"],
-                    "destinationPortRanges": ["3380-3400"],
-                    "access": "Allow",
-                    "direction": "Inbound",
-                },
-            },
-        ]
-    },
+    "security_rules": [
+        {
+            "id": "r1",
+            "name": "allow-ssh-corp",
+            "destination_port_range": "22",
+            "destination_port_ranges": None,
+            "protocol": "Tcp",
+            "source_address_prefix": "10.0.0.0/8",
+            "source_address_prefixes": None,
+            "access": "Allow",
+            "direction": "Inbound",
+        },
+        {
+            # Plural, list-valued form: the singular field is null when a rule
+            # uses ranges, so ignoring it would hide a real open rule.
+            "id": "r2",
+            "name": "allow-range-from-anywhere",
+            "destination_port_range": None,
+            "destination_port_ranges": ["3380-3400"],
+            "protocol": "*",
+            "source_address_prefix": None,
+            "source_address_prefixes": ["0.0.0.0/0"],
+            "access": "Allow",
+            "direction": "Inbound",
+        },
+    ],
 }
 
-VNET_WITH_UNPROTECTED_SUBNET = {  # SYNTHETIC, from VirtualNetwork(...).as_dict()
+VNET_WITH_UNPROTECTED_SUBNET = {  # SYNTHETIC — project_virtual_network()'s output
     "id": (
         "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/paramify-rg"
         "/providers/Microsoft.Network/virtualNetworks/vnet-main"
     ),
     "name": "vnet-main",
     "location": "eastus",
-    "properties": {
-        "enableDdosProtection": True,
-        "subnets": [
-            {
-                "id": "/subscriptions/s/subnets/app",
-                "name": "app",
-                "properties": {"networkSecurityGroup": {"id": NSG_ID, "location": "eastus"}},
-            },
-            {"id": "/subscriptions/s/subnets/bare", "name": "bare", "properties": {}},
-        ],
-    },
+    "enable_ddos_protection": True,
+    "subnets": [
+        {"id": "/subscriptions/s/subnets/app", "name": "app", "nsg_id": NSG_ID},
+        {"id": "/subscriptions/s/subnets/bare", "name": "bare", "nsg_id": None},
+    ],
 }
 
 
-def test_nsg_rule_projection_reads_the_double_nesting():
+def _fake_rule(**fields):
+    """A `SecurityRule` stand-in: only the attributes the SDK actually set exist."""
+    return SimpleNamespace(**fields)
+
+
+def test_project_security_group_reads_sdk_attributes():
+    """The projection's output IS the fixture the transforms are tested against."""
     net = _load("network_security_groups")
-    rec = net.security_group_record(NSG_SSH_OPEN)
-    assert rec["name"] == "nsg-app"
-    assert rec["resource_group"] == "paramify-rg"
-    assert len(rec["security_rules"]) == 2
-    ssh = rec["security_rules"][0]
-    assert ssh["destination_port_range"] == "22"
-    assert ssh["protocol"] == "Tcp"
-    assert ssh["source_address_prefix"] == "Internet"
-    assert ssh["access"] == "Allow"
-    assert ssh["direction"] == "Inbound"
+    group = SimpleNamespace(
+        id=NSG_ID,
+        name="nsg-app",
+        location="eastus",
+        security_rules=[
+            _fake_rule(
+                id=f"{NSG_ID}/securityRules/allow-ssh",
+                name="allow-ssh",
+                protocol="Tcp",
+                source_address_prefix="Internet",
+                destination_port_range="22",
+                access="Allow",
+                direction="Inbound",
+                priority=100,
+            ),
+            _fake_rule(
+                id=f"{NSG_ID}/securityRules/deny-rdp",
+                name="deny-rdp",
+                protocol="Tcp",
+                source_address_prefix="*",
+                destination_port_range="3389",
+                access="Deny",
+                direction="Inbound",
+                priority=200,
+            ),
+        ],
+    )
+    assert net.project_security_group(group) == NSG_SSH_OPEN
+
+
+def test_project_security_group_survives_a_group_with_no_rules():
+    """`security_rules` is None (not []) on an NSG the API returned no rules for."""
+    net = _load("network_security_groups")
+    projected = net.project_security_group(
+        SimpleNamespace(id=NSG_ID, name="nsg-empty", location="eastus")
+    )  # must not raise
+    assert projected["security_rules"] == []
+    assert net.security_group_record(projected)["security_rules"] == []
+
+
+def test_project_security_rule_leaves_absent_fields_none():
+    """A bare rule's fields are None from the projection; defaults are the transform's job."""
+    net = _load("network_security_groups")
+    projected = net.project_security_rule(_fake_rule(id="r", name="bare"))
+    assert projected["access"] is None
+    assert projected["direction"] is None
+    assert projected["destination_port_ranges"] is None
+    assert projected["source_address_prefixes"] is None
+
+
+def test_project_virtual_network_reads_sdk_attributes():
+    net = _load("network_security_groups")
+    vnet = SimpleNamespace(
+        id=VNET_WITH_UNPROTECTED_SUBNET["id"],
+        name="vnet-main",
+        location="eastus",
+        enable_ddos_protection=True,
+        subnets=[
+            SimpleNamespace(
+                id="/subscriptions/s/subnets/app",
+                name="app",
+                network_security_group=SimpleNamespace(id=NSG_ID, location="eastus"),
+            ),
+            # A subnet with nothing attached: network_security_group is None, and
+            # reading `.id` off it must not raise.
+            SimpleNamespace(id="/subscriptions/s/subnets/bare", name="bare"),
+        ],
+    )
+    assert net.project_virtual_network(vnet) == VNET_WITH_UNPROTECTED_SUBNET
+
+
+def test_project_virtual_network_survives_a_vnet_with_no_subnets():
+    net = _load("network_security_groups")
+    projected = net.project_virtual_network(
+        SimpleNamespace(id="/subscriptions/s/virtualNetworks/v", name="v", location="eastus")
+    )  # must not raise
+    assert projected["subnets"] == []
+    assert projected["enable_ddos_protection"] is None
+    assert net.virtual_network_record(projected)["enable_ddos_protection"] is False
 
 
 def test_nsg_rule_defaults_are_conservative():
     """Absent access/direction must read as Allow/Inbound, as Prowler reads them."""
     net = _load("network_security_groups")
-    rec = net.security_rule_record({"id": "r", "name": "bare", "properties": {}})
+    rec = net.security_rule_record({"id": "r", "name": "bare"})
     assert rec["access"] == "Allow"
     assert rec["direction"] == "Inbound"
     assert rec["destination_port_ranges"] == []
@@ -635,17 +831,17 @@ def test_network_summary_empty_subscription():
 
 
 # --------------------------------------------------------------------------- #
-# Defender for Cloud plans — azure-mgmt-security 7.0.0 Pricing.as_dict()
-# (msrest generation: FLAT snake_case, and is_enabled is a STRING enum)
+# Defender for Cloud plans — project_pricing() output, then the transforms
+# (azure-mgmt-security 7.0.0 is msrest: attributes are already flat snake_case,
+#  and `is_enabled` is a STRING enum)
 # --------------------------------------------------------------------------- #
 
-STANDARD_PLAN = {  # SYNTHETIC, from Pricing(...).as_dict()
+STANDARD_PLAN = {  # SYNTHETIC — project_pricing()'s output shape
     "id": (
         "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Security"
         "/pricings/VirtualMachines"
     ),
     "name": "VirtualMachines",
-    "type": "Microsoft.Security/pricings",
     "pricing_tier": "Standard",
     "free_trial_remaining_time": "P25D",
     "extensions": [
@@ -654,26 +850,74 @@ STANDARD_PLAN = {  # SYNTHETIC, from Pricing(...).as_dict()
     ],
 }
 
-FREE_PLAN = {  # SYNTHETIC
+FREE_PLAN = {  # SYNTHETIC — a Free plan the API returns no extensions for
     "id": (
         "/subscriptions/11111111-1111-1111-1111-111111111111/providers/Microsoft.Security"
         "/pricings/KeyVaults"
     ),
     "name": "KeyVaults",
-    "type": "Microsoft.Security/pricings",
     "pricing_tier": "Free",
     "free_trial_remaining_time": "P0D",
+    "extensions": [],
 }
 
-CAMEL_PLAN = {  # SYNTHETIC — the wire shape, if this SDK is ever regenerated
-    "id": "/subscriptions/s/providers/Microsoft.Security/pricings/StorageAccounts",
-    "name": "StorageAccounts",
-    "properties": {
-        "pricingTier": "Standard",
-        "freeTrialRemainingTime": "P30D",
-        "extensions": [{"name": "OnUploadMalwareScanning", "isEnabled": "True"}],
-    },
-}
+def test_project_pricing_reads_sdk_attributes():
+    """The projection's output IS the fixture the transforms are tested against."""
+    df = _load("defender_plans")
+    pricing = SimpleNamespace(
+        id=STANDARD_PLAN["id"],
+        name="VirtualMachines",
+        type="Microsoft.Security/pricings",
+        pricing_tier="Standard",
+        # msrest deserializes an ISO-8601 duration into a timedelta.
+        free_trial_remaining_time=timedelta(days=25),
+        extensions=[
+            SimpleNamespace(name="AgentlessVmScanning", is_enabled="True"),
+            SimpleNamespace(name="FileIntegrityMonitoring", is_enabled="False"),
+        ],
+    )
+    assert df.project_pricing(pricing) == STANDARD_PLAN
+
+
+def test_project_pricing_survives_a_plan_with_no_extensions():
+    """A Free plan has `extensions` set to None, not to an empty list."""
+    df = _load("defender_plans")
+    projected = df.project_pricing(
+        SimpleNamespace(
+            id=FREE_PLAN["id"],
+            name="KeyVaults",
+            pricing_tier="Free",
+            free_trial_remaining_time=timedelta(0),
+        )
+    )  # must not raise
+    assert projected == FREE_PLAN
+    assert df.pricing_record(projected)["extensions"] == {}
+
+
+@pytest.mark.parametrize(
+    ("delta", "expected"),
+    [
+        (timedelta(0), "P0D"),
+        (timedelta(days=25), "P25D"),
+        (timedelta(days=30), "P30D"),
+        (timedelta(days=1, hours=3), "P1DT3H"),
+        (timedelta(hours=3, minutes=4, seconds=5), "PT3H4M5S"),
+        (timedelta(seconds=5), "PT5S"),
+        (timedelta(minutes=90), "PT1H30M"),
+        (timedelta(days=2, seconds=30, microseconds=500000), "P2DT30.5S"),
+        ("P25D", "P25D"),  # already a string (a future SDK) — passes through
+        (None, None),
+    ],
+)
+def test_defender_free_trial_duration_keeps_the_wire_format(delta, expected):
+    """`free_trial_remaining_time` arrives as a timedelta; the evidence wants "P25D".
+
+    These are the SDK serializer's own outputs for the same inputs. Rendering the
+    timedelta with `str()` instead would write "25 days, 0:00:00" into the
+    evidence — a payload change for identical input.
+    """
+    df = _load("defender_plans")
+    assert df._iso8601_duration(delta) == expected
 
 
 def test_defender_string_boolean_enum_is_not_read_as_always_true():
@@ -697,14 +941,6 @@ def test_defender_plan_projection():
     free = df.pricing_record(FREE_PLAN)
     assert free["pricing_tier"] == "Free"
     assert free["extensions"] == {}
-
-
-def test_defender_plan_reads_the_camel_case_wire_shape():
-    df = _load("defender_plans")
-    rec = df.pricing_record(CAMEL_PLAN)
-    assert rec["pricing_tier"] == "Standard"
-    assert rec["free_trial_remaining_time"] == "P30D"
-    assert rec["extensions"] == {"OnUploadMalwareScanning": True}
 
 
 def test_defender_provider_not_registered_is_recognized():

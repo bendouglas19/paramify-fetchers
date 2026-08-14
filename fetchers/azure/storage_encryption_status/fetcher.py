@@ -34,11 +34,10 @@ from azure_common import (  # noqa: E402
     credential,
     dig,
     failure_reason,
-    first,
+    model_attr,
     resolve_subscription,
     resource_group_from_id,
     sanitize_for_filename,
-    to_dict,
     write_evidence,
     write_status,
 )
@@ -60,21 +59,103 @@ BENIGN_UNSUPPORTED_SERVICE = (
 )
 
 
-# --- pure transforms (operate on as_dict()-shaped dicts; unit-tested from fixtures) ---
+# --- projection: the only code here that touches an azure-mgmt model ---
 
-def _prop(obj: dict, *names: str):
-    """Read a field that azure-mgmt flattens out of the wire `properties` bag.
+def project_storage_account(account) -> dict:
+    """Read a `StorageAccount` model's attributes into a flat snake_case dict.
 
-    `Model.as_dict()` hoists `properties.*` to top-level snake_case attributes;
-    `serialize()` / raw REST keep them nested under "properties" in camelCase.
-    Look top-level first, then inside "properties", so either shape reads.
+    Attribute access is stable across the azure-mgmt generator styles; `as_dict()`
+    is not (on the `_model_base` SDKs it emits the camelCase wire shape nested
+    under "properties"). Confining the SDK to this one function keeps every
+    transform below pure dict-in/dict-out — and testable with no azure-* package
+    installed.
+
+    Values are the SDK's own, un-defaulted: `None` here means "the API did not
+    return this field", and `account_record()` is what decides how to read an
+    absence. Nested models (`encryption`, `key_policy`, `sku`) are frequently
+    absent, hence `model_attr`'s None-tolerance at every hop.
     """
-    val = first(obj, *names)
-    if val is not None:
-        return val
-    nested = obj.get("properties") if isinstance(obj, dict) else None
-    return first(nested, *names)
+    encryption = model_attr(account, "encryption")
+    network_rule_set = model_attr(account, "network_rule_set")
+    key_policy = model_attr(account, "key_policy")
+    sku = model_attr(account, "sku")
 
+    return {
+        "id": model_attr(account, "id"),
+        "name": model_attr(account, "name"),
+        "location": model_attr(account, "location"),
+        # --- encryption at rest ---
+        "encryption_type": model_attr(encryption, "key_source"),
+        "infrastructure_encryption": model_attr(encryption, "require_infrastructure_encryption"),
+        # --- encryption in transit ---
+        "enable_https_traffic_only": model_attr(account, "enable_https_traffic_only"),
+        "minimum_tls_version": model_attr(account, "minimum_tls_version"),
+        # --- network exposure ---
+        "allow_blob_public_access": model_attr(account, "allow_blob_public_access"),
+        "public_network_access": model_attr(account, "public_network_access"),
+        "network_rule_set": {
+            "bypass": model_attr(network_rule_set, "bypass"),
+            "default_action": model_attr(network_rule_set, "default_action"),
+        },
+        "private_endpoint_connections": [
+            {
+                "id": model_attr(pec, "id"),
+                "name": model_attr(pec, "name"),
+                "type": model_attr(pec, "type"),
+            }
+            for pec in (model_attr(account, "private_endpoint_connections") or [])
+        ],
+        # --- key + identity management ---
+        "key_expiration_period_in_days": model_attr(key_policy, "key_expiration_period_in_days"),
+        "allow_shared_key_access": model_attr(account, "allow_shared_key_access"),
+        # The SDK spells Entra ID's former name: defaultToOAuthAuthentication.
+        "default_to_entra_authorization": model_attr(account, "default_to_o_auth_authentication"),
+        # --- durability / replication ---
+        "replication_settings": model_attr(sku, "name"),
+        "allow_cross_tenant_replication": model_attr(account, "allow_cross_tenant_replication"),
+    }
+
+
+def project_blob_service_properties(properties) -> dict:
+    """Read a `BlobServiceProperties` model's attributes into a flat dict."""
+    container_policy = model_attr(properties, "container_delete_retention_policy")
+    return {
+        "id": model_attr(properties, "id"),
+        "name": model_attr(properties, "name"),
+        "type": model_attr(properties, "type"),
+        "default_service_version": model_attr(properties, "default_service_version"),
+        "container_delete_retention_policy": {
+            "enabled": model_attr(container_policy, "enabled"),
+            "days": model_attr(container_policy, "days"),
+        },
+        "is_versioning_enabled": model_attr(properties, "is_versioning_enabled"),
+    }
+
+
+def project_file_service_properties(properties) -> dict:
+    """Read a `FileServiceProperties` model's attributes into a flat dict.
+
+    `protocol_settings.smb` is the deepest optional chain in this fetcher — both
+    hops are routinely absent, which is why each is its own None-tolerant read.
+    """
+    share_policy = model_attr(properties, "share_delete_retention_policy")
+    smb = model_attr(model_attr(properties, "protocol_settings"), "smb")
+    return {
+        "id": model_attr(properties, "id"),
+        "name": model_attr(properties, "name"),
+        "type": model_attr(properties, "type"),
+        "share_delete_retention_policy": {
+            "enabled": model_attr(share_policy, "enabled"),
+            "days": model_attr(share_policy, "days"),
+        },
+        "smb_protocol_settings": {
+            "channel_encryption": model_attr(smb, "channel_encryption"),
+            "supported_versions": model_attr(smb, "versions"),
+        },
+    }
+
+
+# --- pure transforms (flat snake_case dicts in, evidence records out) ---
 
 def _retention_policy(policy: dict | None) -> dict:
     """Normalize a {enabled, days} soft-delete policy, defaulting to off/0.
@@ -85,8 +166,8 @@ def _retention_policy(policy: dict | None) -> dict:
     """
     policy = policy if isinstance(policy, dict) else {}
     return {
-        "enabled": bool(first(policy, "enabled") or False),
-        "days": int(first(policy, "days") or 0),
+        "enabled": bool(policy.get("enabled") or False),
+        "days": int(policy.get("days") or 0),
     }
 
 
@@ -100,68 +181,57 @@ def _semicolon_list(value) -> list:
 
 
 def account_record(account: dict) -> dict:
-    """Normalize one storage account into an evidence record.
+    """Normalize one projected storage account into an evidence record.
 
     Every field below is Prowler's projection, with Prowler's defaults preserved:
     the API omits `allow_cross_tenant_replication` / `allow_shared_key_access` /
     `network_rule_set.bypass` / `network_rule_set.default_action` when they sit at
     their (permissive) service defaults, so absent must read as that default, not
-    as None.
+    as None. Takes `project_storage_account()`'s output.
     """
-    resource_id = first(account, "id")
-    encryption = _prop(account, "encryption") or {}
-    network_rule_set = _prop(account, "network_rule_set", "networkAcls") or {}
-    key_policy = _prop(account, "key_policy", "keyPolicy") or {}
-    sku = first(account, "sku") or {}
+    resource_id = account.get("id")
+    network_rule_set = account.get("network_rule_set") or {}
 
-    key_source = first(encryption, "key_source", "keySource")
-    key_expiration = first(key_policy, "key_expiration_period_in_days", "keyExpirationPeriodInDays")
+    key_source = account.get("encryption_type")
+    key_expiration = account.get("key_expiration_period_in_days")
 
-    cross_tenant = _prop(account, "allow_cross_tenant_replication", "allowCrossTenantReplication")
-    shared_key = _prop(account, "allow_shared_key_access", "allowSharedKeyAccess")
-    entra_auth = _prop(account, "default_to_o_auth_authentication", "defaultToOAuthAuthentication")
+    cross_tenant = account.get("allow_cross_tenant_replication")
+    shared_key = account.get("allow_shared_key_access")
+    entra_auth = account.get("default_to_entra_authorization")
 
     return {
         "id": resource_id,
-        "name": first(account, "name"),
-        "location": first(account, "location"),
+        "name": account.get("name"),
+        "location": account.get("location"),
         "resource_group": resource_group_from_id(resource_id),
         # --- encryption at rest (the evidence that actually varies) ---
         "encryption_type": key_source,
         "customer_managed_key": str(key_source or "").lower() == KEY_SOURCE_KEYVAULT,
-        "infrastructure_encryption": first(
-            encryption, "require_infrastructure_encryption", "requireInfrastructureEncryption"
-        ),
+        "infrastructure_encryption": account.get("infrastructure_encryption"),
         # --- encryption in transit ---
-        "enable_https_traffic_only": bool(
-            _prop(account, "enable_https_traffic_only", "supportsHttpsTrafficOnly") or False
-        ),
-        "minimum_tls_version": _prop(account, "minimum_tls_version", "minimumTlsVersion"),
+        "enable_https_traffic_only": bool(account.get("enable_https_traffic_only") or False),
+        "minimum_tls_version": account.get("minimum_tls_version"),
         # --- network exposure ---
-        "allow_blob_public_access": bool(
-            _prop(account, "allow_blob_public_access", "allowBlobPublicAccess") or False
-        ),
-        "public_network_access": _prop(account, "public_network_access", "publicNetworkAccess"),
+        "allow_blob_public_access": bool(account.get("allow_blob_public_access") or False),
+        "public_network_access": account.get("public_network_access"),
         "network_rule_set": {
-            "bypass": first(network_rule_set, "bypass") or "AzureServices",
-            "default_action": first(network_rule_set, "default_action", "defaultAction") or "Allow",
+            "bypass": network_rule_set.get("bypass") or "AzureServices",
+            "default_action": network_rule_set.get("default_action") or "Allow",
         },
         "private_endpoint_connections": [
             {
-                "id": first(pec, "id"),
-                "name": first(pec, "name"),
-                "type": first(pec, "type"),
+                "id": pec.get("id"),
+                "name": pec.get("name"),
+                "type": pec.get("type"),
             }
-            for pec in (
-                _prop(account, "private_endpoint_connections", "privateEndpointConnections") or []
-            )
+            for pec in (account.get("private_endpoint_connections") or [])
         ],
         # --- key + identity management ---
         "key_expiration_period_in_days": int(key_expiration) if key_expiration is not None else None,
         "allow_shared_key_access": True if shared_key is None else bool(shared_key),
         "default_to_entra_authorization": False if entra_auth is None else bool(entra_auth),
         # --- durability / replication ---
-        "replication_settings": first(sku, "name"),
+        "replication_settings": account.get("replication_settings"),
         "allow_cross_tenant_replication": True if cross_tenant is None else bool(cross_tenant),
         # Filled in by the blob/file service enrichment; None means "not collected
         # for this account" (an account kind without that endpoint).
@@ -171,39 +241,32 @@ def account_record(account: dict) -> dict:
 
 
 def blob_properties_record(properties: dict) -> dict:
-    """Normalize blob_services.get_service_properties() — versioning + soft delete."""
+    """Normalize projected blob service properties — versioning + soft delete."""
     return {
-        "id": first(properties, "id"),
-        "name": first(properties, "name"),
-        "type": first(properties, "type"),
-        "default_service_version": _prop(
-            properties, "default_service_version", "defaultServiceVersion"
-        ),
+        "id": properties.get("id"),
+        "name": properties.get("name"),
+        "type": properties.get("type"),
+        "default_service_version": properties.get("default_service_version"),
         "container_delete_retention_policy": _retention_policy(
-            _prop(properties, "container_delete_retention_policy", "containerDeleteRetentionPolicy")
+            properties.get("container_delete_retention_policy")
         ),
-        "versioning_enabled": bool(
-            _prop(properties, "is_versioning_enabled", "isVersioningEnabled") or False
-        ),
+        "versioning_enabled": bool(properties.get("is_versioning_enabled") or False),
     }
 
 
 def file_service_properties_record(properties: dict) -> dict:
-    """Normalize file_services.get_service_properties() — share soft delete + SMB."""
-    smb = (
-        dig(_prop(properties, "protocol_settings", "protocolSettings") or {}, "smb")
-        or {}
-    )
+    """Normalize projected file service properties — share soft delete + SMB."""
+    smb = properties.get("smb_protocol_settings") or {}
     return {
-        "id": first(properties, "id"),
-        "name": first(properties, "name"),
-        "type": first(properties, "type"),
+        "id": properties.get("id"),
+        "name": properties.get("name"),
+        "type": properties.get("type"),
         "share_delete_retention_policy": _retention_policy(
-            _prop(properties, "share_delete_retention_policy", "shareDeleteRetentionPolicy")
+            properties.get("share_delete_retention_policy")
         ),
         "smb_protocol_settings": {
-            "channel_encryption": _semicolon_list(first(smb, "channel_encryption", "channelEncryption")),
-            "supported_versions": _semicolon_list(first(smb, "versions")),
+            "channel_encryption": _semicolon_list(smb.get("channel_encryption")),
+            "supported_versions": _semicolon_list(smb.get("supported_versions")),
         },
     }
 
@@ -278,7 +341,9 @@ def collect_storage_accounts(subscription_id, cred, collector: Collector) -> lis
 
     def _list():
         # ItemPaged: the SDK follows nextLink itself, so pagination is handled.
-        return [account_record(to_dict(a)) for a in client.storage_accounts.list()]
+        return [
+            account_record(project_storage_account(a)) for a in client.storage_accounts.list()
+        ]
 
     accounts = collector.guard("storage.storage_accounts.list", _list, default=[])
 
@@ -295,7 +360,9 @@ def collect_storage_accounts(subscription_id, cred, collector: Collector) -> lis
             "storage.blob_services.get_service_properties",
             name,
             lambda: blob_properties_record(
-                to_dict(client.blob_services.get_service_properties(group, name))
+                project_blob_service_properties(
+                    client.blob_services.get_service_properties(group, name)
+                )
             ),
         )
         account["file_service_properties"] = _service_properties(
@@ -303,7 +370,9 @@ def collect_storage_accounts(subscription_id, cred, collector: Collector) -> lis
             "storage.file_services.get_service_properties",
             name,
             lambda: file_service_properties_record(
-                to_dict(client.file_services.get_service_properties(group, name))
+                project_file_service_properties(
+                    client.file_services.get_service_properties(group, name)
+                )
             ),
         )
 

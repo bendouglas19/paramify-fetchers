@@ -27,6 +27,7 @@ runner layer (see fetcher.yaml: supports_targets: true).
 import logging
 import os
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -40,10 +41,9 @@ from azure_common import (  # noqa: E402
     coverage_percentage,
     credential,
     failure_reason,
-    first,
+    model_attr,
     resolve_subscription,
     sanitize_for_filename,
-    to_dict,
     write_evidence,
     write_status,
 )
@@ -65,16 +65,71 @@ NOT_REGISTERED = "not_registered"
 UNKNOWN = "unknown"
 
 
-# --- pure transforms (operate on as_dict()-shaped dicts; unit-tested from fixtures) ---
+# --- projection: the only code here that touches an azure-mgmt model ---
 
-def _prop(obj: dict, *names: str):
-    """Read a field azure-mgmt flattens out of the wire `properties` bag."""
-    val = first(obj, *names)
-    if val is not None:
-        return val
-    nested = obj.get("properties") if isinstance(obj, dict) else None
-    return first(nested, *names)
+def _iso8601_duration(value) -> str | None:
+    """Render a `timedelta` as the ISO-8601 duration string the wire carries.
 
+    azure-mgmt-security types `freeTrialRemainingTime` as a duration, so the SDK
+    hands the attribute over already parsed into a `timedelta` — where the removed
+    `as_dict()` used to re-serialize it to "P25D" on the way out. Without this the
+    evidence would carry `json.dump(default=str)`'s rendering of a timedelta
+    ("25 days, 0:00:00") instead, changing the payload for identical input.
+
+    Matches the SDK serializer's output exactly: zero-valued components are
+    omitted, a bare zero is "P0D", and fractional seconds keep no trailing zeros
+    ("P2DT30.5S"). Anything that is not a timedelta (a plain string from a future
+    SDK, or None) passes straight through.
+    """
+    if not isinstance(value, timedelta):
+        return value
+    hours, remainder = divmod(value.seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    date_part = f"{value.days}D" if value.days else ""
+    time_part = ""
+    if hours:
+        time_part += f"{hours}H"
+    if minutes:
+        time_part += f"{minutes}M"
+    if seconds or value.microseconds:
+        if value.microseconds:
+            fractional = f"{seconds + value.microseconds / 1_000_000:.6f}"
+            time_part += fractional.rstrip("0").rstrip(".") + "S"
+        else:
+            time_part += f"{seconds}S"
+    if not date_part and not time_part:
+        return "P0D"
+    return f"P{date_part}" + (f"T{time_part}" if time_part else "")
+
+
+def project_pricing(pricing) -> dict:
+    """Read a `Pricing` model's attributes into a flat snake_case dict.
+
+    azure-mgmt-security is still on the msrest generator, which flattens
+    `properties.*` onto the model, so these names are already the attribute names.
+    Reading them directly (rather than via `as_dict()`) is what keeps this fetcher
+    on the same footing as the `_model_base` ones, whose `as_dict()` emits the
+    camelCase wire shape instead.
+    """
+    return {
+        "id": model_attr(pricing, "id"),
+        "name": model_attr(pricing, "name"),
+        "pricing_tier": model_attr(pricing, "pricing_tier"),
+        "free_trial_remaining_time": _iso8601_duration(
+            model_attr(pricing, "free_trial_remaining_time")
+        ),
+        "extensions": [
+            {
+                "name": model_attr(ext, "name"),
+                "is_enabled": model_attr(ext, "is_enabled"),
+            }
+            for ext in (model_attr(pricing, "extensions") or [])
+        ],
+    }
+
+
+# --- pure transforms (flat snake_case dicts in, evidence records out) ---
 
 def _as_bool(value) -> bool:
     """Coerce azure-mgmt-security's STRING boolean enums to a real bool.
@@ -91,25 +146,23 @@ def _as_bool(value) -> bool:
 
 
 def pricing_record(pricing: dict) -> dict:
-    """Normalize one Defender plan — Prowler's exact five-field projection.
+    """Normalize one projected Defender plan — Prowler's exact five-field projection.
 
     `extensions` collapses the SDK's list of {name, is_enabled, ...} objects into a
     flat {name: bool} map, which is how Prowler's checks read it and how a reviewer
-    wants to see it. `free_trial_remaining_time` is an ISO-8601 duration string
-    from the SDK's serializer (a timedelta before serialization).
+    wants to see it. `free_trial_remaining_time` is an ISO-8601 duration string by
+    the time it gets here (see `_iso8601_duration`).
     """
-    extensions = _prop(pricing, "extensions") or []
+    extensions = pricing.get("extensions") or []
     return {
-        "resource_id": first(pricing, "id"),
-        "resource_name": first(pricing, "name"),
-        "pricing_tier": _prop(pricing, "pricing_tier", "pricingTier"),
-        "free_trial_remaining_time": _prop(
-            pricing, "free_trial_remaining_time", "freeTrialRemainingTime"
-        ),
+        "resource_id": pricing.get("id"),
+        "resource_name": pricing.get("name"),
+        "pricing_tier": pricing.get("pricing_tier"),
+        "free_trial_remaining_time": pricing.get("free_trial_remaining_time"),
         "extensions": {
-            first(ext, "name"): _as_bool(first(ext, "is_enabled", "isEnabled"))
+            ext.get("name"): _as_bool(ext.get("is_enabled"))
             for ext in extensions
-            if first(ext, "name")
+            if ext.get("name")
         },
     }
 
@@ -159,7 +212,8 @@ def collect_pricings(subscription_id, cred, collector: Collector) -> tuple[list[
     try:
         response = client.pricings.list(scope_id=f"subscriptions/{subscription_id}")
         plans = [
-            pricing_record(to_dict(pricing)) for pricing in (getattr(response, "value", None) or [])
+            pricing_record(project_pricing(pricing))
+            for pricing in (getattr(response, "value", None) or [])
         ]
     except Exception as exc:  # noqa: BLE001 — boundary: classify, don't crash the run
         if is_provider_not_registered(exc):

@@ -34,11 +34,10 @@ from azure_common import (  # noqa: E402
     coverage_percentage,
     credential,
     failure_reason,
-    first,
+    model_attr,
     resolve_subscription,
     resource_group_from_id,
     sanitize_for_filename,
-    to_dict,
     write_evidence,
     write_status,
 )
@@ -55,23 +54,66 @@ ANY_TCP_PROTOCOLS = ("TCP", "Tcp", "*")
 ADMIN_PORTS = {"ssh": 22, "rdp": 3389}
 
 
-# --- pure transforms (operate on as_dict()-shaped dicts; unit-tested from fixtures) ---
+# --- projection: the only code here that touches an azure-mgmt model ---
 
-def _prop(obj: dict, *names: str):
-    """Read a field azure-mgmt flattens out of the wire `properties` bag.
+def project_security_rule(rule) -> dict:
+    """Read a `SecurityRule` model's attributes into a flat snake_case dict.
 
-    `Model.as_dict()` hoists `properties.*` to top-level snake_case attributes;
-    `serialize()` / raw REST keep them nested under "properties" in camelCase.
+    Attribute access is stable across the azure-mgmt generator styles; `as_dict()`
+    is not — on azure-mgmt-network's `_model_base` runtime it emits the camelCase
+    wire shape with a rule's fields nested under its own "properties" bag, two
+    levels below the NSG. Reading attributes sidesteps both the spelling and the
+    nesting, so the transforms below stay pure dict-in/dict-out.
     """
-    val = first(obj, *names)
-    if val is not None:
-        return val
-    nested = obj.get("properties") if isinstance(obj, dict) else None
-    return first(nested, *names)
+    return {
+        "id": model_attr(rule, "id"),
+        "name": model_attr(rule, "name"),
+        "destination_port_range": model_attr(rule, "destination_port_range"),
+        "destination_port_ranges": model_attr(rule, "destination_port_ranges"),
+        "protocol": model_attr(rule, "protocol"),
+        "source_address_prefix": model_attr(rule, "source_address_prefix"),
+        "source_address_prefixes": model_attr(rule, "source_address_prefixes"),
+        "access": model_attr(rule, "access"),
+        "direction": model_attr(rule, "direction"),
+    }
 
+
+def project_security_group(group) -> dict:
+    """Read a `NetworkSecurityGroup` model, including its inline security rules."""
+    return {
+        "id": model_attr(group, "id"),
+        "name": model_attr(group, "name"),
+        "location": model_attr(group, "location"),
+        "security_rules": [
+            project_security_rule(rule) for rule in (model_attr(group, "security_rules") or [])
+        ],
+    }
+
+
+def project_subnet(subnet) -> dict:
+    """Read a `Subnet` model, flattening the attached NSG down to its id."""
+    return {
+        "id": model_attr(subnet, "id"),
+        "name": model_attr(subnet, "name"),
+        "nsg_id": model_attr(model_attr(subnet, "network_security_group"), "id"),
+    }
+
+
+def project_virtual_network(vnet) -> dict:
+    """Read a `VirtualNetwork` model, including its subnets."""
+    return {
+        "id": model_attr(vnet, "id"),
+        "name": model_attr(vnet, "name"),
+        "location": model_attr(vnet, "location"),
+        "enable_ddos_protection": model_attr(vnet, "enable_ddos_protection"),
+        "subnets": [project_subnet(s) for s in (model_attr(vnet, "subnets") or [])],
+    }
+
+
+# --- pure transforms (flat snake_case dicts in, evidence records out) ---
 
 def security_rule_record(rule: dict) -> dict:
-    """Normalize one NSG security rule — Prowler's exact six-field projection.
+    """Normalize one projected NSG security rule — Prowler's exact six-field projection.
 
     Prowler defaults `access` to "Allow" and `direction` to "Inbound" when absent,
     which is the conservative reading (assume the rule is permitting inbound
@@ -82,57 +124,51 @@ def security_rule_record(rule: dict) -> dict:
     show an empty port for a real open rule.
     """
     return {
-        "id": first(rule, "id"),
-        "name": first(rule, "name"),
-        "destination_port_range": _prop(rule, "destination_port_range", "destinationPortRange"),
-        "destination_port_ranges": _prop(rule, "destination_port_ranges", "destinationPortRanges")
-        or [],
-        "protocol": _prop(rule, "protocol"),
-        "source_address_prefix": _prop(rule, "source_address_prefix", "sourceAddressPrefix"),
-        "source_address_prefixes": _prop(rule, "source_address_prefixes", "sourceAddressPrefixes")
-        or [],
-        "access": _prop(rule, "access") or "Allow",
-        "direction": _prop(rule, "direction") or "Inbound",
+        "id": rule.get("id"),
+        "name": rule.get("name"),
+        "destination_port_range": rule.get("destination_port_range"),
+        "destination_port_ranges": rule.get("destination_port_ranges") or [],
+        "protocol": rule.get("protocol"),
+        "source_address_prefix": rule.get("source_address_prefix"),
+        "source_address_prefixes": rule.get("source_address_prefixes") or [],
+        "access": rule.get("access") or "Allow",
+        "direction": rule.get("direction") or "Inbound",
     }
 
 
 def security_group_record(group: dict) -> dict:
-    """Normalize one NSG with its inline rules."""
-    resource_id = first(group, "id")
+    """Normalize one projected NSG with its inline rules."""
+    resource_id = group.get("id")
     return {
         "id": resource_id,
-        "name": first(group, "name"),
-        "location": first(group, "location"),
+        "name": group.get("name"),
+        "location": group.get("location"),
         "resource_group": resource_group_from_id(resource_id),
         "security_rules": [
-            security_rule_record(rule)
-            for rule in (_prop(group, "security_rules", "securityRules") or [])
+            security_rule_record(rule) for rule in (group.get("security_rules") or [])
         ],
     }
 
 
 def subnet_record(subnet: dict) -> dict:
     """Normalize one VNet subnet with the id of the NSG attached to it (or None)."""
-    nsg = _prop(subnet, "network_security_group", "networkSecurityGroup") or {}
     return {
-        "id": first(subnet, "id"),
-        "name": first(subnet, "name"),
-        "nsg_id": first(nsg, "id"),
+        "id": subnet.get("id"),
+        "name": subnet.get("name"),
+        "nsg_id": subnet.get("nsg_id"),
     }
 
 
 def virtual_network_record(vnet: dict) -> dict:
-    """Normalize one virtual network with its subnets and DDoS protection state."""
-    resource_id = first(vnet, "id")
+    """Normalize one projected virtual network with its subnets and DDoS state."""
+    resource_id = vnet.get("id")
     return {
         "id": resource_id,
-        "name": first(vnet, "name"),
-        "location": first(vnet, "location"),
+        "name": vnet.get("name"),
+        "location": vnet.get("location"),
         "resource_group": resource_group_from_id(resource_id),
-        "enable_ddos_protection": bool(
-            _prop(vnet, "enable_ddos_protection", "enableDdosProtection") or False
-        ),
-        "subnets": [subnet_record(s) for s in (_prop(vnet, "subnets") or [])],
+        "enable_ddos_protection": bool(vnet.get("enable_ddos_protection") or False),
+        "subnets": [subnet_record(s) for s in (vnet.get("subnets") or [])],
     }
 
 
@@ -240,13 +276,17 @@ def collect_network(subscription_id, cred, collector: Collector) -> tuple[list[d
     groups = collector.guard(
         "network.network_security_groups.list_all",
         lambda: [
-            security_group_record(to_dict(g)) for g in client.network_security_groups.list_all()
+            security_group_record(project_security_group(g))
+            for g in client.network_security_groups.list_all()
         ],
         default=[],
     )
     vnets = collector.guard(
         "network.virtual_networks.list_all",
-        lambda: [virtual_network_record(to_dict(v)) for v in client.virtual_networks.list_all()],
+        lambda: [
+            virtual_network_record(project_virtual_network(v))
+            for v in client.virtual_networks.list_all()
+        ],
         default=[],
     )
 
