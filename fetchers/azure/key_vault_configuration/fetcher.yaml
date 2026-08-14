@@ -1,0 +1,70 @@
+name: azure_key_vault_configuration
+version: 0.1.0
+description: >
+  Every key vault in the subscription with the configuration that governs access to
+  the keys and secrets it holds: which authorization model is in force
+  (enable_rbac_authorization — Azure RBAC or the legacy vault access policies, with
+  the access policy entries and their permission verbs alongside it), whether the
+  vault is recoverable (soft delete plus purge protection, and the soft-delete
+  retention window), how it is exposed to the network (public network access, the
+  network ACL default action with its IP and virtual-network rules, private endpoint
+  connections), the SKU, and which platform integrations may read it (deployment,
+  disk encryption, template deployment). Management plane only — no key material or
+  secret value is read.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_key_vault_configuration.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-KEYVAULT-CFG
+  name: Azure Key Vault Configuration
+  instructions: >
+    Script: fetcher.py. Azure SDK calls: resource.providers.get("Microsoft.KeyVault")
+    for the resource-provider registration state (so "no key vaults in use" is
+    distinguishable from "in use but empty" — ARM returns an empty list, not an
+    error, for an unregistered provider), then azure-mgmt-keyvault
+    KeyVaultManagementClient vaults.list_by_subscription() for each vault's
+    properties: tenant_id, enable_rbac_authorization, access_policies[] (tenant_id,
+    object_id, application_id, permissions for keys / secrets / certificates /
+    storage), enable_soft_delete, enable_purge_protection,
+    soft_delete_retention_in_days, public_network_access, network_acls (bypass,
+    default_action, ip_rules, virtual_network_rules),
+    private_endpoint_connections[], sku (family, name), vault_uri,
+    enabled_for_deployment, enabled_for_disk_encryption,
+    enabled_for_template_deployment, provisioning_state.
+    enable_rbac_authorization decides which authorization model applies and is
+    reported as access_model (rbac / access_policy) — under RBAC the grants live in
+    Azure role assignments and access_policies is empty; under access policies the
+    entries listed here are the grants. recoverable is soft delete AND purge
+    protection. ARM omits the optional booleans when they were never enabled, so an
+    absent value is reported as false, and an absent public_network_access as its
+    "Enabled" service default. The management plane only — the vault data plane is
+    never opened, so no key or secret value is read.

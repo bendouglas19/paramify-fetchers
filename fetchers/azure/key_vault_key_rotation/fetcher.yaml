@@ -1,0 +1,79 @@
+name: azure_key_vault_key_rotation
+version: 0.1.0
+description: >
+  For every key in every key vault in the subscription, the rotation policy (its
+  lifetime actions, the rotate/notify trigger durations and the expiry applied to new
+  versions) and the key's own enabled state, creation / update / expiration dates and
+  public strength parameters — plus every secret's name, enabled state and expiration
+  date. Spans both Key Vault planes: the management plane enumerates what each vault
+  holds, and a per-vault data-plane KeyClient reads the rotation policies the
+  management plane cannot see. A vault the credential holds no data-plane grant on is
+  reported as data_plane_status inaccessible rather than failing the run. No key
+  material or secret value is ever read.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_key_vault_key_rotation.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-KEYVAULT-ROTATION
+  name: Azure Key Vault Key Rotation
+  instructions: >
+    Script: fetcher.py. Two Key Vault planes are read, because the management plane
+    cannot see a key's rotation policy in a list response.
+    Management plane (azure-mgmt-keyvault KeyVaultManagementClient):
+    resource.providers.get("Microsoft.KeyVault") for the resource-provider
+    registration state; vaults.list_by_subscription() for each vault's id, name,
+    location, vault_uri and enable_rbac_authorization; then per vault
+    keys.list(resource_group, vault_name) followed by
+    keys.get(resource_group, vault_name, key_name) per key — the LIST response
+    carries only the key's attributes (enabled, created, updated, expires,
+    not_before, recovery_level) and its URI, while the GET adds the public
+    parameters (kty, key_size, curve_name) and the rotation policy; and
+    secrets.list(resource_group, vault_name) for each secret's name and attributes.
+    Data plane (azure-keyvault-keys KeyClient at
+    the vault's vault_uri, falling back to https://<name>.vault.azure.net/):
+    list_properties_of_keys() then get_key_rotation_policy(key_name) per key, giving
+    lifetime_actions[] (action plus time_before_expiry / time_after_create) and the
+    policy's expires_in. Rotation is reported as enabled when a lifetime action is
+    Rotate (matched case-insensitively — the data plane spells it "Rotate", the
+    management plane "rotate"). Durations are emitted in ISO-8601 form ("P90D") and
+    every date is normalized to UTC "%Y-%m-%dT%H:%M:%SZ", because the SDK hands key
+    dates over as epoch integers and secret dates as datetimes. rotation_policy_source
+    records which plane each policy came from — the data plane wins where it is
+    reachable, the management-plane GET is the fallback — and
+    rotation_policy_readable records whether a definitive answer was obtained at all,
+    so "this key does not rotate" is never confused with "we could not see whether it
+    does"; the summary's rotation percentage is measured over the readable keys only.
+    A vault whose data plane answers an HTTP error (403 when the credential holds ARM
+    Reader but no Key Vault data action, 404 for a key with no policy) is recorded as
+    data_plane_status inaccessible and does NOT fail the run — the same reading
+    Prowler applies. Nothing here calls the data plane's get_key or any secret-value
+    operation: key names, dates, public parameters and policies only.
