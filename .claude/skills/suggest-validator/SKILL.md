@@ -27,8 +27,9 @@ they'll attach in Paramify, not an artifact this repo stores or executes.
   counts. You cannot author a meaningful "proves the control" regex from that.
   If the newest evidence looks empty, say so and stop (Phase 1).
 - **Anchor on the key name plus a value pattern**, never on byte position or
-  whitespace. `"completion_rate":\s*(?:100|[1-9][0-9])`, not a brittle slice of
-  pretty-printed JSON. Key ordering and indentation vary between runs.
+  whitespace. `"completion_rate":\s*(?<completion_rate>100|[1-9][0-9])`, not a
+  brittle slice of pretty-printed JSON. Key ordering and indentation vary
+  between runs.
 - **Every suggestion ships with three lines: what it asserts, what it does NOT
   assert, and when it (correctly) fails.** A regex without its failure mode is a
   false sense of coverage.
@@ -37,7 +38,9 @@ they'll attach in Paramify, not an artifact this repo stores or executes.
   Paramify's validator sees. So avoid anchor keys that collide with envelope
   metadata (`fetcher_name`, `fetcher_version`, `category`, `run_id`, `target`,
   `collected_at`, `status`, `exit_code`, `error`, `evidence_set`,
-  `schema_version`) unless you pin a payload-specific value too.
+  `schema_version`) unless you pin a payload-specific value too. The one
+  sanctioned exception is `exit_code` in a Phase 3b error rule, where the
+  envelope *is* the subject of the check.
 
 ---
 
@@ -99,8 +102,8 @@ PY
   coarse: **static descriptive fields can mask empty measurements.** A payload
   that carries a control name, a `ksi` string, or a `related_controls` list will
   read as HAS DATA even if every *measured* value (the MFA percentages, the
-  enabled-counts) is empty or zero. (The okta smoke-test payloads in this repo do
-  exactly this.) So the authoritative emptiness check is field-specific and
+  enabled-counts) is empty or zero. (The okta smoke-test payloads do exactly
+  this.) So the authoritative emptiness check is field-specific and
   happens once you've picked the critical field (Phase 2) and run the match
   (Phase 4): if your chosen metric matches **0 times** on a `success` run, the
   evidence is empty *for that metric* — loop back here and ask for a populated
@@ -171,8 +174,11 @@ variant. Rules:
   `backup_retention_period`); names must be unique within one pattern.
   Naming does **not** renumber anything — `(?<x>…)` is still group 1 — so
   Paramify's rule table, which references groups by number, is unaffected.
+  (Adding the Phase 3b error anchor *does* shift the numbers, because it puts a
+  group in front of yours — see that section.)
 
-**Worked example (knowbe4 — the populated file in this repo):**
+**Worked example (from a populated knowbe4 run — `evidence/` is gitignored, so
+this is the shape to copy, not a file you can open):**
 
 > Presence: `"completion_rate"\s*:\s*(?<completion_rate>100|[1-9][0-9])`
 > - **Asserts:** a `completion_rate` of 10–100 exists — real, non-zero training
@@ -202,9 +208,15 @@ nothing, and the artifact reports Fail.
 **The envelope already carries the signal.** `wrap_outputs` sets
 `"status": "success" if exit_code == 0 else "failed"`, so `status` and
 `exit_code` are perfectly redundant — anchor on `exit_code` alone. It is numeric,
-appears exactly once in the file, and avoids the `status` key collision (the
+appears once in the envelope, and avoids the `status` key collision (the
 envelope says `failed` while a payload may say `error` — two different
 vocabularies for the same event).
+
+The envelope contributes only that one `exit_code`, but a fetcher that wraps a
+subprocess can serialize its own into the payload. Confirm the Phase 4 match
+count is exactly 1 before trusting the rules below: Rule 01 only fires on *zero*
+matches, so a second `exit_code` reads as healthy while Match Group 1 silently
+binds to whichever match comes first.
 
 Build the pattern as **the error anchor first, then the compliance pattern in an
 optional group**, so it matches exactly once whether or not the payload arrived:
@@ -220,7 +232,15 @@ so an error short-circuits the compliance rules regardless of Index order):
 |-------|-----------|----------|-------|-------------|
 | 01 | Match Count | Equals | `0` | Error |
 | 02 | Match Group 1 (`exit_code`) | Not Equals | `0` | Error |
-| 03+ | your Phase 3 group(s) | … | … | Pass |
+| 03+ | Match Group 2+ (your Phase 3 group(s)) | … | … | Pass |
+
+**The anchor renumbers your groups.** `exit_code` takes group 1, so the Phase 3
+groups shift up — the first one you named is now group 2. A rule you already
+wrote against group 1 will read the exit code instead of your evidence field, so
+renumber those rules when you adopt this pattern. The Phase 4 snippet prints
+`m.groups` in pattern order, so — with every group named, as Phase 3 requires —
+the Nth entry is group N. Read the numbering off that instead of counting
+parentheses.
 
 Rule 01 is the **drift canary**. Because the compliance half is optional, a
 well-formed envelope always yields exactly one match — so zero matches means the
@@ -268,9 +288,19 @@ subject of the check.
    triage missed it because static fields masked the emptiness) — go back to
    Phase 1 and ask the user for a populated run.
 
-   **Test both directions.** A regex that only ever matches proves nothing —
-   show it returning 0 against a payload that *should* fail (an empty smoke-test
-   file of the same fetcher, or a copy with the key value edited below threshold).
+   **Test both directions.** A regex that only ever matches proves nothing — run
+   it against a payload that *should* fail (an empty smoke-test file of the same
+   fetcher, or a copy with the key value edited below threshold). What failure
+   looks like depends on which pattern you built:
+
+   - **A plain Phase 3 pattern** drops to **0 matches**.
+   - **A Phase 3b pattern still matches once.** The compliance half is optional —
+     that is exactly what Rule 01's canary depends on — so the count stays 1 and
+     the *group* carries the signal: the snippet prints `{"exit_code":"0"}` with
+     your compliance name absent from the object. Do **not** "fix" this by
+     removing the optional wrapper; that deletes the canary and makes a missing
+     envelope indistinguishable from a missing metric.
+
    If you added a Phase 3b error rule, also run it against a `failed` run and
    confirm `exit_code` captures non-zero. That contrast is what makes it a
    validator and not just a field-finder.
