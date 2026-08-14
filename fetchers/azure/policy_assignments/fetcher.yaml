@@ -1,0 +1,52 @@
+name: azure_policy_assignments
+version: 0.1.0
+description: >
+  Every Azure Policy assignment in effect on the subscription — its own and the ones
+  inherited from a management group: display name, the referenced policy definition
+  or initiative, the assignment scope and any excluded (notScopes) scopes, the
+  assignment parameters, and whether the assignment is ENFORCED (enforcementMode
+  Default) or audit-only (DoNotEnforce). Each referenced definition is resolved to
+  its display name and to BuiltIn vs Custom where the run's permissions allow;
+  a definition that cannot be read is reported as unavailable rather than failing
+  the collection.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_policy_assignments.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-POLICY-ASSIGN
+  name: Azure Policy Assignments
+  instructions: >
+    Script: fetcher.py. Azure SDK calls: resource.providers.get("Microsoft.Authorization"),
+    then azure-mgmt-resource-policy PolicyClient policy_assignments.list() and, per
+    distinct definition, policy_definitions / policy_set_definitions get_built_in(), get()
+    or get_at_management_group(). Reader, plus management-group read for MG-scoped custom
+    definitions.

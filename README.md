@@ -35,6 +35,7 @@ Fetchers are small scripts that collect compliance evidence from your infrastruc
 | Category | Fetchers | What it collects | Status |
 |---|---:|---|---|
 | **AWS** | 80 | Encryption at rest, IAM, high availability, logging, network segmentation — across the AWS service surface | ✅ complete |
+| **Azure** | 27 | Storage/disk/SQL encryption and CMK use, Entra identity + Conditional Access, RBAC assignments and custom roles, network security groups, Key Vault config and key rotation, Defender plans, diagnostic settings and activity-log alerts, backup, and the managed databases | broad coverage |
 | **Datadog** | 13 | Cloud SIEM detection rules & signals, log pipelines/indexes/archives, host & container inventory, agent checks, APM services, and incidents with timelines | broad coverage |
 | **Okta** | 8 | Phishing-resistant MFA, authenticators, least privilege, just-in-time access, account management | starter set |
 | **SentinelOne** | 5 | Agents, activities, cloud detection rules, XDR assets, user config | starter set |
@@ -55,7 +56,7 @@ More integrations are in progress. To request a fetcher or upvote what should be
 <img src="fetchers/logos/crowdstrike.svg" alt="CrowdStrike" width="56" height="56" style="margin: 20px;">
 <img src="fetchers/logos/servicenow.svg" alt="ServiceNow" width="56" height="56" style="margin: 20px;">
 
-Azure · and more
+GCP · GitHub · and more
 
 </div>
 
@@ -71,6 +72,13 @@ cd paramify-fetchers
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[all]'      # '[all]' bundles the TUI; use `pip install -e .` for the headless CLI only
 ```
+
+The Azure category is the one exception to the CLI rule above: it talks to Azure
+through the official SDKs, so it needs `pip install -e '.[azure]'` (23 packages:
+20 `azure-mgmt-*` clients plus `azure-identity`, `azure-keyvault-keys` and
+`msgraph-sdk`) and **no `az` CLI at runtime**. That
+extra is deliberately kept out of `[all]` — it is by far the heaviest, and only
+matters if you actually run Azure fetchers.
 
 There are three ways to drive it — an interactive **TUI**, an **AI agent**, or the **CLI** directly. All three go through one facade (`framework.api`), so they behave identically; pick whichever fits how you work.
 

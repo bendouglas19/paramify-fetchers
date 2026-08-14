@@ -1,0 +1,66 @@
+# Azure application-platform and governance evidence — the App Service web apps and
+# function apps that serve the workload, and the Azure Policy assignments plus
+# Databricks workspaces that govern and process around it.
+#
+# Auth is azure-identity's DefaultAzureCredential — there is no secret to set.
+#   - Local:      az login          (cached CLI token under $HOME)
+#   - In-cluster: AKS workload identity (AZURE_TENANT_ID + AZURE_CLIENT_ID +
+#                 AZURE_FEDERATED_TOKEN_FILE; no stored secret)
+#   - Azure VM / App Service: managed identity via IMDS (nothing to wire)
+# See fetchers/_categories/azure.yaml for the full resolution order.
+#
+# Read-only access needed: the built-in **Reader** role on each subscription in
+# `targets` covers three of the four fetchers.
+#
+# azure_function_app_configuration needs MORE than Reader. Two of its calls are ARM
+# POST /action operations, so grant Reader plus a custom role carrying exactly:
+#   Microsoft.Web/sites/host/listkeys/action     (are function access keys configured)
+#   Microsoft.Web/sites/config/list/Action       (which application settings exist)
+# Without them — or under a ReadOnly resource lock, which also rejects those POSTs —
+# the fetcher still succeeds and marks those two blocks "not_authorized" per app, so
+# the gap is visible in the evidence instead of silently reading as "no keys".
+# Neither key material nor any application-setting value is ever written.
+#
+# Fanout is per SUBSCRIPTION. Each fetcher lists one target per subscription;
+# `environment` labels that subscription's evidence (prod / preprod) and is written
+# into the payload metadata. Omitting `subscription_id` falls back to the first
+# enabled subscription the ambient credential can see ("collect where deployed") —
+# here it is named explicitly so the run is reproducible and multi-subscription
+# ready.
+#
+# Replace the subscription id below with your own.
+run:
+  output_dir: ./evidence
+
+  platforms:
+    azure:
+      # Optional: let the ambient credential-chain selectors through the runner's
+      # env whitelist. They only take effect if actually set, and none is a secret
+      # on the workload-identity / managed-identity paths. The category file
+      # already declares this set; repeating it here documents the run's auth path.
+      auth:
+        passthrough_env:
+          - AZURE_TENANT_ID
+          - AZURE_CLIENT_ID
+          - AZURE_FEDERATED_TOKEN_FILE
+
+  fetchers:
+    - use: azure_app_service_configuration
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod
+
+    - use: azure_function_app_configuration
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod
+
+    - use: azure_policy_assignments
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod
+
+    - use: azure_databricks_workspace_configuration
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod

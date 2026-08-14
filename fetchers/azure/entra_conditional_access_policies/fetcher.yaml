@@ -1,0 +1,61 @@
+name: azure_entra_conditional_access_policies
+version: 0.1.0
+description: >
+  Every Microsoft Entra ID Conditional Access policy with its enforcement state and
+  the include/exclude maps for users, groups, directory roles and target resources,
+  plus the access controls it grants or blocks, its conditions (client app types,
+  sign-in and user risk, platforms, named locations) and its session controls. The
+  three states are kept distinct — a report-only policy enforces nothing — and the
+  exclusions that narrow a policy are reported alongside what it requires.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_entra_conditional_access_policies.json
+  aggregation: per_target
+
+target_schema:
+  # Microsoft Graph data is TENANT-scoped, so the fanout unit here is the tenant,
+  # not the subscription: one target per Entra tenant. Two targets differing only
+  # by subscription_id would collect byte-identical evidence.
+  tenant_id:
+    type: string
+    required: false
+    env: AZURE_TENANT_ID
+    description: >
+      Entra tenant id to collect from, and the discriminator for this fetcher's
+      output filename. Optional — omit to use whichever tenant the ambient
+      credential authenticates into, in which case the tenant is read back from
+      Microsoft Graph's organization endpoint.
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id. Optional and NOT used to scope collection — Graph data
+      is tenant-wide. Set it only to correlate this tenant's evidence with the
+      subscription-scoped Azure evidence from the same manifest; it is recorded in
+      the payload metadata and nowhere else.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-tenant runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-ENTRA-CA-POLICIES
+  name: Microsoft Entra ID Conditional Access Policies
+  instructions: >
+    Script: fetcher.py. Microsoft Graph calls: GET
+    /identity/conditionalAccess/policies (state, conditions, grantControls,
+    sessionControls); GET /organization. Paged via @odata.nextLink.

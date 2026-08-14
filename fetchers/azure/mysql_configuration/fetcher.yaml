@@ -1,0 +1,52 @@
+name: azure_mysql_configuration
+version: 0.1.0
+description: >
+  For each Azure Database for MySQL flexible server in the subscription, reports the
+  engine version, the full server-parameter set, and the posture derived from it:
+  require_secure_transport, the comma-separated tls_version list of every ACCEPTED
+  version (so a deprecated version still being accepted is visible), audit_log_enabled
+  and the audit_log_events classes that show whether connections are recorded, plus
+  public network access, geo-redundant backup and the high-availability mode. Every
+  parameter is listed rather than read by name — the opposite of the PostgreSQL
+  fetcher — because MySQL's audit configuration is spread across parameters that gate
+  each other.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_mysql_configuration.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-MYSQL-CONFIG
+  name: Azure MySQL Flexible Server Configuration
+  instructions: >
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-rdbms mysql_flexibleservers
+    MySQLManagementClient): servers.list(), configurations.list_by_server(). Records
+    each server's engine version, durability settings and every server parameter as a
+    name-to-value map.

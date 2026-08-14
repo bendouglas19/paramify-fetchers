@@ -1,0 +1,52 @@
+name: azure_rbac_role_assignments
+version: 0.1.0
+description: >
+  Every Azure RBAC role assignment that applies at the subscription scope or above,
+  with its scope classified (tenant root / management group / subscription / resource
+  group / resource), the principal it grants to, and the role definition it grants
+  with the role's name resolved from its GUID. Assignments of the four over-broad
+  built-in roles — Owner, Contributor, User Access Administrator and Role Based Access
+  Control Administrator — are flagged, as are the ones that let the holder grant
+  access to itself, and ABAC conditions are reported since they narrow a broad role's
+  real reach.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_rbac_role_assignments.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-RBAC-ASSIGNMENTS
+  name: Azure RBAC Role Assignments
+  instructions: >
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-authorization
+    AuthorizationManagementClient):
+    role_definitions.list(scope="/subscriptions/{id}"),
+    role_assignments.list_for_subscription(filter="atScope()"), and
+    resource.providers.get for Microsoft.Authorization.

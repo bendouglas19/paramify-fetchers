@@ -1,0 +1,52 @@
+name: azure_container_registry_configuration
+version: 0.1.0
+description: >
+  For every container registry in the subscription, reports who can reach it and who
+  can pull from it: the SKU and login server, whether the shared admin account is
+  enabled (a standing finding — it bypasses Entra ID, so pulls and pushes through it
+  are not attributable), whether anonymous pull is on, public network access with the
+  network rule set's default action and IP allow-list, the private endpoint
+  connections and their approval state, customer-managed-key encryption and zone
+  redundancy, the content-trust / quarantine / retention / export / ARM-audience
+  policies, and the diagnostic settings that ship the registry's login and repository
+  audit logs.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_container_registry_configuration.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-ACR-CONFIG
+  name: Azure Container Registry Configuration
+  instructions: >
+    Script: fetcher.py. Azure SDK calls: azure-mgmt-containerregistry
+    ContainerRegistryManagementClient.registries.list(), then azure-mgmt-monitor
+    MonitorManagementClient.diagnostic_settings.list(resource_uri) per registry,
+    preceded by ResourceManagementClient.providers.get("Microsoft.ContainerRegistry").
