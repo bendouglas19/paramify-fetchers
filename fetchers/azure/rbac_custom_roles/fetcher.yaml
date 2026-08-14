@@ -1,0 +1,75 @@
+name: azure_rbac_custom_roles
+version: 0.1.0
+description: >
+  Every custom Azure RBAC role definition in the subscription with its assignable
+  scopes and its full permission set — control-plane actions and notActions, data-plane
+  dataActions and notDataActions — flagged for wildcard breadth and for the permissions
+  that let a holder escalate its own privileges (writing role assignments, rewriting
+  role definitions, writing deny assignments). Wildcards are matched with Azure's own
+  semantics, where `*` spans `/`, and notActions is subtracted, so a role granting `*`
+  minus the authorization writes is reported as Contributor-equivalent rather than as
+  an Owner.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_rbac_custom_roles.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-RBAC-CUSTOM-ROLES
+  name: Azure RBAC Custom Role Definitions
+  instructions: >
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-authorization
+    AuthorizationManagementClient):
+    role_definitions.list(scope="/subscriptions/{id}") once, reading each definition's
+    id, name (the role GUID), roleName (the display name), roleType, description,
+    assignableScopes and permissions[{actions, notActions, dataActions,
+    notDataActions}]. Definitions are listed unfiltered and split into custom and
+    built-in on roleType in the fetcher, so total_role_definitions and
+    builtin_role_definitions come from the same call — which is what makes
+    "custom_role_definitions: 0" distinguishable from a call that returned nothing.
+    Registration of the Microsoft.Authorization resource provider is read first via
+    resource.providers.get, so a zero-role result is distinguishable from a provider
+    that is not registered (Azure returns an empty list, not an error, for the latter).
+    Action patterns are matched with Azure's wildcard semantics, in which `*` matches
+    any sequence INCLUDING `/` — so `*/write`, `Microsoft.Authorization/*` and
+    `Microsoft.Authorization/roleAssignments/*` are all recognized as granting
+    roleAssignments/write, which a literal string comparison would miss — and each
+    permission block's notActions is subtracted from its own actions, matched with the
+    same semantics. Privilege escalation is flagged on
+    Microsoft.Authorization/roleAssignments/write, .../roleDefinitions/write and
+    .../denyAssignments/write; a role granting the bare `*` action is Owner-equivalent
+    when it can still write role assignments and Contributor-equivalent when notActions
+    removed that, since that single permission is what separates the two built-ins.
+    Resource-lock administration is flagged the same way, generalizing Prowler's
+    literal Microsoft.Authorization/locks/ prefix match. Scope note: this reads the
+    subscription scope, so a custom role defined at a management group ABOVE the
+    subscription and assignable within it is not returned — that is a limitation of a
+    per-subscription read, not a collection failure. Read-only access needed: the
+    built-in Reader role on the subscription.

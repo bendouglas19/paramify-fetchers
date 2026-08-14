@@ -1,0 +1,70 @@
+name: azure_rbac_role_assignments
+version: 0.1.0
+description: >
+  Every Azure RBAC role assignment that applies at the subscription scope or above,
+  with its scope classified (tenant root / management group / subscription / resource
+  group / resource), the principal it grants to, and the role definition it grants
+  with the role's name resolved from its GUID. Assignments of the four over-broad
+  built-in roles — Owner, Contributor, User Access Administrator and Role Based Access
+  Control Administrator — are flagged, as are the ones that let the holder grant
+  access to itself, and ABAC conditions are reported since they narrow a broad role's
+  real reach.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_rbac_role_assignments.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-RBAC-ASSIGNMENTS
+  name: Azure RBAC Role Assignments
+  instructions: >
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-authorization
+    AuthorizationManagementClient): role_definitions.list(scope="/subscriptions/{id}")
+    first, to build a role-definition GUID to name/type lookup — an assignment
+    references its role only by GUID, so without this the evidence would be a list of
+    GUIDs; then role_assignments.list_for_subscription(filter="atScope()") for each
+    assignment's id, name, scope, principalId, principalType, roleDefinitionId,
+    description, condition, conditionVersion, createdOn and updatedOn. The
+    atScope() filter is deliberate: without it the call also returns every assignment
+    made at every resource group and individual resource in the subscription, burying
+    the subscription-wide grants this evidence is about. Registration of the
+    Microsoft.Authorization resource provider is read first via
+    resource.providers.get, so a zero-assignment result is distinguishable from a
+    provider that is not registered (Azure returns an empty list, not an error, for
+    the latter). A role definition GUID is compared against the four over-broad
+    built-ins by GUID and never by resolved name — Owner
+    8e3af657-a8ff-443c-a75c-2fe8c4bcb635, Contributor
+    b24988ac-6180-42a0-ab88-20f7382dd24c, User Access Administrator
+    18d7d88d-d35e-4fb5-a5c3-7773c20a72d9, Role Based Access Control Administrator
+    f58310d9-a9f6-439a-9e8d-f62e7b41a168 (the same constants Prowler carries) — so an
+    assignment inherited from a management group, whose custom role definition this
+    subscription's list call cannot return, is still flagged correctly; such an
+    assignment is reported with role_name_resolved false. Read-only access needed: the
+    built-in Reader role on the subscription.
