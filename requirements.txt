@@ -26,3 +26,7 @@ azure-mgmt-subscription
 azure-mgmt-storage
 azure-mgmt-network
 azure-mgmt-security
+# Reads ARM resource-provider registration state, so "service not in use" is
+# distinguishable from "in use but empty" — Azure returns an empty list, not an
+# error, for an unregistered provider.
+azure-mgmt-resource

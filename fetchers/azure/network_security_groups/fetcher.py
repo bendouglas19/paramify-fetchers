@@ -28,6 +28,8 @@ from dotenv import load_dotenv
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent / "_shared"))
 from azure_common import (  # noqa: E402
+    NOT_REGISTERED,
+    REGISTRATION_UNKNOWN,
     Collector,
     build_payload,
     classify_failure_code,
@@ -35,6 +37,7 @@ from azure_common import (  # noqa: E402
     credential,
     failure_reason,
     model_attr,
+    provider_registration_status,
     resolve_subscription,
     resource_group_from_id,
     sanitize_for_filename,
@@ -316,7 +319,19 @@ def main() -> int:
 
     security_groups: list[dict] = []
     virtual_networks: list[dict] = []
+    registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
+        # Asked BEFORE the list calls, so a zero-NSG result is legible: Azure
+        # returns an empty list rather than an error for an unregistered provider.
+        registration = provider_registration_status(
+            collector, subscription_id, cred, "Microsoft.Network"
+        )
+        if registration == NOT_REGISTERED:
+            logger.warning(
+                "Microsoft.Network is not registered on subscription %s — no "
+                "networking in use; reporting status not_registered",
+                subscription_id,
+            )
         security_groups, virtual_networks = collect_network(subscription_id, cred, collector)
     elif not subscription_id:
         collector.record(
@@ -334,8 +349,12 @@ def main() -> int:
         results={
             "network_security_groups": security_groups,
             "virtual_networks": virtual_networks,
+            "provider_registration_status": registration,
         },
-        summary=summarize(security_groups, virtual_networks),
+        summary={
+            **summarize(security_groups, virtual_networks),
+            "provider_registration_status": registration,
+        },
     )
 
     filename = (

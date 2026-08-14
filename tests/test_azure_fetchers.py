@@ -366,7 +366,12 @@ def test_storage_platform_key_and_permissive_defaults():
     rec = st.account_record(DEFAULT_ACCOUNT)
     assert rec["customer_managed_key"] is False
     assert rec["encryption_type"] == "Microsoft.Storage"
-    assert rec["infrastructure_encryption"] is None  # absent, not False — never set
+    # Coerced to False, NOT passed through as None. Azure omits
+    # requireInfrastructureEncryption entirely when it was never enabled
+    # (confirmed against a live account), and absent means disabled — there is no
+    # third state. A validator asserting `"infrastructure_encryption": false`
+    # would not match `null`, so the pass-through was a latent evidence bug.
+    assert rec["infrastructure_encryption"] is False
     assert rec["allow_blob_public_access"] is True
     assert rec["minimum_tls_version"] == "TLS1_0"
     assert rec["key_expiration_period_in_days"] is None

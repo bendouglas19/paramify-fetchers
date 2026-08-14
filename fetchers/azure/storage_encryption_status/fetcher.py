@@ -27,6 +27,8 @@ from dotenv import load_dotenv
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent / "_shared"))
 from azure_common import (  # noqa: E402
+    NOT_REGISTERED,
+    REGISTRATION_UNKNOWN,
     Collector,
     build_payload,
     classify_failure_code,
@@ -35,6 +37,7 @@ from azure_common import (  # noqa: E402
     dig,
     failure_reason,
     model_attr,
+    provider_registration_status,
     resolve_subscription,
     resource_group_from_id,
     sanitize_for_filename,
@@ -207,7 +210,11 @@ def account_record(account: dict) -> dict:
         # --- encryption at rest (the evidence that actually varies) ---
         "encryption_type": key_source,
         "customer_managed_key": str(key_source or "").lower() == KEY_SOURCE_KEYVAULT,
-        "infrastructure_encryption": account.get("infrastructure_encryption"),
+        # Coerced, not passed through: Azure OMITS requireInfrastructureEncryption
+        # when it was never enabled, so the raw value is None rather than False
+        # (confirmed live). A validator regex asserting `false` would not match
+        # `null`, and absent means disabled here — there is no third state.
+        "infrastructure_encryption": bool(account.get("infrastructure_encryption") or False),
         # --- encryption in transit ---
         "enable_https_traffic_only": bool(account.get("enable_https_traffic_only") or False),
         "minimum_tls_version": account.get("minimum_tls_version"),
@@ -418,7 +425,19 @@ def main() -> int:
     cred = collector.guard("azure.identity.DefaultAzureCredential", credential)
 
     accounts: list[dict] = []
+    registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
+        # Asked BEFORE the list call, so a zero-account result is legible: Azure
+        # returns an empty list rather than an error for an unregistered provider.
+        registration = provider_registration_status(
+            collector, subscription_id, cred, "Microsoft.Storage"
+        )
+        if registration == NOT_REGISTERED:
+            logger.warning(
+                "Microsoft.Storage is not registered on subscription %s — no storage "
+                "in use; reporting status not_registered",
+                subscription_id,
+            )
         accounts = collect_storage_accounts(subscription_id, cred, collector)
     elif not subscription_id:
         collector.record(
@@ -433,8 +452,11 @@ def main() -> int:
         subscription_id=subscription_id,
         subscription_source=sub["subscription_source"],
         collector=collector,
-        results={"storage_accounts": accounts},
-        summary=summarize(accounts),
+        results={
+            "storage_accounts": accounts,
+            "provider_registration_status": registration,
+        },
+        summary={**summarize(accounts), "provider_registration_status": registration},
     )
 
     filename = (

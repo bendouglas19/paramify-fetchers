@@ -355,6 +355,59 @@ def resolve_subscription(collector: Collector) -> Dict[str, Optional[str]]:
 
 
 # --------------------------------------------------------------------------- #
+# Resource-provider registration — "service not in use" vs "in use but empty"
+# --------------------------------------------------------------------------- #
+
+REGISTERED = "registered"
+NOT_REGISTERED = "not_registered"
+REGISTRATION_UNKNOWN = "unknown"
+
+
+def provider_registration_status(
+    collector: Collector, subscription_id: str, cred, namespace: str
+) -> str:
+    """Registration state of an ARM resource provider, as evidence.
+
+    Why this exists: for most namespaces Azure returns an EMPTY LIST rather than
+    an error when the provider is not registered. Confirmed against a live
+    subscription — with Microsoft.Storage unregistered, `storage_accounts.list()`
+    yields zero accounts and raises nothing. So without this field
+    `total_storage_accounts: 0` reads identically whether the service is not in
+    use or in use and genuinely empty, and a reader cannot tell a real 0% posture
+    from an inapplicable one.
+
+    Defender gets the same answer from an exception (Microsoft.Security *does*
+    raise "Subscription Not Registered"), so it does not need this call; the field
+    name is shared deliberately so both read the same way in evidence.
+
+    A not-registered provider is valid evidence, NOT a collection failure — the
+    same convention as AWS's SubscriptionRequiredException handling. Returns
+    "unknown" if the lookup itself fails, which IS recorded as a failure by
+    `guard`, since then we genuinely do not know.
+    """
+
+    def _get() -> Optional[str]:
+        # azure-mgmt-resource moved this class. Through 24.x (what Prowler pins,
+        # and what every tutorial shows) it is re-exported at the package root;
+        # by 26.0.0 that re-export is GONE and it lives under `.resources`.
+        # Verified live: the root import raises
+        # "cannot import name 'ResourceManagementClient' ... (unknown location)"
+        # on 26.0.0. Try the new home first, fall back to the old one.
+        try:
+            from azure.mgmt.resource.resources import ResourceManagementClient  # lazy
+        except ImportError:  # pragma: no cover - depends on installed SDK version
+            from azure.mgmt.resource import ResourceManagementClient  # lazy
+
+        client = ResourceManagementClient(credential=cred, subscription_id=subscription_id)
+        return model_attr(client.providers.get(namespace), "registration_state")
+
+    state = collector.guard(f"resource.providers.get({namespace})", _get)
+    if state is None:
+        return REGISTRATION_UNKNOWN
+    return REGISTERED if str(state).lower() == "registered" else NOT_REGISTERED
+
+
+# --------------------------------------------------------------------------- #
 # Payload assembly / output
 # --------------------------------------------------------------------------- #
 
