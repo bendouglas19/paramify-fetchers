@@ -1,0 +1,61 @@
+name: gcp_compute_instance_configuration
+version: 0.1.0
+description: >
+  For each Compute Engine instance in the project, reports the per-instance
+  hardening posture: Shielded VM (secure boot, vTPM, integrity monitoring),
+  Confidential Computing, OS Login and its 2FA, serial-port access, IP
+  forwarding, block-project-ssh-keys, the attached service account and its OAuth
+  scopes (the default service account with cloud-platform being the classic
+  finding), public-IP presence, and deletion protection. Also reports the
+  project-wide metadata defaults those instance settings inherit from.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_compute_instance_configuration.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+evidence_set:
+  reference_id: EVD-GCP-VM-CONFIG
+  name: Compute Engine Instance Configuration
+  instructions: >
+    Script: fetcher.py. Google Cloud client library calls: compute
+    instances.aggregatedList (one call covers every zone) and compute
+    projects.get for the project-wide commonInstanceMetadata defaults. Per
+    instance: shieldedInstanceConfig (enableSecureBoot / enableVtpm /
+    enableIntegrityMonitoring), confidentialInstanceConfig, canIpForward,
+    deletionProtection, scheduling (onHostMaintenance, automaticRestart,
+    preemptible, provisioningModel), serviceAccounts[].email + .scopes,
+    networkInterfaces[].accessConfigs[].natIP for public-IP presence, network
+    tags, and the metadata keys enable-oslogin, enable-oslogin-2fa,
+    serial-port-enable and block-project-ssh-keys. Effective OS Login is the
+    instance's own metadata when set, otherwise the project default, and
+    os_login_source records which level decided it. Metadata is read key by key
+    so startup scripts and SSH keys never enter the evidence — SSH keys are
+    reduced to a presence flag. Disk encryption is a separate evidence set
+    (gcp_persistent_disk_encryption_status). A project with the Compute API
+    disabled is recorded as not readable rather than failing.
