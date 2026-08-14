@@ -1,0 +1,60 @@
+name: gcp_secret_manager_configuration
+version: 0.1.0
+description: >
+  For each Secret Manager secret in the project, reports its replication policy
+  (automatic vs user-managed and which locations), whether the replicas are
+  wrapped with a CMEK, whether a rotation schedule exists and when it next fires,
+  whether the secret expires, its labels, who can read it, and how many versions
+  it has in each state. No secret payload ever enters the evidence — the fetcher
+  never calls AccessSecretVersion, and version records carry state and timestamps
+  only.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_secret_manager_configuration.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+evidence_set:
+  reference_id: EVD-GCP-SECRETMGR-CONFIG
+  name: Secret Manager Configuration
+  instructions: >
+    Script: fetcher.py. Google Cloud client library calls: secretmanager
+    ListSecrets against projects/<id> (paginated by the GAPIC pager), then
+    ListSecretVersions and GetIamPolicy per secret. AccessSecretVersion — the
+    only call that returns a secret's value — is never made, and no payload or
+    checksum field is copied; version records carry the version id, its state
+    (ENABLED / DISABLED / DESTROYED) and its timestamps. Per secret:
+    replication.automatic vs replication.userManaged.replicas[].location, each
+    replica's customerManagedEncryption.kmsKeyName (present ⇒ customer-managed;
+    absent ⇒ Google-managed default encryption, and a secret counts as CMEK only
+    when every replica has one), rotation.rotationPeriod and
+    rotation.nextRotationTime (a next-rotation time in the past is reported as
+    overdue), expireTime, versionDestroyTtl, topics and labels. IAM policy
+    bindings name public principals and service accounts; people, groups and
+    domains contribute a count only. A project with the Secret Manager API
+    disabled is recorded as not readable rather than failing.
