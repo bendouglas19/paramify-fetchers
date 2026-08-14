@@ -1,0 +1,99 @@
+# GCP identity, key-management and DNS evidence — the controls about WHO can act
+# and WHAT protects the crypto and the name service:
+#
+#   gcp_iam_policy_bindings    the project's access inventory, both by role and by
+#                              principal, plus its audit-logging configuration
+#   gcp_iam_custom_roles       what the customer's own roles actually grant
+#   gcp_kms_key_configuration  key rings and keys: rotation, protection level,
+#                              primary version, IAM exposure
+#   gcp_dns_configuration      managed zones: DNSSEC, signing algorithms,
+#                              visibility, query logging
+#   gcp_api_keys_inventory     API keys and their restrictions (never the key)
+#
+# Kept separate from examples/gcp_data_at_rest.yaml and
+# examples/gcp_platform_posture.yaml because the theme is different, not because
+# the wiring is: same ADC auth, same per-project fanout, and the three manifests
+# can be merged into one run if you'd rather.
+#
+# Auth is Application Default Credentials (ADC) — there is no secret to set.
+#   - Local:      gcloud auth application-default login
+#   - In-cluster: GKE Workload Identity (metadata server; nothing to wire)
+# See fetchers/gcp/README.md for the read-only role the category needs. NOTE: none
+# of the five fetchers here has had a live-tenant run yet — expect to reconcile the
+# permission list on your first one.
+#
+# Beyond the category's baseline read-only role, these five want:
+#   resourcemanager.projects.get / .getIamPolicy   (bindings + audit configs)
+#   iam.roles.list                                 (custom role definitions)
+#   cloudkms.keyRings.list, cloudkms.cryptoKeys.list,
+#     cloudkms.cryptoKeys.getIamPolicy, cloudkms.keyRings.getIamPolicy
+#   dns.managedZones.list, dns.policies.list
+#   serviceusage.services.get + apikeys.keys.list  (API key metadata)
+# `roles/iam.securityReviewer` plus `roles/cloudkms.viewer` and `roles/dns.reader`
+# covers all of it; `roles/viewer` covers it too if you'd rather grant one role.
+#
+# Fanout is per PROJECT. Each fetcher lists one target per project; `environment`
+# labels that project's evidence (prod / preprod) and is written into the payload
+# metadata. Omitting `project` would fall back to the ADC default project
+# ("collect where deployed") — here we name it explicitly so the run is
+# reproducible and multi-project-ready.
+#
+# Replace the project id below with your own.
+run:
+  output_dir: ./evidence
+
+  platforms:
+    gcp:
+      # Optional: let the non-sensitive ADC selectors through the runner's env
+      # whitelist. Only take effect if actually set. No secret here by design.
+      auth:
+        passthrough_env:
+          - CLOUDSDK_CONFIG
+          - GOOGLE_CLOUD_PROJECT
+
+  fetchers:
+    # The richest of the five, and the one that names human identities: this IS
+    # the project's access inventory, so `principals[]` lists every member.
+    #
+    # `organization_domain` is what makes "this member is outside the org"
+    # answerable. Leave it out and the fetcher tries to read the parent
+    # organization instead — a call above the project that a project-scoped
+    # read-only role normally cannot make, in which case the evidence reports
+    # summary.external_members_evaluated: false rather than zero external members.
+    - use: gcp_iam_policy_bindings
+      config:
+        organization_domain: example.com
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    # Also lists the ORGANIZATION's custom roles when it can read them, since
+    # those are bindable inside the project. That read is tolerated when denied
+    # (summary.organization_roles_readable: false).
+    - use: gcp_iam_custom_roles
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    # Walks every KMS location, so a project with keys in one region still pays
+    # for one keyRings.list per location. A project with cloudkms.googleapis.com
+    # disabled records that (metadata.skipped_calls,
+    # summary.kms_api_readable: false) and still exits 0.
+    - use: gcp_kms_key_configuration
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    # DNSSEC coverage is measured over PUBLIC zones only — a private zone has no
+    # public resolution path for DNSSEC to protect.
+    - use: gcp_dns_configuration
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    # summary.no_api_keys: true is a passing result, not an empty one — zero API
+    # keys is the posture most projects should be able to evidence.
+    - use: gcp_api_keys_inventory
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod

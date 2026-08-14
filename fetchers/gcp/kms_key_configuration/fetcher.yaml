@@ -1,0 +1,66 @@
+name: gcp_kms_key_configuration
+version: 0.1.0
+description: >
+  Every Cloud KMS key ring and crypto key in the project, across every KMS
+  location: purpose, protection level (SOFTWARE / HSM / EXTERNAL), rotation period
+  and next rotation time against the 90-day interval, primary version state, the
+  destroy-scheduled grace period, and the IAM policy on both the key and its ring.
+  A key or ring granting allUsers / allAuthenticatedUsers is the critical finding —
+  it makes the customer-managed encryption on every resource referencing that key
+  decorative. No key material is read.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_kms_key_configuration.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+evidence_set:
+  reference_id: EVD-GCP-KMS-KEYS
+  name: Cloud KMS Key Configuration and Rotation
+  instructions: >
+    Script: fetcher.py. Google Cloud client library calls: cloudkms
+    projects.locations.list (Cloud KMS has no wildcard location, so the ring
+    listing is repeated per location), keyRings.list per location, cryptoKeys.list
+    per ring, and getIamPolicy on both each key ring and each crypto key. Per key
+    this reports purpose, createTime, versionTemplate protectionLevel and
+    algorithm, rotationPeriod and nextRotationTime, destroyScheduledDuration, the
+    primary version's id / state / protectionLevel / algorithm / generateTime, and
+    importOnly. Rotation compliance requires BOTH a rotation period of 90 days or
+    less AND a next rotation time within 90 days, and is measured only over keys
+    whose purpose is ENCRYPT_DECRYPT, since asymmetric and MAC keys cannot carry a
+    rotation period. Key ring policies are collected as well as key policies
+    because a binding on the ring inherits to every key in it. Each policy yields
+    its role/member bindings, the allUsers / allAuthenticatedUsers members, and any
+    principal holding both roles/cloudkms.admin and a crypto-key use role on the
+    same resource. When cloudkms.googleapis.com is not enabled on the project the
+    location listing is tolerated and reported as summary.kms_api_readable: false
+    rather than as a collection failure. No key material is read: cryptoKeys.list
+    and getIamPolicy return metadata and policy only, and no decrypt or export call
+    is made. Key versions are not enumerated individually — the primary version and
+    the version template in the list response answer the state and algorithm
+    questions.
