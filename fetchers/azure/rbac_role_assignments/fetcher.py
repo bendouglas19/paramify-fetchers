@@ -2,32 +2,14 @@
 """
 Azure RBAC role assignments on one subscription
 
-Who holds what, where. Each role assignment is reported with its scope, the principal
-it grants to, and the role definition it grants — with the role's NAME resolved, not
-just its GUID, and flagged when it is one of the four built-in roles that confer
-effectively unlimited control.
+Who holds what, where: each assignment with its scope classified, its principal, and its
+role definition with the NAME resolved from the GUID, flagged for the four over-broad
+built-ins.
 
-Two facts do the work here:
-
-- **Which role.** `Owner`, `Contributor`, `User Access Administrator` and `Role Based
-  Access Control Administrator` are the built-ins that either grant full control or
-  let the holder grant themselves full control. The first two are the classic
-  over-assignment; the last two are the privilege-escalation path, since a principal
-  that can write role assignments can make itself an Owner.
-- **At which scope.** The same role is a different fact at different scopes. Inherited
-  from a management group it applies to every subscription beneath it; at the
-  subscription it applies to everything in this one; at a resource group or a single
-  resource it is bounded. `scope_level` names which, so a broad assignment cannot hide
-  behind a long ARM id.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/iam/iam_service.py (Apache-2.0)
-`_get_role_assignments` and `_get_roles`, which read the same azure-mgmt-authorization
-SDK and make the same two calls with the same `atScope()` filter. The four role GUIDs
-are theirs verbatim, from prowler/providers/azure/config.py.
-
-Single-subscription per invocation; fanout across subscriptions happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+Projections ported from Prowler's
+prowler/providers/azure/services/iam/iam_service.py `_get_role_assignments` and
+`_get_roles` (Apache-2.0) — same SDK, same two calls, same `atScope()` filter. The
+four role GUIDs are theirs verbatim, from prowler/providers/azure/config.py.
 """
 
 import logging
@@ -61,18 +43,17 @@ from azure_common import (  # noqa: E402
 logger = logging.getLogger("azure_rbac_role_assignments")
 
 # Built-in role definition GUIDs, verbatim from Prowler's
-# prowler/providers/azure/config.py. These are Azure-wide constants — the same GUID
-# identifies the role in every tenant — which is why matching on them is safe where
-# matching on a display name would not be.
+# prowler/providers/azure/config.py. Azure-wide constants — the same GUID identifies
+# the role in every tenant — which is why matching on them is safe where matching on a
+# display name would not be.
 OWNER_ROLE_ID = "8e3af657-a8ff-443c-a75c-2fe8c4bcb635"
 CONTRIBUTOR_ROLE_ID = "b24988ac-6180-42a0-ab88-20f7382dd24c"
 USER_ACCESS_ADMINISTRATOR_ROLE_ID = "18d7d88d-d35e-4fb5-a5c3-7773c20a72d9"
 ROLE_BASED_ACCESS_CONTROL_ADMINISTRATOR_ROLE_ID = "f58310d9-a9f6-439a-9e8d-f62e7b41a168"
 
-# The four roles above, with the reason each one is over-broad. Kept as a mapping
-# rather than a set so the evidence can say WHICH role was matched: "Owner" and
-# "User Access Administrator" are over-broad for different reasons and a reviewer
-# remediates them differently.
+# A mapping rather than a set, so the evidence can say WHICH role was matched: Owner
+# and User Access Administrator are over-broad for different reasons and are remediated
+# differently.
 OVER_BROAD_BUILTIN_ROLES = {
     OWNER_ROLE_ID: "Owner",
     CONTRIBUTOR_ROLE_ID: "Contributor",
@@ -80,8 +61,8 @@ OVER_BROAD_BUILTIN_ROLES = {
     ROLE_BASED_ACCESS_CONTROL_ADMINISTRATOR_ROLE_ID: "Role Based Access Control Administrator",
 }
 
-# The subset that can grant access — the privilege-escalation path, distinct from
-# merely holding broad access. Owner is in both: it can do anything AND delegate it.
+# The subset that can grant access — the escalation path, distinct from merely holding
+# broad access. Owner is in both: it can do anything AND delegate it.
 ROLE_GRANTING_ROLES = frozenset(
     {
         OWNER_ROLE_ID,
@@ -103,14 +84,8 @@ SCOPE_UNKNOWN = "unknown"
 def project_role_assignment(assignment) -> dict:
     """Read a `RoleAssignment` model's attributes into a flat snake_case dict.
 
-    Attribute access rather than `as_dict()`, per the category's pattern:
-    azure-mgmt-authorization is a multi-API client and the generator style varies by
-    the API version the profile selects, so `as_dict()`'s output shape is not fixed.
-    Attribute names are.
-
-    `created_on` / `updated_on` are datetimes; they are rendered with `str()` here so
-    the evidence carries a stable string rather than depending on `json.dump`'s
-    `default=str` fallback for the same conversion.
+    Timestamps are `str()`-rendered here rather than left to `json.dump`'s
+    `default=str`.
     """
     created_on = model_attr(assignment, "created_on")
     updated_on = model_attr(assignment, "updated_on")
@@ -122,8 +97,7 @@ def project_role_assignment(assignment) -> dict:
         "principal_type": model_attr(assignment, "principal_type"),
         "role_definition_id": model_attr(assignment, "role_definition_id"),
         "description": model_attr(assignment, "description"),
-        # An ABAC condition narrows what the role can actually touch, so an
-        # over-broad role WITH a condition is a materially different finding.
+        # An over-broad role WITH an ABAC condition is a different finding.
         "condition": model_attr(assignment, "condition"),
         "condition_version": model_attr(assignment, "condition_version"),
         "created_on": str(created_on) if created_on is not None else None,
@@ -137,9 +111,8 @@ def project_role_assignment(assignment) -> dict:
 def project_role_definition(definition) -> dict:
     """Read a `RoleDefinition` model into the flat dict the name lookup needs.
 
-    Only the identity fields: this fetcher resolves GUID -> name and role TYPE. The
-    permission bodies are the rbac_custom_roles fetcher's evidence, and duplicating
-    them here would put the same large arrays in two evidence sets.
+    Identity fields only. The permission bodies are the rbac_custom_roles fetcher's
+    evidence; duplicating them would put the same large arrays in two evidence sets.
     """
     return {
         "id": model_attr(definition, "id"),
@@ -155,11 +128,9 @@ def project_role_definition(definition) -> dict:
 def role_definition_guid(role_definition_id: str | None) -> str | None:
     """The trailing GUID of a role definition's ARM id.
 
-    Prowler does `role_definition_id.split("/")[-1]` for the same reason: the full id
-    is scope-qualified (`/subscriptions/<sub>/providers/Microsoft.Authorization/
-    roleDefinitions/<guid>`), so the SAME built-in role arrives under a different id
-    depending on the scope it was read at, while the GUID is invariant. Comparing full
-    ids against the constants above would therefore silently never match.
+    The full id is scope-qualified, so the SAME built-in role arrives under a different
+    id per scope while the GUID is invariant: comparing full ids against the constants
+    above would silently never match. Prowler splits on "/" for the same reason.
     """
     return basename(role_definition_id)
 
@@ -167,17 +138,14 @@ def role_definition_guid(role_definition_id: str | None) -> str | None:
 def scope_level(scope: str | None) -> str:
     """Classify an ARM scope by how much it covers.
 
-    Ordered narrowest-test-first is not possible here — a resource scope CONTAINS the
-    resource-group segment — so the tests run widest-first and the resource case is
-    what is left: a scope with a resource group AND a provider path beyond it names a
-    single resource.
+    Tests run widest-first because a resource scope CONTAINS the resource-group
+    segment, so narrowest-first cannot discriminate.
     """
     if not scope:
         return SCOPE_UNKNOWN
     normalized = scope.rstrip("/") or "/"
     lowered = normalized.lower()
     if normalized == "/":
-        # The tenant root scope. Rare, and the broadest assignment possible.
         return SCOPE_ROOT
     if "/providers/microsoft.management/managementgroups/" in lowered:
         return SCOPE_MANAGEMENT_GROUP
@@ -193,18 +161,13 @@ def scope_level(scope: str | None) -> str:
 def assignment_record(assignment: dict, role_names: dict[str, dict]) -> dict:
     """Normalize one projected assignment, resolving its role definition.
 
-    `role_names` maps a role definition GUID to its projected definition. The lookup
-    is by GUID and not by full id for the reason in `role_definition_guid()` — and it
-    can legitimately miss: an assignment inherited from a management group can
-    reference a custom role defined ABOVE this subscription, which
-    `role_definitions.list(scope=/subscriptions/<sub>)` does not return.
-    `role_name_resolved` records whether the name is real or unknown, so an unresolved
-    name is never mistaken for a role actually called "unknown".
-
-    The over-broad determination reads the GUID, NOT the resolved name, so it holds
-    even when the name lookup missed. (Prowler's iam_role_user_access_admin_restricted
-    check compares the resolved NAME, which reports a clean pass for exactly the
-    inherited assignments it could not resolve.)
+    The lookup can legitimately miss — an assignment inherited from a management group
+    can reference a custom role defined ABOVE this subscription, which
+    `role_definitions.list(scope=/subscriptions/<sub>)` does not return — so
+    `role_name_resolved` records that. The over-broad determination reads the GUID, NOT
+    the resolved name, so it holds anyway. (Prowler's
+    iam_role_user_access_admin_restricted compares the resolved NAME, and so reports a
+    clean pass for exactly the inherited assignments it could not resolve.)
     """
     scope = assignment.get("scope")
     guid = role_definition_guid(assignment.get("role_definition_id"))
@@ -219,14 +182,12 @@ def assignment_record(assignment: dict, role_names: dict[str, dict]) -> dict:
         "scope": scope,
         "scope_level": level,
         "at_subscription_scope": level == SCOPE_SUBSCRIPTION,
-        # Inherited from above this subscription: it applies here but is not managed
-        # here, so remediation lives in a different place.
         "inherited_from_above_subscription": level in (SCOPE_MANAGEMENT_GROUP, SCOPE_ROOT),
         "scope_resource_group": resource_group_from_id(scope),
         # --- who ---
         "principal_id": assignment.get("principal_id"),
         # Absent principalType means the assignment predates the field or the caller
-        # could not expand it; left as None rather than guessed, since guessing "User"
+        # could not expand it; left None rather than guessed, since guessing "User"
         # would misreport a service principal.
         "principal_type": assignment.get("principal_type"),
         # --- what ---
@@ -253,10 +214,8 @@ def assignment_record(assignment: dict, role_names: dict[str, dict]) -> dict:
 def summarize(assignments: list[dict]) -> dict:
     """Over-broad built-in assignments are the headline, distinct principals second.
 
-    `distinct_principals_with_over_broad_roles` is reported next to the raw count
-    because one service principal holding Contributor on four scopes is one identity
-    to review, not four — and a large gap between the numbers usually means an
-    automation account was granted per-scope instead of once.
+    One service principal holding Contributor on four scopes is one identity to review,
+    not four, so both counts are reported.
     """
     over_broad = [a for a in assignments if a["is_over_broad_builtin"]]
     by_type: dict[str, int] = {}
@@ -284,8 +243,8 @@ def summarize(assignments: list[dict]) -> dict:
         "rbac_administrator_assignments": _count_role(
             ROLE_BASED_ACCESS_CONTROL_ADMINISTRATOR_ROLE_ID
         ),
-        # The escalation path: a principal that can write role assignments can make
-        # itself an Owner, so this is broader than the Owner count alone.
+        # Broader than the Owner count alone: a principal that can write role
+        # assignments can make itself an Owner.
         "role_granting_assignments": sum(1 for a in assignments if a["can_grant_roles"]),
         # --- by scope ---
         "assignments_at_root_scope": sum(
@@ -304,7 +263,6 @@ def summarize(assignments: list[dict]) -> dict:
         "assignments_inherited_from_above_subscription": sum(
             1 for a in assignments if a["inherited_from_above_subscription"]
         ),
-        # The worst combination: unlimited control over the whole subscription or more.
         "over_broad_at_subscription_scope_or_above": sum(
             1
             for a in over_broad
@@ -317,28 +275,22 @@ def summarize(assignments: list[dict]) -> dict:
         ),
         "unresolved_role_definitions": sum(1 for a in assignments if not a["role_name_resolved"]),
         "assignments_by_principal_type": by_type,
-        # An ABAC condition narrows a role's reach, so these are the assignments that
-        # are broad on paper but constrained in practice.
         "assignments_with_conditions": sum(1 for a in assignments if a["has_condition"]),
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def collect_role_assignments(subscription_id, cred, collector: Collector) -> tuple[list[dict], dict]:
     """One role_definitions.list() to name the roles, one role_assignments.list().
 
-    The definitions call comes first and is the reason the evidence carries role NAMES
-    at all: an assignment references its role only by GUID, and a reviewer cannot read
-    a list of GUIDs. Prowler builds the same lookup for the same reason.
+    The definitions call comes first because an assignment references its role only by
+    GUID. Prowler builds the same lookup.
 
-    `filter="atScope()"` on the assignments call is Prowler's, and is a deliberate
-    scoping choice rather than an incidental one: without it the call also returns
-    every assignment made at every resource group and every individual resource in the
-    subscription, which on a large subscription is tens of thousands of records that
-    bury the subscription-wide grants this evidence is about. With it, the response is
-    the assignments that apply at the subscription scope and above — the ones that
-    reach everything.
+    `filter="atScope()"` is Prowler's and is deliberate: without it the call also
+    returns every assignment made at every resource group and individual resource,
+    burying the subscription-wide grants this evidence is about. With it, the response
+    is the assignments applying at the subscription scope and above.
     """
     from azure.mgmt.authorization import AuthorizationManagementClient
 
@@ -356,8 +308,8 @@ def collect_role_assignments(subscription_id, cred, collector: Collector) -> tup
         definitions = {}
         for definition in client.role_definitions.list(scope=scope):
             projected = project_role_definition(definition)
-            # Keyed by the invariant GUID, lower-cased — ARM is inconsistent about
-            # GUID casing across API versions and a case-sensitive key would miss.
+            # Lower-cased: ARM is inconsistent about GUID casing across API versions,
+            # so a case-sensitive key would miss.
             guid = str(projected.get("name") or "").lower()
             if guid:
                 definitions[guid] = projected
@@ -390,9 +342,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every request and response header at INFO, which would
+    # dominate the runner's stderr tail. Warnings and errors still come through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -406,8 +357,8 @@ def main() -> int:
     assignments: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list calls, so a zero-assignment result is legible: Azure
-        # returns an empty list rather than an error for an unregistered provider.
+        # Asked BEFORE the list calls: Azure returns an empty list, not an error, for an
+        # unregistered provider, so a zero result would otherwise be ambiguous.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.Authorization"
         )
@@ -434,8 +385,7 @@ def main() -> int:
         results={
             "role_assignments": assignments,
             "provider_registration_status": registration,
-            # Named in the evidence so a reader knows which GUIDs the flags were
-            # decided by, without having to read this script.
+            # In the evidence so a reader knows which GUIDs decided the flags.
             "over_broad_builtin_roles_checked": dict(sorted(OVER_BROAD_BUILTIN_ROLES.items())),
             "assignment_scope_filter": "atScope()",
         },

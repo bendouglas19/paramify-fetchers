@@ -1,35 +1,13 @@
 #!/usr/bin/env python3
-"""
-KSI-MLA-01 / KSI-MLA-02 / KSI-MLA-06 / KSI-PIY-06: Azure Activity Log export
+"""Azure Activity Log export: the SUBSCRIPTION-scope diagnostic settings, the log
+categories each has on, and where it sends them.
 
-The Azure analogue of AWS CloudTrail configuration: for one subscription, reports
-the SUBSCRIPTION-SCOPE diagnostic settings that export the Activity Log — which
-log categories are switched on, and where each setting lands them (a storage
-account, a Log Analytics workspace, an event hub, or a partner solution). Without
-one of these the Activity Log is retained for 90 days and then gone, so this is
-the evidence that control-plane audit records are actually being captured and
-kept.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/monitor/monitor_service.py (Apache-2.0) —
-`diagnostic_settings_with_uri`, called at subscription scope by
-`_get_diagnostics_settings` — and read by the checks
-monitor_diagnostic_settings_exists and
-monitor_diagnostic_setting_with_appropriate_categories.
-
-**Scope is deliberately the subscription only.** `diagnostic_settings.list()` takes
-one resource URI, so enumerating every resource in a subscription would mean a
-call per resource; the per-resource settings that matter to a specific service
-(Key Vault audit logs, SQL auditing) belong to that service's own evidence set.
-This fetcher owns the subscription-scope Activity Log evidence.
-
-Requires azure-mgmt-monitor < 7: the 7.0.0 rewrite dropped the
-`diagnostic_settings` operation group entirely (verified against both releases).
-The absence is detected and reported as a clear failure rather than an
-AttributeError.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Ported from prowler/providers/azure/services/monitor/monitor_service.py (Apache-2.0).
+Without a setting the Activity Log is retained 90 days and then gone. Requires
+azure-mgmt-monitor<7: 7.0.0 ships no diagnostic-settings operations and no Diagnostic*
+models at all (verified against both releases), so this would collect nothing. Scope is
+the subscription only — `diagnostic_settings.list()` takes one resource URI, and
+per-resource settings belong to that service's own evidence set.
 """
 
 import logging
@@ -61,9 +39,7 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_diagnostic_settings")
 
-# Every log category the Azure Activity Log can export. Reported in full so a
-# reader sees which of the available categories are OFF, not only which are on —
-# an absent category in the response means "not selected", not "unavailable".
+# Reported in full: an absent category means "not selected", not "unavailable".
 ACTIVITY_LOG_CATEGORIES = (
     "Administrative",
     "Security",
@@ -75,13 +51,11 @@ ACTIVITY_LOG_CATEGORIES = (
     "ResourceHealth",
 )
 
-# The four Prowler's monitor_diagnostic_setting_with_appropriate_categories
-# requires a single setting to carry (CIS Azure 5.1.2's "appropriate categories"):
-# administrative actions, security events, alerts fired, and policy evaluations.
+# The four monitor_diagnostic_setting_with_appropriate_categories wants on ONE
+# setting — CIS Azure 5.1.2's "appropriate categories".
 REQUIRED_LOG_CATEGORIES = ("Administrative", "Security", "Alert", "Policy")
 
-# Where a setting can send the log. A setting must have at least one; ARM omits the
-# id of every destination not in use.
+# A setting must have at least one; ARM omits the id of every destination not in use.
 DESTINATION_STORAGE_ACCOUNT = "storage_account"
 DESTINATION_LOG_ANALYTICS = "log_analytics_workspace"
 DESTINATION_EVENT_HUB = "event_hub"
@@ -92,17 +66,14 @@ DESTINATION_PARTNER_SOLUTION = "partner_solution"
 SUBSCRIPTION_SCOPE_URI = "subscriptions/{subscription_id}/"
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: the only code that touches an azure-mgmt model ---
 
 def project_log_settings(log) -> dict:
     """Read one `LogSettings` model into a flat dict.
 
-    A setting selects categories either individually (`category: "Administrative"`)
-    or by group (`category_group: "allLogs"` / `"audit"`); exactly one of the two
-    is populated per entry, so both are carried. `retention_policy` is ARM's
-    legacy per-setting retention, which Azure has retired in favour of the
-    destination's own retention — it is emitted because it is still returned, and
-    a reader needs to see the 0 rather than infer it.
+    Exactly one of `category` / `category_group` is populated per entry.
+    `retention_policy` is ARM's legacy per-setting retention — retired in favour of the
+    destination's own, still returned, emitted so a reader sees the 0.
     """
     retention = model_attr(log, "retention_policy")
     return {
@@ -120,15 +91,13 @@ def project_diagnostic_setting(setting) -> dict:
     """Read a `DiagnosticSettingsResource` model's attributes into a flat dict.
 
     azure-mgmt-monitor 6.x is msrest-generated and FLATTENS `properties.*` onto the
-    model (`storage_account_id` maps to `properties.storageAccountId`), so these
-    are already the attribute names — verified against the installed SDK's
-    `_attribute_map`.
+    model (`storage_account_id` maps to `properties.storageAccountId`), verified
+    against the installed SDK's `_attribute_map`.
     """
     setting_id = model_attr(setting, "id")
     return {
         "id": setting_id,
-        # Prowler derives the name from the id's last segment; the SDK also returns
-        # `name`, so it is preferred and the derivation is the fallback.
+        # Prowler derives this from the id's last segment; the SDK's own `name` wins.
         "name": model_attr(setting, "name") or basename(setting_id),
         "storage_account_id": model_attr(setting, "storage_account_id"),
         "workspace_id": model_attr(setting, "workspace_id"),
@@ -148,8 +117,8 @@ def project_diagnostic_setting(setting) -> dict:
 def log_record(log: dict) -> dict:
     """Normalize one projected log selection.
 
-    `enabled` is coerced: ARM omits it on a category that was never selected, and
-    absent means off — a validator asserting `false` would not match `null`.
+    `enabled` is coerced: ARM omits it on a category never selected, and absent means
+    off — a validator asserting `false` would not match `null`.
     """
     retention = log.get("retention_policy") or {}
     return {
@@ -166,9 +135,7 @@ def log_record(log: dict) -> dict:
 def destinations(setting: dict) -> list[str]:
     """Which sinks this setting exports to, in a stable order.
 
-    A setting with no destination cannot exist in ARM, but a setting whose
-    destination the caller cannot see (a workspace in another subscription) still
-    returns its id, so this reads ids rather than trying to resolve them.
+    Ids, not resolved: a destination in another subscription still returns its id.
     """
     found = []
     if setting.get("storage_account_id"):
@@ -185,9 +152,8 @@ def destinations(setting: dict) -> list[str]:
 def enabled_categories(logs: list[dict]) -> list[str]:
     """The category names this setting actually captures, sorted.
 
-    A group selection (`category_group: "allLogs"`) captures categories without
-    naming them, so the group is reported alongside under its own field rather than
-    expanded into a category list this fetcher would have to guess at.
+    A group selection captures categories without naming them, so groups are reported
+    separately rather than expanded by guesswork.
     """
     return sorted({log["category"] for log in logs if log["enabled"] and log["category"]})
 
@@ -201,9 +167,8 @@ def diagnostic_setting_record(setting: dict) -> dict:
     logs = [log_record(log) for log in (setting.get("logs") or [])]
     categories = enabled_categories(logs)
     groups = enabled_category_groups(logs)
-    # "allLogs" selects every category including the required four, which is how
-    # most portal-created settings are configured; treating it as covering nothing
-    # would report a fully-logged subscription as unlogged.
+    # "allLogs" selects every category including the required four (how most
+    # portal-created settings look); ignoring it reports a logged subscription as not.
     captures_all = "allLogs" in groups
 
     return {
@@ -236,11 +201,9 @@ def diagnostic_setting_record(setting: dict) -> dict:
 def category_coverage(settings: list[dict]) -> dict:
     """Which Activity Log categories are captured by ANY setting.
 
-    Coverage is the union across settings, not per setting: exporting Administrative
-    to a storage account and Security to a workspace still captures both. Prowler's
-    monitor_diagnostic_setting_with_appropriate_categories is stricter (it wants one
-    setting carrying all four), which is reported separately as
-    `settings_capturing_required_categories`.
+    The union across settings, not per setting: Administrative to a storage account and
+    Security to a workspace still captures both. Prowler's stricter one-setting reading
+    is `settings_capturing_required_categories`.
     """
     captures_all = any(s["captures_all_log_categories"] for s in settings)
     covered = {c for s in settings for c in s["enabled_log_categories"]}
@@ -288,7 +251,7 @@ def summarize(settings: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def collect_diagnostic_settings(subscription_id, cred, collector: Collector) -> list[dict]:
     """One diagnostic_settings.list() at subscription scope."""
@@ -314,8 +277,7 @@ def collect_diagnostic_settings(subscription_id, cred, collector: Collector) -> 
         return []
 
     def _list():
-        # An Iterable of DiagnosticSettingsResource; subscription scope returns one
-        # page, and the SDK follows nextLink itself if that ever changes.
+        # Subscription scope returns one page; the SDK follows nextLink regardless.
         return [
             diagnostic_setting_record(project_diagnostic_setting(s))
             for s in client.diagnostic_settings.list(
@@ -332,9 +294,7 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every request header at INFO; warnings still get through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -348,8 +308,7 @@ def main() -> int:
     settings: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list call, so a zero-setting result is legible: Azure
-        # returns an empty list rather than an error for an unregistered provider.
+        # ARM returns an empty list, not an error, for an unregistered provider.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.Insights"
         )

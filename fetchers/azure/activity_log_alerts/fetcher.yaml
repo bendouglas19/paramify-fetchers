@@ -44,23 +44,6 @@ evidence_set:
   reference_id: EVD-AZURE-ACTIVITY-ALERTS
   name: Azure Activity Log Alerts
   instructions: >
-    Script: fetcher.py. Azure SDK calls: resource.providers.get("Microsoft.Insights")
-    for the resource-provider registration state, then azure-mgmt-monitor
-    MonitorManagementClient activity_log_alerts.list_by_subscription_id() for every
-    rule's id, name, location, enabled flag, description, scopes[],
-    condition.all_of[] (each entry's field and equals, plus the contains_any and
-    any_of[] leaf forms ARM also allows) and actions.action_groups[].action_group_id.
-    Each rule's operationName conditions are decoded into monitored_operations, and
-    the summary derives monitored_operation_coverage: whether at least one ENABLED
-    rule fires on Microsoft.Network/networkSecurityGroups write and delete (including
-    the Microsoft.ClassicNetwork delete twin),
-    Microsoft.Network/networkSecurityGroups/securityRules write and delete,
-    Microsoft.Network/publicIPAddresses write and delete,
-    Microsoft.Authorization/policyAssignments write and delete,
-    Microsoft.Sql/servers/firewallRules write and delete, and
-    Microsoft.Security/securitySolutions write and delete — the operations Prowler
-    checks one at a time. service_health_alert_configured additionally requires one
-    rule carrying both category == ServiceHealth and properties.incidentType ==
-    Incident. A disabled rule contributes no coverage, operation names are compared
-    case-insensitively, and the expected operation list is emitted in the payload so
-    the evidence carries what it is judged against.
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-monitor MonitorManagementClient):
+    activity_log_alerts.list_by_subscription_id(). Maps to KSI-MLA-02, KSI-MLA-05,
+    KSI-CNA-01, KSI-INR-01.

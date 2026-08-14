@@ -47,21 +47,6 @@ evidence_set:
   name: Azure MySQL Flexible Server Configuration
   instructions: >
     Script: fetcher.py. Azure SDK calls (azure-mgmt-rdbms mysql_flexibleservers
-    MySQLManagementClient): servers.list() for each flexible server's version, state,
-    network.public_network_access, backup.backup_retention_days,
-    backup.geo_redundant_backup and high_availability.mode; then per server
-    configurations.list_by_server(resource_group, server) for EVERY server parameter,
-    kept as a name-to-value map. Listing all of them (rather than the PostgreSQL
-    fetcher's read-by-name) is deliberate and matches Prowler: MySQL's audit
-    configuration is spread across parameters that gate each other (audit_log_enabled
-    gates audit_log_events), so the whole set is the evidence. Each parameter's
-    description and allowed_values are NOT collected — they are static engine
-    documentation identical on every server, not tenant state. The posture fields read
-    out of that map are require_secure_transport ("ON" ⇒ TLS required), tls_version (a
-    comma-separated list of every ACCEPTED version, so TLSv1 / TLSv1.0 / TLSv1.1
-    appearing anywhere in it means a deprecated version is still accepted),
-    audit_log_enabled ("ON" ⇒ the audit log is on) and audit_log_events (the
-    "CONNECTION" event class ⇒ connections are recorded). A subscription that never
-    registered the Microsoft.DBforMySQL resource provider reports
-    provider_registration_status: not_registered, which is valid evidence ("MySQL not
-    in use") rather than an empty result that looks like full coverage.
+    MySQLManagementClient): servers.list(), configurations.list_by_server(). Records
+    each server's engine version, durability settings and every server parameter as a
+    name-to-value map.

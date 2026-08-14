@@ -2,26 +2,16 @@
 """
 Microsoft Entra ID privileged directory roles and their members
 
-Lists every ACTIVATED directory role in the tenant with the principals holding it,
-flags the roles that carry tenant-wide administrative power, and counts the Global
-Administrators — the single number most access-review controls turn on.
+Every ACTIVATED directory role with its members, the tenant-wide administrative roles
+flagged, and the Global Administrator count. `GET /directoryRoles` returns only roles
+instantiated in the tenant (which happens the first time a role is assigned), so a role
+absent from the response has no members and an empty response is genuine evidence of
+none rather than a truncated read.
 
-"Activated" is load-bearing and is why the evidence can be trusted as a complete
-picture of who holds directory power: `GET /directoryRoles` returns only the roles
-that have been instantiated in the tenant, which happens the first time a role is
-assigned. A built-in role absent from the response therefore has no members at all,
-so an empty response is genuine evidence of no directory-role assignments and not a
-truncated read. (`GET /directoryRoleTemplates` would list all ~100 definitions, but
-memberless, which is the opposite of what a reviewer needs.)
-
-Ported from Prowler's
-prowler/providers/azure/services/entra/entra_service.py (Apache-2.0)
-`_get_directory_roles`, which makes the same two calls, and from their
-entra_global_admin_in_less_than_five_users check, which likewise keys the Global
-Administrator role by its display name.
-
-Tenant-scoped per invocation, NOT subscription-scoped: Graph data is tenant-wide.
-Fanout across tenants happens at the runner layer (see fetcher.yaml).
+Ported from Prowler's prowler/providers/azure/services/entra/entra_service.py
+`_get_directory_roles` (Apache-2.0) and their
+entra_global_admin_in_less_than_five_users check, which likewise keys Global
+Administrator by display name.
 """
 
 import asyncio
@@ -56,33 +46,27 @@ from entra_graph import (  # noqa: E402
 
 logger = logging.getLogger("azure_entra_privileged_roles")
 
-# The role every access-review control names explicitly, and the one Prowler's
-# entra_global_admin_in_less_than_five_users check counts.
+# The role Prowler's entra_global_admin_in_less_than_five_users check counts.
 GLOBAL_ADMINISTRATOR = "Global Administrator"
 
-# The well-known role template id for Global Administrator. Used only as a SECOND
-# way to recognize that role, never as the only one: `is_privileged_role` matches on
-# the display name first, so if this constant were ever wrong the role would still
-# be classified correctly rather than silently dropping out of the counts.
+# A SECOND way to recognize that role, never the only one — `is_privileged_role`
+# matches the display name first, so a wrong constant here cannot drop the role from
+# the counts.
 #
-# NOTE on provenance: Prowler's prowler/providers/azure/config.py holds GUIDs for
-# the ARM *RBAC* roles (Owner, Contributor, User Access Administrator, Role Based
-# Access Control Administrator) — see the rbac_role_assignments fetcher, which
-# reuses those verbatim. It carries no Entra *directory* role template ids, and the
-# two are different id spaces. Prowler's own directory-role code matches on the
-# display name, which is what this fetcher does too.
+# Provenance: this GUID has no upstream ancestor. Prowler's config.py carries the ARM
+# *RBAC* role GUIDs (reused verbatim by rbac_role_assignments) but no Entra *directory*
+# role template ids; the two are different id spaces, and Prowler's directory-role code
+# matches on the display name, as this does.
 GLOBAL_ADMINISTRATOR_TEMPLATE_ID = "62e90394-69f5-4237-9190-012177145e10"
 
-# Entra built-in directory roles that grant tenant-wide administrative power, by
-# the display name Graph returns for them. These are the roles Microsoft documents
-# as privileged: each one can either take over identities, grant itself more access,
-# or read/alter the controls that protect the tenant.
+# Entra built-in directory roles that grant tenant-wide administrative power: each can
+# take over identities, grant itself more access, or alter the controls protecting the
+# tenant.
 #
-# Matched on the display name because that is the stable, documented identifier the
-# API returns for a built-in role (Graph v1.0 does not localize these), and it is
-# what Prowler matches on. Each record also carries the role's `role_template_id`
-# verbatim, so a reviewer or validator can pin the GUID without this list having to
-# assert one.
+# Matched on display name because that is the stable documented identifier Graph
+# returns for a built-in role (v1.0 does not localize these), and is what Prowler
+# matches on. Each record also carries `role_template_id` verbatim, so a validator can
+# pin the GUID without this list asserting one.
 PRIVILEGED_ROLE_NAMES = frozenset(
     {
         # --- full tenant control ---
@@ -119,13 +103,10 @@ PRIVILEGED_ROLE_NAMES = frozenset(
     }
 )
 
-# Graph's @odata.type on a directory-role member, mapped to a plain principal kind.
-# The members collection is typed as directoryObject, and the concrete kind only
-# shows up in @odata.type — which matters because a GROUP or SERVICE PRINCIPAL
-# holding a privileged role is a materially different finding from a user holding
-# it: a role-assignable group moves the real access decision somewhere else, and a
-# service principal has no interactive sign-in for MFA or Conditional Access to
-# gate.
+# The members collection is typed as directoryObject and the concrete kind shows up
+# only in @odata.type. It matters: a role-assignable GROUP moves the real access
+# decision elsewhere, and a SERVICE PRINCIPAL has no interactive sign-in for MFA or
+# Conditional Access to gate.
 _MEMBER_TYPES = {
     "#microsoft.graph.user": "User",
     "#microsoft.graph.group": "Group",
@@ -140,9 +121,8 @@ _MEMBER_TYPES = {
 def project_directory_role(role) -> dict:
     """Read a `DirectoryRole` model's attributes into a flat snake_case dict.
 
-    `members` is NOT read here: Graph does not expand it on the collection response,
-    so it arrives only from the separate per-role members call and is filled in by
-    `directory_role_record`.
+    `members` is NOT read here: Graph does not expand it on the collection response, so
+    it arrives only from the separate per-role members call.
     """
     return {
         "id": graph_attr(role, "id"),
@@ -155,13 +135,10 @@ def project_directory_role(role) -> dict:
 def project_member(member) -> dict:
     """Read one directory-role member (a `directoryObject`) into a flat dict.
 
-    The collection is typed as `directoryObject`, whose declared attributes are only
-    `id` and `@odata.type` — but kiota deserializes each entry into its concrete
-    subclass (User, Group, ServicePrincipal) based on that `@odata.type`, so
-    `display_name` and `user_principal_name` are present on the object when the
-    member is of a kind that has them. `graph_attr`'s None-tolerance is what lets
-    one projection read all the kinds: a Group has no `user_principal_name`, and
-    reading it yields None rather than raising.
+    `directoryObject` declares only `id` and `@odata.type`, but kiota deserializes each
+    entry into its concrete subclass (User, Group, ServicePrincipal), so the richer
+    fields are present when the member's kind has them. `graph_attr`'s None-tolerance is
+    what lets one projection read every kind — a Group has no `user_principal_name`.
     """
     return {
         "id": graph_attr(member, "id"),
@@ -177,10 +154,8 @@ def project_member(member) -> dict:
 def member_type(odata_type: str | None) -> str:
     """Map a member's `@odata.type` to a plain principal kind.
 
-    Falls back to the last dotted segment with its first letter upper-cased, so a
-    principal kind Microsoft adds later is reported as itself rather than as
-    "Unknown" — the point of this field is to say what holds the role, and losing
-    that to an unmapped constant would be worse than an imperfect label.
+    Falls back to the last dotted segment, so a principal kind Microsoft adds later is
+    reported as itself rather than collapsing to "Unknown".
     """
     if not odata_type:
         return "Unknown"
@@ -194,10 +169,8 @@ def member_type(odata_type: str | None) -> str:
 def is_privileged_role(role: dict) -> bool:
     """Whether this directory role grants tenant-wide administrative power.
 
-    Name first, template id second. The redundancy is deliberate: the display name
-    is the identifier Graph documents and Prowler matches on, and the template-id
-    check means the single most consequential role (Global Administrator) is still
-    recognized if it ever came back under a different display name.
+    Name first, template id second. The redundancy is deliberate: Global Administrator
+    stays recognized even if it ever came back under a different display name.
     """
     if (role.get("display_name") or "") in PRIVILEGED_ROLE_NAMES:
         return True
@@ -213,8 +186,8 @@ def member_record(member: dict) -> dict:
         "display_name": member.get("display_name"),
         "user_principal_name": member.get("user_principal_name"),
         # Only user principals carry accountEnabled; None on a group or service
-        # principal means "not applicable", not "disabled", so it is left as None
-        # rather than coerced to False the way a genuinely optional bool would be.
+        # principal means "not applicable", not "disabled", so it is left None rather
+        # than coerced to False.
         "account_enabled": None if enabled is None else bool(enabled),
     }
 
@@ -222,12 +195,10 @@ def member_record(member: dict) -> dict:
 def directory_role_record(role: dict, members: list[dict]) -> dict:
     """Normalize one projected role plus its projected members into a record.
 
-    Members are sorted by principal name so a re-run against an unchanged directory
-    is byte-stable — Graph does not promise a stable member order. The key is
-    lower-cased first: a user sorts by its UPN and a group or service principal by its
-    display name, so a case-sensitive sort would interleave them by ASCII case (every
-    capitalized group name ahead of every lower-case UPN) rather than alphabetically.
-    The object id breaks ties, so the order is total.
+    Members are sorted by principal name (id breaking ties) so a re-run against an
+    unchanged directory is byte-stable; Graph does not promise a stable member order.
+    The key is lower-cased because users sort by UPN and groups by display name, and a
+    case-sensitive sort would interleave them by ASCII case instead of alphabetically.
     """
     records = sorted(
         (member_record(m) for m in members),
@@ -257,13 +228,10 @@ def directory_role_record(role: dict, members: list[dict]) -> dict:
 def summarize(roles: list[dict]) -> dict:
     """The Global Administrator count is the headline.
 
-    It is the number the access-review controls (and CIS Azure 1.1.3, and Prowler's
-    entra_global_admin_in_less_than_five_users) are written against, and the one
-    figure that is meaningful without any further context.
-
-    `distinct_privileged_principals` is reported alongside the raw assignment count
-    because one person holding six privileged roles is one human to review, not six
-    — and the two numbers diverging is itself the interesting signal.
+    It is the number CIS Azure 1.1.3 and Prowler's
+    entra_global_admin_in_less_than_five_users are written against.
+    `distinct_privileged_principals` sits alongside the raw assignment count because one
+    person holding six privileged roles is one human to review, not six.
     """
     privileged = [r for r in roles if r["is_privileged"]]
     global_admin_roles = [r for r in roles if r["is_global_administrator"]]
@@ -296,21 +264,19 @@ def summarize(roles: list[dict]) -> dict:
         "privileged_assignment_percentage": coverage_percentage(
             sum(r["member_count"] for r in privileged), sum(r["member_count"] for r in roles)
         ),
-        # An activated role with no members is a role that was assigned once and
-        # revoked — worth seeing, and it keeps the denominators honest.
+        # An activated role with no members was assigned once and revoked.
         "roles_with_no_members": sum(1 for r in roles if not r["member_count"]),
     }
 
 
-# --- collection (lazy msgraph imports; not exercised by the fixture tests) ---
+# --- collection (lazy msgraph imports) ---
 
 async def _collect(collector: Collector, cred) -> tuple[list[dict], dict]:
     """One directory_roles.get(), then one members.get() per role.
 
-    The members call cannot be avoided or batched away: Graph does not return
-    members on the collection response, and `$expand=members` is not supported on
-    /directoryRoles. The call count is bounded by the number of ACTIVATED roles
-    (single digits to low tens in practice), not by the ~100 role templates.
+    The per-role call cannot be avoided: Graph does not return members on the collection
+    response and `$expand=members` is not supported on /directoryRoles. The call count
+    is bounded by the ACTIVATED roles, not by the ~100 role templates.
     """
 
     async def _work(client):
@@ -359,9 +325,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* and msgraph/kiota/httpx stacks log every HTTP request at INFO,
-    # which buries this fetcher's own lines and would dominate the runner's stderr
-    # tail. Their warnings and errors still come through.
+    # The azure-*, msgraph, kiota and httpx stacks log every request at INFO, which
+    # would dominate the runner's stderr tail. Warnings and errors still come through.
     for noisy in ("azure", "msgraph", "kiota", "httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     load_dotenv()
@@ -376,11 +341,9 @@ def main() -> int:
     else:
         roles, tenant = asyncio.run(_collect(collector, cred))
 
-    # NOTE: no `provider_registration_status()` call here, deliberately. Graph is
-    # not an ARM resource provider, so there is no namespace whose registration
-    # state could distinguish "not in use" from "empty" — and for directory roles
-    # the ambiguity is already resolved: /directoryRoles returns only ACTIVATED
-    # roles, so an empty response means no directory-role assignments exist.
+    # No `provider_registration_status()` call, deliberately: Graph is not an ARM
+    # resource provider, and the "empty vs. not in use" ambiguity it resolves cannot
+    # arise here — /directoryRoles returns only ACTIVATED roles.
     scoping = tenant_scoping()
     evidence = tenant_payload(
         build_payload,

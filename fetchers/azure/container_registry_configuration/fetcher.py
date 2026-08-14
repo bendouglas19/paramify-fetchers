@@ -2,54 +2,25 @@
 """
 Azure Container Registry configuration — admin account, network exposure, audit logging
 
-For every container registry in one subscription, collects the configuration a
-reviewer reads to judge who can reach the registry and who can pull from it:
-
-- **The admin account.** `admin_user_enabled` is a standing finding when true: it is
-  a shared username/password pair that bypasses Entra ID entirely, so no pull or push
-  made through it is attributable to a person.
-- **Anonymous pull.** `anonymous_pull_enabled` makes every image in the registry
-  world-readable to anyone who knows the login server.
-- **Network exposure.** `public_network_access`, the network rule set's default
-  action and IP allow-list, and the private endpoint connections.
-- **Image integrity and retention.** The registry policies — content trust,
-  quarantine, retention, export, and whether ARM audience tokens are required.
-- **Audit logging.** The diagnostic settings attached to the registry, i.e. whether
-  its `ContainerRegistryLoginEvents` / `ContainerRegistryRepositoryEvents` logs are
-  shipped anywhere.
-
-Field projections are ported from Prowler's
+Ported from Prowler's
 prowler/providers/azure/services/containerregistry/containerregistry_service.py
-(Apache-2.0), which reads the same azure-mgmt-containerregistry SDK. The derived
-readings replicate containerregistry_admin_user_disabled,
-containerregistry_not_publicly_accessible and containerregistry_uses_private_link.
+(Apache-2.0), with TWO DELIBERATE DEPARTURES:
 
-TWO DEPARTURES FROM PROWLER, both deliberate:
+1. `public_network_access` is read off the attribute the SDK actually has. Prowler reads
+   `getattr(registry, "public_network_access_enabled", "Enabled")`, but the model's field
+   is `public_network_access` ("Enabled"/"Disabled") — verified against
+   azure-mgmt-containerregistry 15.0.0, whose flattened attribute set has no
+   `public_network_access_enabled` — so Prowler's getattr always misses and its default
+   makes every registry read as publicly accessible.
+2. Diagnostic settings are listed here per registry, because Prowler's registry service
+   imports a `monitor_client` singleton, which a fetcher cannot do. That OVERLAPS the
+   dedicated Azure diagnostic settings fetcher but is no substitute: its
+   subscription-scoped listing excludes a registry's own settings.
 
-1. `public_network_access` is read off the attribute the SDK actually has. Prowler
-   reads `getattr(registry, "public_network_access_enabled", "Enabled")`, but the
-   model's field is `public_network_access` ("Enabled" / "Disabled"), so Prowler's
-   getattr always misses and its default makes every registry look publicly
-   accessible. Verified against azure-mgmt-containerregistry 15.0.0: the flattened
-   attribute set contains `public_network_access`, not `public_network_access_enabled`.
-
-2. Diagnostic settings are fetched here, not imported. Prowler's registry service
-   imports its `monitor_client` singleton; a fetcher cannot import another fetcher, so
-   this one calls azure-mgmt-monitor's `diagnostic_settings.list(resource_uri=...)`
-   itself for each registry. That call OVERLAPS with the dedicated Azure diagnostic
-   settings fetcher, which collects subscription-scoped settings; the two are not
-   substitutes — a subscription-scoped listing does not include a registry's own
-   settings, and this evidence set is meant to stand alone.
-
-NOTE ON THE MONITOR SDK PIN: azure-mgmt-monitor 7.0.0 REMOVED the
-`diagnostic_settings` operation group (verified: 6.0.2 has it under
-`v2021_05_01_preview`, 7.0.0 exposes no diagnostic settings operations at all), so
-this fetcher needs `azure-mgmt-monitor>=6.0.2,<7`. A newer install is detected and
-reported as a collection failure naming the pin, rather than surfacing as a bare
-AttributeError.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+MONITOR SDK PIN: azure-mgmt-monitor 7.0.0 REMOVED the `diagnostic_settings` operation
+group (6.0.2 has it under `v2021_05_01_preview`), so this needs
+`azure-mgmt-monitor>=6.0.2,<7`; a newer install is reported as a collection failure
+naming the pin, not a bare AttributeError.
 """
 
 import logging
@@ -82,23 +53,21 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_container_registry_configuration")
 
-# public_network_access / policy status / encryption status are all "Enabled" or
-# "Disabled" string enums. Compared case-insensitively against the wire value.
+# "Enabled"/"Disabled" string enums, compared case-insensitively against the wire value.
 DISABLED = "disabled"
 ENABLED = "enabled"
 
-# network_rule_set.default_action. "Allow" is the permissive default: with it, the IP
-# rules are an allow-list that grants nothing extra, because everything is allowed.
+# network_rule_set.default_action: "Allow" is the permissive default, under which the
+# IP rules grant nothing extra because everything is already allowed.
 NETWORK_DEFAULT_ACTION_DENY = "deny"
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: the only code that touches an azure-mgmt model ---
 
 def project_private_endpoint_connection(connection) -> dict:
     """Read a `PrivateEndpointConnection` model — Prowler's three fields plus state.
 
-    A connection in any state other than Approved is not carrying traffic, so the
-    link-service status is what makes the record mean "private link is in use".
+    A connection in any state other than Approved is not carrying traffic.
     """
     return {
         "id": model_attr(connection, "id"),
@@ -114,10 +83,7 @@ def project_private_endpoint_connection(connection) -> dict:
 def project_policies(policies) -> dict:
     """Read a `Policies` model — content trust, quarantine, retention, export, ARM audience.
 
-    Not part of Prowler's projection. These are the registry's supply-chain and
-    retention controls, they come back in the same list response at no extra call,
-    and "are pushed images signed / quarantined until scanned" is a question this
-    evidence set is otherwise silent on.
+    Not part of Prowler's projection; free in the same list response.
     """
     quarantine = model_attr(policies, "quarantine_policy")
     trust = model_attr(policies, "trust_policy")
@@ -138,17 +104,9 @@ def project_policies(policies) -> dict:
 def project_registry(registry) -> dict:
     """Read a `Registry` model's attributes into a flat snake_case dict.
 
-    Attribute access is stable across the azure-mgmt generator styles; `as_dict()`
-    is not (azure-mgmt-containerregistry 15.x is on the `_model_base` runtime, whose
-    `as_dict()` emits the camelCase wire shape with everything but id/name/location/
-    sku nested under "properties"). Confining the SDK to this one function keeps every
-    transform below pure dict-in/dict-out — and testable with no azure-* package
-    installed.
-
-    `model_attr`'s enum unwrapping matters at nearly every line here: `sku.name` is a
-    `SkuName`, `public_network_access` a `PublicNetworkAccess`, the policy statuses
-    `PolicyStatus`, `network_rule_set.default_action` a `DefaultAction` — `str()` on
-    any of them renders "SkuName.PREMIUM" rather than "Premium".
+    `model_attr`'s enum unwrapping matters at nearly every line: `sku.name`,
+    `public_network_access`, the policy statuses and `network_rule_set.default_action`
+    are enum members, and `str()` on one renders "SkuName.PREMIUM", not "Premium".
     """
     network_rule_set = model_attr(registry, "network_rule_set")
     return {
@@ -193,10 +151,8 @@ def project_registry(registry) -> dict:
 def project_diagnostic_setting(setting) -> dict:
     """Read a `DiagnosticSettingsResource` model — one log/metric export target.
 
-    Ported from Prowler's monitor_service.diagnostic_settings_with_uri(), extended
-    with the metric categories and the event hub destination: "logs are enabled" and
-    "logs are going somewhere durable" are two different assertions, and a registry
-    can be wired to a workspace, a storage account or an event hub.
+    Ported from Prowler's monitor_service.diagnostic_settings_with_uri(), plus the metric
+    categories and the event hub destination.
     """
     return {
         "id": model_attr(setting, "id"),
@@ -223,7 +179,7 @@ def project_diagnostic_setting(setting) -> dict:
     }
 
 
-# --- pure transforms (flat snake_case dicts in, evidence records out) ---
+# --- pure transforms (dicts in, evidence records out) ---
 
 def _is_enabled_status(value) -> bool:
     """Is an "Enabled"/"Disabled" string enum enabled? Absent reads as not enabled."""
@@ -260,15 +216,12 @@ def diagnostic_setting_record(setting: dict) -> dict:
 def registry_record(registry: dict) -> dict:
     """Normalize one projected registry into an evidence record.
 
-    Takes `project_registry()`'s output. Optional booleans are coerced with
-    `bool(x or False)`: Azure omits `admin_user_enabled` / `anonymous_pull_enabled` /
-    `data_endpoint_enabled` when off rather than returning false, and a validator
-    regex asserting `false` would not match `null`.
-
-    `public_network_access` is kept as the raw string AND reduced to a boolean, with
-    ABSENT READ AS PUBLIC: "Enabled" is the service default, so a response that omits
-    the field is a publicly-reachable registry. Prowler's check is the same reading
-    ("Disabled" is the only value that passes).
+    Optional booleans are coerced with `bool(x or False)`: Azure omits
+    `admin_user_enabled` / `anonymous_pull_enabled` / `data_endpoint_enabled` when off,
+    and a regex asserting `false` would not match `null`. `public_network_access` is kept
+    raw AND reduced to a boolean with ABSENT READ AS PUBLIC: "Enabled" is the service
+    default, so an omitted field means a publicly-reachable registry ("Disabled" is the
+    only value that passes, as in Prowler's check).
     """
     resource_id = registry.get("id")
     network_rule_set = registry.get("network_rule_set") or {}
@@ -322,8 +275,8 @@ def registry_record(registry: dict) -> dict:
 def has_enabled_log(registry: dict) -> bool:
     """Does the registry ship at least one ENABLED log category anywhere?
 
-    A diagnostic setting can exist with every category switched off, which is why the
-    summary counts enabled categories rather than the presence of a setting.
+    A setting can exist with every category switched off, hence counting enabled
+    categories rather than settings.
     """
     return any(
         log["enabled"]
@@ -339,8 +292,7 @@ def summarize(registries: list[dict]) -> dict:
     private = sum(1 for r in registries if not r["public_network_access_enabled"])
     return {
         "total_registries": total,
-        # Reported as the count of registries WITH the shared admin account, because
-        # that is the finding, plus the coverage percentage of those without it.
+        # Counted as registries WITH the shared admin account — that is the finding.
         "admin_user_enabled_registries": total - admin_disabled,
         "admin_user_disabled_percentage": coverage_percentage(admin_disabled, total),
         "anonymous_pull_enabled_registries": sum(
@@ -375,16 +327,15 @@ def summarize(registries: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def diagnostic_settings_resource_uri(resource_id: str) -> str:
     """The `resource_uri` form diagnostic_settings.list() wants.
 
-    The SDK builds "/{resourceUri}/providers/Microsoft.Insights/diagnosticSettings"
-    with the value substituted unquoted, so a leading slash would produce a
-    double-slashed path. Prowler rebuilds the string from subscription + resource
-    group + name; the registry's own ARM id with its leading slash stripped is the
-    same value and cannot drift from the resource it describes.
+    The SDK substitutes it unquoted into
+    "/{resourceUri}/providers/Microsoft.Insights/diagnosticSettings", so a leading slash
+    would produce a double-slashed path. Prowler rebuilds the string from subscription +
+    resource group + name; the registry's own ARM id cannot drift from the resource.
     """
     return (resource_id or "").lstrip("/")
 
@@ -392,14 +343,11 @@ def diagnostic_settings_resource_uri(resource_id: str) -> str:
 def collect_registries(subscription_id, cred, collector: Collector) -> list[dict]:
     """One subscription-wide registries.list(), then one diagnostic-settings list per registry.
 
-    `registries.list()` is the subscription-scoped variant (vs
-    `list_by_resource_group`) and returns an ItemPaged, so the SDK follows nextLink
-    itself. The diagnostic settings need a second SDK (azure-mgmt-monitor) because
-    they live under Microsoft.Insights, not under the registry's own provider.
-
-    Each SDK import lives inside its guarded factory so a missing (or too new)
-    azure-mgmt-* package is recorded as a failure and still writes evidence plus a
-    status file, rather than aborting the process with a traceback.
+    `registries.list()` returns an ItemPaged, so the SDK follows nextLink itself. The
+    diagnostic settings need a second SDK (azure-mgmt-monitor) because they live under
+    Microsoft.Insights, not the registry's own provider. Each SDK import lives inside its
+    guarded factory so a missing (or too new) azure-mgmt-* package becomes a recorded
+    failure with evidence plus a status file, not a traceback.
     """
 
     def _client():
@@ -430,11 +378,7 @@ def collect_registries(subscription_id, cred, collector: Collector) -> list[dict
 def _attach_diagnostic_settings(
     subscription_id, cred, collector: Collector, registries: list[dict]
 ) -> None:
-    """Fill each registry's `monitor_diagnostic_settings` in place.
-
-    The monitor client is built once for the whole subscription (and only when there
-    is at least one registry to ask about), then one list call per registry.
-    """
+    """Fill each registry's `monitor_diagnostic_settings` in place."""
 
     def _monitor_client():
         from azure.mgmt.monitor import MonitorManagementClient  # lazy
@@ -481,9 +425,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every request and response header at INFO, which would bury
+    # this fetcher's lines in the runner's stderr tail. Warnings still come through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 

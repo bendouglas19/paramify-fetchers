@@ -2,26 +2,15 @@
 """
 Microsoft Entra ID Conditional Access policies
 
-Every Conditional Access policy in the tenant with its enforcement state, who and
-what it applies to, who is excluded, and what it requires or blocks. Conditional
-Access is where an Entra tenant's access-enforcement decisions actually live, so
-this is the evidence behind "MFA is required", "legacy authentication is blocked"
-and "admin portals are protected" — and, just as importantly, behind the exclusions
-that quietly undo them.
-
-`state` is the field that decides whether a policy means anything: a policy in
+Every Conditional Access policy with its enforcement state, who and what it applies to,
+who is excluded, and what it requires or blocks. A policy in
 `enabledForReportingButNotEnforced` (report-only) logs what it WOULD have done and
-enforces nothing, so counting it as protection is the most common way this evidence
-gets misread. The three states are reported separately and never merged.
+enforces nothing, so the three states are reported separately, never merged.
 
-Field projections are ported from Prowler's
-prowler/providers/azure/services/entra/entra_service.py (Apache-2.0)
-`_get_conditional_access_policy` — same msgraph-sdk, same include/exclude maps for
-users, target resources and access controls — with one deliberate DEVIATION in how
-grant controls are split into grant vs. block; see `split_access_controls()`.
-
-Tenant-scoped per invocation, NOT subscription-scoped: Graph data is tenant-wide.
-Fanout across tenants happens at the runner layer (see fetcher.yaml).
+Projections ported from Prowler's
+prowler/providers/azure/services/entra/entra_service.py
+`_get_conditional_access_policy` (Apache-2.0), with one deliberate DEVIATION in how
+grant controls are split into grant vs. block — see `split_access_controls()`.
 """
 
 import asyncio
@@ -57,27 +46,24 @@ from entra_graph import (  # noqa: E402
 
 logger = logging.getLogger("azure_entra_conditional_access_policies")
 
-# conditionalAccessPolicyState, verbatim from Graph. Report-only is a THIRD state,
-# not a flavor of enabled: it evaluates the policy and logs the outcome without
-# enforcing it.
+# conditionalAccessPolicyState, verbatim from Graph. Report-only is a THIRD state, not
+# a flavor of enabled.
 STATE_ENABLED = "enabled"
 STATE_DISABLED = "disabled"
 STATE_REPORT_ONLY = "enabledForReportingButNotEnforced"
 
-# The grant control that denies access outright. Every other member of
-# conditionalAccessGrantControl is a requirement to satisfy, not a denial —
-# see `split_access_controls()`.
+# The only member of conditionalAccessGrantControl that denies access; every other is a
+# requirement to satisfy — see `split_access_controls()`.
 BLOCK_CONTROL = "block"
 
-# Grant controls that constitute an MFA requirement. `mfa` is the classic one;
-# authentication-strength policies express the same intent (and more) through
-# `grant_controls.authentication_strength` instead, which is handled separately.
+# Authentication-strength policies express the same intent through
+# `grant_controls.authentication_strength` instead, and are handled separately.
 MFA_CONTROLS = frozenset({"mfa"})
 
-# Target-resource identifiers from Prowler's prowler/providers/azure/config.py:
-# the values Graph returns in conditions.applications.includeApplications for the
-# two resources the CIS Azure benchmark names. MICROSOFT_ADMIN_PORTALS is a named
-# app GROUP and comes back as this literal string, not as a GUID.
+# Target-resource identifiers from Prowler's prowler/providers/azure/config.py: what
+# Graph returns in conditions.applications.includeApplications for the two resources the
+# CIS Azure benchmark names. MICROSOFT_ADMIN_PORTALS is a named app GROUP and comes back
+# as this literal string, not as a GUID.
 MICROSOFT_ADMIN_PORTALS = "MicrosoftAdminPortals"
 WINDOWS_AZURE_SERVICE_MANAGEMENT_API = "797f4846-ba00-4fd7-ba43-dac1f8f63013"
 
@@ -86,8 +72,7 @@ ALL_APPLICATIONS = "All"
 # conditions.users.includeUsers value meaning "every user in the tenant".
 ALL_USERS = "All"
 
-# conditions.clientAppTypes values for the pre-modern-auth protocols. A policy that
-# targets these is the mechanism for blocking legacy authentication, which cannot
+# conditions.clientAppTypes values for the pre-modern-auth protocols, which cannot
 # present an MFA challenge at all.
 LEGACY_CLIENT_APP_TYPES = frozenset({"exchangeActiveSync", "other"})
 
@@ -97,17 +82,14 @@ LEGACY_CLIENT_APP_TYPES = frozenset({"exchangeActiveSync", "other"})
 def project_conditional_access_policy(policy) -> dict:
     """Read a `ConditionalAccessPolicy` model's attributes into a flat dict.
 
-    `conditions`, `grant_controls` and `session_controls` are separate nested models
-    and any of them can be absent — `grant_controls` is None on a session-controls-only
-    policy, and every sub-block of `conditions` is omitted when unset. Every hop is
-    therefore a None-tolerant `graph_attr` read, and each list comes back as `[]`
-    rather than None via `graph_list`, because Graph omits empty collections instead
-    of sending them.
+    Any nested model can be absent — `grant_controls` is None on a session-controls-only
+    policy, and unset `conditions` sub-blocks are omitted — so every hop is a
+    None-tolerant `graph_attr` read, and `graph_list` returns `[]` because Graph omits
+    empty collections rather than sending them.
 
-    Enum unwrapping matters more here than anywhere else in the category: `state` and
-    every `built_in_controls` member are plain (non-str) `Enum`s, so leaving them in
-    place would put "ConditionalAccessPolicyState.Enabled" into the evidence and
-    break every downstream comparison. See `split_access_controls()` for the bug that
+    `state` and every `built_in_controls` member are plain (non-str) `Enum`s, so leaving
+    them unwrapped would put "ConditionalAccessPolicyState.Enabled" into the evidence
+    and break every downstream comparison. See `split_access_controls()` for the bug that
     causes in Prowler.
     """
     conditions = graph_attr(policy, "conditions")
@@ -166,20 +148,18 @@ def project_conditional_access_policy(policy) -> dict:
 def split_access_controls(built_in_controls: list) -> dict:
     """Split grant controls into the ones that DENY and the ones that REQUIRE.
 
-    DELIBERATE DEVIATION from Prowler. Their `_get_conditional_access_policy` sorts
-    each control with `if "Grant" in str(access_control)`, intending to test the
-    control's value — but these are plain `Enum` members, so `str()` renders the
-    member's repr, "ConditionalAccessGrantControl.Block". The CLASS NAME contains
-    "Grant", so the test is true for every member including Block: Prowler's
-    `block` list is always empty and its `grant` list always holds everything. (Their
-    MFA check still passes because "ConditionalAccessGrantControl.Mfa".lower()
-    happens to contain "mfa".)
+    DELIBERATE DEVIATION from Prowler. Their `_get_conditional_access_policy` sorts each
+    control with `if "Grant" in str(access_control)`, meaning to test the value — but
+    these are plain `Enum` members, so `str()` renders the member's repr,
+    "ConditionalAccessGrantControl.Block". The CLASS NAME contains "Grant", so the test
+    is true for every member including Block: their `block` list is always empty and
+    their `grant` list always holds everything. (Their MFA check still passes because
+    "ConditionalAccessGrantControl.Mfa".lower() happens to contain "mfa".)
 
-    The correct split is on the wire VALUE, which is what `graph_attr` already
-    unwrapped these to: exactly one member, `block`, denies access; every other
-    member is a requirement the sign-in must satisfy. Porting the bug would have made
-    `policies_blocking_access` a constant zero — the field would have looked
-    collected and been meaningless, which is worse than not collecting it.
+    This splits on the wire VALUE, which `graph_attr` has already unwrapped these to:
+    exactly one member, `block`, denies access. Porting the bug would have made
+    `policies_blocking_access` a constant zero — a field that looks collected and is
+    meaningless.
     """
     controls = [str(c) for c in (built_in_controls or []) if c]
     return {
@@ -191,14 +171,14 @@ def split_access_controls(built_in_controls: list) -> dict:
 def policy_record(policy: dict) -> dict:
     """Normalize one projected policy into an evidence record.
 
-    `target_resources.include` follows Prowler: `includeApplications` when set,
-    otherwise `includeUserActions` — a policy can target a user ACTION (registering
-    a security key) instead of an application, and reading only the applications
-    field would report such a policy as targeting nothing.
+    `target_resources.include` follows Prowler: `includeApplications` when set, otherwise
+    `includeUserActions` — a policy can target a user ACTION (registering a security key)
+    instead of an application, and reading only the applications field would report such
+    a policy as targeting nothing.
 
-    `state` is defaulted to "disabled" rather than left None when absent. Graph
-    always returns it, so an absent value means the field could not be read, and
-    treating an unreadable policy as enforcing would overstate the tenant's posture.
+    `state` defaults to "disabled", not None: Graph always returns it, so an absent value
+    means it could not be read, and treating that as enforcing would overstate the
+    tenant's posture.
     """
     access_controls = split_access_controls(policy.get("built_in_controls"))
     include_apps = policy.get("include_applications") or policy.get("include_user_actions") or []
@@ -254,7 +234,7 @@ def policy_record(policy: dict) -> dict:
             ),
             "cloud_app_security": bool(policy.get("has_cloud_app_security")),
         },
-        # --- derived flags, so a reviewer does not have to re-derive them ---
+        # --- derived flags ---
         "requires_mfa": requires_mfa,
         "blocks_access": bool(access_controls["block"]),
         "requires_compliant_device": any(
@@ -279,13 +259,12 @@ def _protects(policy: dict, resource: str) -> bool:
     """Whether an ENFORCED policy requires MFA for all users on `resource`.
 
     Ported from Prowler's entra_conditional_access_policy_require_mfa_for_admin_portals
-    and ..._for_management_api, which assert the same four clauses together: the
-    policy is enabled (not report-only), it includes All users, it targets that
-    resource, and it grants only on MFA. All four are needed — an enabled MFA policy
-    scoped to one pilot group protects nobody in particular.
+    and ..._for_management_api: enabled (not report-only), includes All users, targets
+    that resource, and grants on MFA. All four are needed — an enabled MFA policy scoped
+    to one pilot group protects nobody in particular.
 
-    A policy targeting `All` applications covers the resource too, which Prowler's
-    literal membership test misses.
+    Deviation: a policy targeting `All` applications covers the resource too, which
+    Prowler's literal membership test misses.
     """
     if not policy["is_enforced"] or not policy["requires_mfa"]:
         return False
@@ -298,9 +277,9 @@ def _protects(policy: dict, resource: str) -> bool:
 def summarize(policies: list[dict]) -> dict:
     """Enforced policies are the denominator that matters.
 
-    Every "policies_*" count below is over ENFORCED policies only, because a
-    disabled or report-only policy demonstrates intent and not enforcement. The raw
-    state breakdown is reported separately so the gap between the two is visible.
+    Every "enforced_policies_*" count is over enforced policies only, because a disabled
+    or report-only policy demonstrates intent, not enforcement. The raw state breakdown
+    is reported separately so the gap stays visible.
     """
     enforced = [p for p in policies if p["is_enforced"]]
     return {
@@ -357,7 +336,7 @@ def summarize(policies: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy msgraph imports; not exercised by the fixture tests) ---
+# --- collection (lazy msgraph imports) ---
 
 async def _collect(collector: Collector, cred) -> tuple[list[dict], dict]:
     """One identity.conditional_access.policies.get(), paged to the end."""
@@ -373,8 +352,7 @@ async def _collect(collector: Collector, cred) -> tuple[list[dict], dict]:
             )
         ]
         logger.info("Collected %d Conditional Access policy/policies", len(policies))
-        # Sorted by display name so a re-run against an unchanged tenant is
-        # byte-stable; Graph does not promise a stable policy order.
+        # Sorted for byte-stable re-runs; Graph promises no stable policy order.
         return (
             sorted(policies, key=lambda p: (p.get("display_name") or "", p.get("id") or "")),
             tenant,
@@ -389,9 +367,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* and msgraph/kiota/httpx stacks log every HTTP request at INFO,
-    # which buries this fetcher's own lines and would dominate the runner's stderr
-    # tail. Their warnings and errors still come through.
+    # The azure-*, msgraph, kiota and httpx stacks log every request at INFO, which
+    # would dominate the runner's stderr tail. Warnings and errors still come through.
     for noisy in ("azure", "msgraph", "kiota", "httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     load_dotenv()
@@ -406,17 +383,14 @@ def main() -> int:
     else:
         policies, tenant = asyncio.run(_collect(collector, cred))
 
-    # NOTE: no `provider_registration_status()` call here, deliberately. Graph is
-    # not an ARM resource provider, so there is no namespace whose registration
-    # state could distinguish "not in use" from "empty".
+    # No `provider_registration_status()` call, deliberately: Graph is not an ARM
+    # resource provider.
     #
-    # Conditional Access does have its own version of that ambiguity, and it is NOT
-    # resolvable from this endpoint: a tenant on the free Entra tier cannot create
-    # policies at all (they need Entra ID P1/P2), and it returns an empty list rather
-    # than an error. So `total_policies: 0` can mean either "licensed and no policies
-    # configured" or "not licensed for Conditional Access". Reading the tenant's
-    # license state would need a separate subscribedSkus call and permission; it is
-    # not collected here.
+    # The equivalent ambiguity here is NOT resolvable from this endpoint: a tenant on the
+    # free Entra tier cannot create policies at all (they need Entra ID P1/P2) and returns
+    # an empty list rather than an error, so `total_policies: 0` means either "no policies
+    # configured" or "not licensed". Resolving it needs a subscribedSkus call and
+    # permission; not collected here.
     scoping = tenant_scoping()
     evidence = tenant_payload(
         build_payload,

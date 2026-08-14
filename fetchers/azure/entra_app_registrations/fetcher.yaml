@@ -57,23 +57,6 @@ evidence_set:
   reference_id: EVD-AZURE-ENTRA-APP-CREDS
   name: Microsoft Entra ID App Registration Credentials
   instructions: >
-    Script: fetcher.py. Microsoft Graph calls (msgraph-sdk GraphServiceClient, built
-    on a GraphRequestAdapter so the HTTP transport and the OAuth scope both point at
-    the tenant's Graph host): GET /applications with
-    $select=id,appId,displayName,createdDateTime,signInAudience,passwordCredentials,keyCredentials
-    for each app registration and both of its credential collections
-    (displayName, keyId, startDateTime, endDateTime, and usage / type on
-    certificates); and GET /organization to record the tenant id and default verified
-    domain in the evidence metadata. The collection is paged manually by following
-    @odata.nextLink. Each credential is classified against one timestamp taken once
-    per run (reported as results.evaluated_at) into expired, expiring within 30 days,
-    or no expiry date — the 30-day rotation threshold matches Prowler's
-    entra_app_registration_credential_not_expired check — and `healthy` is true only
-    for a credential that has an expiry date further out than that threshold.
-    passwordCredentials.secretText is never collected: Graph returns it only in the
-    response that creates a secret, never on a read. Graph app permissions needed:
-    Application.Read.All (or Directory.Read.All), plus Organization.Read.All for the
-    tenant identity — a denied organization read falls back to AZURE_TENANT_ID and is
-    not treated as a collection failure. This evidence is tenant-wide; it is NOT
-    scoped by subscription and there is no ARM resource provider to report a
-    registration status for.
+    Script: fetcher.py. Microsoft Graph calls: GET /applications with
+    $select=id,appId,displayName,createdDateTime,signInAudience,passwordCredentials,keyCredentials;
+    GET /organization. Paged via @odata.nextLink.

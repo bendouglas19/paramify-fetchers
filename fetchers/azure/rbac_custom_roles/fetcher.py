@@ -2,40 +2,15 @@
 """
 Azure RBAC custom role definitions on one subscription
 
-Every custom role defined in the subscription, with the scopes it may be assigned at
-and the permissions it actually grants — flagged for wildcard actions and for the
-specific permissions that let a holder escalate its own privileges.
-
-Custom roles are where least privilege is either implemented or quietly abandoned. A
-role named "Deployment Reader" that grants `*` is an Owner under another name, and no
-role-assignment review will catch it, because the assignment looks like a narrow
-custom role. Two determinations are made here:
-
-- **Wildcard breadth.** `actions: ["*"]` over an assignable scope is Owner-equivalent.
-  Prowler's iam_subscription_roles_owner_custom_not_created check tests exactly this.
-- **Privilege escalation.** Any permission matching
-  `Microsoft.Authorization/roleAssignments/write` lets the holder assign itself any
-  role, including Owner — so such a role is effectively Owner regardless of what else
-  it grants. `Microsoft.Authorization/roleDefinitions/write` is the same escalation one
-  step removed: rewrite the role you already hold.
-
-Wildcards are matched properly rather than compared literally. An Azure action
-wildcard's `*` spans `/`, so `*/write`, `Microsoft.Authorization/*` and
-`Microsoft.Authorization/roleAssignments/*` all confer roleAssignments/write, and a
-literal string comparison finds none of them. `not_actions` is subtracted, because a
-role granting `*` while denying `Microsoft.Authorization/*/write` genuinely cannot
-escalate — reporting it as if it could would be a false positive on the most common
-"broad but safe" pattern.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/iam/iam_service.py (Apache-2.0) `_get_roles`, which
-reads the same azure-mgmt-authorization SDK and splits custom from built-in roles the
-same way. The wildcard and lock checks come from their
+Every custom role with its assignable scopes and permissions, flagged for wildcard
+breadth and for the permissions that let a holder escalate its own privileges.
+Projections ported from Prowler's
+prowler/providers/azure/services/iam/iam_service.py `_get_roles` (Apache-2.0);
+wildcard and resource-lock breadth from their
 iam_subscription_roles_owner_custom_not_created and
-iam_custom_role_has_permissions_to_administer_resource_locks checks.
-
-Single-subscription per invocation; fanout across subscriptions happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+iam_custom_role_has_permissions_to_administer_resource_locks checks. The
+privilege-escalation classification has no upstream ancestor. Deviation: wildcards are
+expanded with Azure's semantics and `not_actions` subtracted — see `action_matches()`.
 """
 
 import logging
@@ -69,38 +44,31 @@ logger = logging.getLogger("azure_rbac_custom_roles")
 
 CUSTOM_ROLE = "CustomRole"
 
-# The permission that IS privilege escalation: a principal that can write role
-# assignments can assign itself Owner, so a custom role granting this is
-# Owner-equivalent no matter how narrow the rest of it looks.
+# Escalation itself: a principal that can write role assignments can assign itself
+# Owner, however narrow the rest of the role looks.
 ROLE_ASSIGNMENT_WRITE = "Microsoft.Authorization/roleAssignments/write"
 
-# The same escalation one step removed — rewrite the definition of a role you already
-# hold, rather than granting yourself a new one.
+# The same escalation one step removed — rewrite a role you already hold.
 ROLE_DEFINITION_WRITE = "Microsoft.Authorization/roleDefinitions/write"
 
-# A deny assignment can be written to shield resources from other principals; writing
-# them is an administrative power in its own right.
 DENY_ASSIGNMENT_WRITE = "Microsoft.Authorization/denyAssignments/write"
 
-# Every permission treated as a privilege-escalation path, with why. A mapping rather
-# than a set so the evidence names WHICH one matched.
+# A mapping rather than a set, so the evidence can name WHICH permission matched.
 PRIVILEGE_ESCALATION_ACTIONS = {
     ROLE_ASSIGNMENT_WRITE: "can assign any role to any principal, including Owner",
     ROLE_DEFINITION_WRITE: "can rewrite the permissions of a role it already holds",
     DENY_ASSIGNMENT_WRITE: "can write deny assignments that shield resources from others",
 }
 
-# Prowler's iam_custom_role_has_permissions_to_administer_resource_locks: a role able
-# to administer resource locks can remove the locks protecting production resources
-# from deletion. Reported as its own fact rather than as escalation.
+# Prowler's iam_custom_role_has_permissions_to_administer_resource_locks: lock
+# administration can strip the locks protecting production resources from deletion.
 RESOURCE_LOCK_ACTION_PREFIX = "Microsoft.Authorization/locks/"
 
-# The all-permissions wildcard. Prowler's iam_subscription_roles_owner_custom_not_created
-# tests for exactly this literal in a custom role's actions.
+# Prowler's iam_subscription_roles_owner_custom_not_created tests for exactly this
+# literal in a custom role's actions.
 WILDCARD_ACTION = "*"
 
-# The tenant-root assignable scope: a role assignable at "/" may be granted anywhere
-# in the tenant, which is broader than the subscription that defines it.
+# A role assignable at "/" may be granted anywhere in the tenant.
 ROOT_SCOPE = "/"
 
 
@@ -109,14 +77,9 @@ ROOT_SCOPE = "/"
 def project_permission(permission) -> dict:
     """Read a `Permission` model's four action lists into a flat dict.
 
-    All four are read because they are not interchangeable. `actions` and `not_actions`
-    govern the CONTROL plane (manage a storage account); `data_actions` and
-    `not_data_actions` govern the DATA plane (read the blobs inside it). A role with
-    `data_actions: ["*"]` can read every byte in the subscription while its `actions`
-    list looks modest — omitting the data plane would miss that entirely.
-
-    Each list is `or []` because the SDK leaves an unset action list as None rather
-    than an empty list.
+    All four are kept: actions/not_actions govern the CONTROL plane, data_actions/
+    not_data_actions the DATA plane, and a role can be modest on one and grant `*` on
+    the other. Each is `or []` because the SDK leaves an unset action list as None.
     """
     return {
         "actions": list(model_attr(permission, "actions") or []),
@@ -129,12 +92,9 @@ def project_permission(permission) -> dict:
 def project_role_definition(definition) -> dict:
     """Read a `RoleDefinition` model's attributes into a flat snake_case dict.
 
-    `name` is the role's GUID and `role_name` is its display name — the SDK's naming
-    is genuinely inverted relative to what a reader expects, and both are kept.
-
-    `created_on` / `updated_on` are rendered with `str()` here so the evidence carries
-    a stable string rather than depending on `json.dump`'s `default=str` for the same
-    conversion.
+    The SDK's naming is inverted: `name` is the role's GUID, `role_name` its display
+    name. Both are kept. Timestamps are `str()`-rendered here rather than left to
+    `json.dump`'s `default=str`.
     """
     created_on = model_attr(definition, "created_on")
     updated_on = model_attr(definition, "updated_on")
@@ -158,14 +118,13 @@ def project_role_definition(definition) -> dict:
 def action_matches(pattern: str, action: str) -> bool:
     """Whether an Azure RBAC action `pattern` grants the concrete `action`.
 
-    Azure's action wildcards are NOT path globs: `*` matches any sequence of
-    characters INCLUDING `/`. So `*/write` grants `Microsoft.Authorization/
-    roleAssignments/write`, and `Microsoft.Authorization/*` does too. This is the whole
-    reason the escalation check cannot be a literal `in` test — Prowler's checks
-    compare action strings directly and therefore see none of these forms.
+    Azure's action wildcards are NOT path globs: `*` matches any sequence INCLUDING
+    `/`, so `*/write` and `Microsoft.Authorization/*` both grant
+    `Microsoft.Authorization/roleAssignments/write`. Prowler's checks compare action
+    strings literally and therefore recognise none of those forms; this expands them,
+    which is why the escalation check cannot be a literal `in` test.
 
-    Matching is case-insensitive: ARM treats action strings that way, and roles
-    authored by hand or by Terraform differ in casing constantly.
+    Case-insensitive because ARM treats action strings that way.
     """
     if not pattern or not action:
         return False
@@ -176,13 +135,9 @@ def action_matches(pattern: str, action: str) -> bool:
 def grants_action(permission: dict, action: str, data_plane: bool = False) -> bool:
     """Whether one permission block grants `action` after `not_actions` is subtracted.
 
-    An Azure permission is allow-list minus deny-list, and the deny side is what makes
-    the common "grant `*`, deny the dangerous bits" pattern safe. Ignoring
-    `not_actions` would report every such role as an escalation path — a false
-    positive on the most widespread least-privilege idiom there is.
-
-    A `not_actions` entry only subtracts what it actually covers, so the same wildcard
-    semantics apply on both sides.
+    Ignoring `not_actions` would report every "grant `*`, deny the dangerous bits" role
+    as an escalation path — a false positive on the most widespread least-privilege
+    idiom there is. The same wildcard semantics apply on the deny side.
     """
     allow_key, deny_key = ("data_actions", "not_data_actions") if data_plane else (
         "actions",
@@ -198,16 +153,12 @@ def role_grants_action(role: dict, action: str) -> bool:
     """Whether ANY of a role's permission blocks grants the CONTROL-plane `action`.
 
     Blocks are independent: Azure unions the allow lists across blocks and each block's
-    `not_actions` subtracts only from its own. So a role is checked block by block, and
-    one permissive block is enough — a `not_actions` in a different block does not
-    rescue it.
+    `not_actions` subtracts only from its own, so one permissive block is enough.
 
-    Deliberately control-plane only. `data_actions` is a separate permission space and
-    cannot confer a management operation: a role with `data_actions: ["*"]` can read
-    every blob in the subscription but cannot write a role assignment, and testing the
-    data plane here would report exactly that role as an escalation path. Data-plane
-    breadth is reported on its own, through `has_data_actions` and
-    `wildcard_actions.data_plane`.
+    Control plane only, deliberately: `data_actions` is a separate permission space that
+    cannot confer a management operation, so testing it here would report a
+    `data_actions: ["*"]` role as an escalation path. Data-plane breadth is reported on
+    its own, as `has_data_actions` and `wildcard_actions.data_plane`.
     """
     return any(grants_action(p, action) for p in (role.get("permissions") or []))
 
@@ -215,9 +166,8 @@ def role_grants_action(role: dict, action: str) -> bool:
 def _wildcard_actions(role: dict) -> dict:
     """The literal wildcard entries in a role, split by plane.
 
-    The exact strings are reported, not just a boolean: `*` and `Microsoft.Compute/*`
-    are both wildcards but the first is Owner-equivalent while the second is scoped to
-    one provider, and a reviewer needs to see which they are looking at.
+    The exact strings rather than a boolean: `*` is Owner-equivalent while
+    `Microsoft.Compute/*` is scoped to one provider.
     """
     control, data = [], []
     for permission in role.get("permissions") or []:
@@ -231,8 +181,7 @@ def custom_role_record(role: dict) -> dict:
 
     `is_owner_equivalent` is Prowler's iam_subscription_roles_owner_custom_not_created
     condition — an assignable scope of the form `/...` AND an action of exactly `*` —
-    with `not_actions` honored, so a role granting `*` while denying the write actions
-    is not reported as an Owner.
+    with `not_actions` honored.
     """
     assignable_scopes = list(role.get("assignable_scopes") or [])
     permissions = role.get("permissions") or []
@@ -242,14 +191,12 @@ def custom_role_record(role: dict) -> dict:
         action for action in PRIVILEGE_ESCALATION_ACTIONS if role_grants_action(role, action)
     )
     # Prowler matches `^/.*` against each assignable scope — every real ARM scope
-    # satisfies it, so the clause that actually decides the finding is the `*` action.
+    # satisfies it, so the `*` action is the clause that decides the finding.
     has_bare_wildcard = any(
         WILDCARD_ACTION in (p.get("actions") or []) for p in permissions
     )
-    # What separates Owner from Contributor is exactly one permission: both grant `*`,
-    # and Contributor subtracts `Microsoft.Authorization/*/write`. So a custom role
-    # granting `*` is Owner-equivalent when it can still write role assignments, and
-    # Contributor-equivalent when its not_actions took that away.
+    # One permission separates Owner from Contributor: both grant `*`, and Contributor
+    # subtracts `Microsoft.Authorization/*/write`.
     can_assign_roles = role_grants_action(role, ROLE_ASSIGNMENT_WRITE)
 
     return {
@@ -273,8 +220,7 @@ def custom_role_record(role: dict) -> dict:
         "wildcard_actions": wildcards,
         "has_wildcard_action": bool(wildcards["control_plane"] or wildcards["data_plane"]),
         "has_all_actions_wildcard": has_bare_wildcard,
-        # Prowler's owner-equivalent test (iam_subscription_roles_owner_custom_not_created),
-        # with not_actions honored so a Contributor-shaped role is not called an Owner.
+        # Prowler's owner-equivalent test, with not_actions honored.
         "is_owner_equivalent": has_bare_wildcard and can_assign_roles,
         "is_contributor_equivalent": has_bare_wildcard and not can_assign_roles,
         # --- privilege escalation ---
@@ -282,12 +228,9 @@ def custom_role_record(role: dict) -> dict:
         "can_escalate_privileges": bool(escalation),
         "can_assign_roles": can_assign_roles,
         "can_write_role_definitions": role_grants_action(role, ROLE_DEFINITION_WRITE),
-        # --- other administrative powers worth naming ---
-        # Prowler's iam_custom_role_has_permissions_to_administer_resource_locks
-        # matches the literal prefix `Microsoft.Authorization/locks/`; routing it
-        # through the wildcard matcher instead also catches the `*` and
-        # `Microsoft.Authorization/*` forms that grant the same power, and honors
-        # not_actions.
+        # --- other administrative powers ---
+        # Prowler matches the literal prefix; the wildcard matcher also catches the `*`
+        # and `Microsoft.Authorization/*` forms, and honors not_actions.
         "can_administer_resource_locks": role_grants_action(
             role, f"{RESOURCE_LOCK_ACTION_PREFIX}delete"
         ),
@@ -300,9 +243,8 @@ def summarize(custom_roles: list[dict], total_definitions: int) -> dict:
     """Escalation-capable custom roles are the headline.
 
     `total_role_definitions` and `builtin_role_definitions` are reported alongside so
-    `custom_role_definitions: 0` is legible: a subscription with no custom roles at all
-    is the least-privilege ideal, and it should not read the same as a failed call that
-    returned nothing. A non-zero built-in count proves the list call worked.
+    `custom_role_definitions: 0` is legible: a non-zero built-in count proves the list
+    call worked rather than returning nothing.
     """
     escalating = [r for r in custom_roles if r["can_escalate_privileges"]]
     return {
@@ -338,7 +280,7 @@ def summarize(custom_roles: list[dict], total_definitions: int) -> dict:
         "custom_roles_administering_resource_locks": sum(
             1 for r in custom_roles if r["can_administer_resource_locks"]
         ),
-        # --- the positive form: neither wildcard-broad nor escalation-capable ---
+        # --- neither wildcard-broad nor escalation-capable ---
         "least_privilege_custom_roles": sum(
             1
             for r in custom_roles
@@ -355,19 +297,17 @@ def summarize(custom_roles: list[dict], total_definitions: int) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def collect_custom_roles(subscription_id, cred, collector: Collector) -> tuple[list[dict], int]:
     """One role_definitions.list(), split into custom and built-in in Python.
 
-    Listing everything and filtering here rather than passing
-    `filter="type eq 'CustomRole'"` is Prowler's approach, and it buys the total and
-    built-in counts for free in the same call — which is what makes
-    "custom_role_definitions: 0" distinguishable from a call that returned nothing.
+    Listing unfiltered rather than passing `filter="type eq 'CustomRole'"` is Prowler's
+    approach and buys the total and built-in counts from the same call.
 
-    The scope is the subscription. Custom roles defined at a management group above it
-    and assignable here are NOT returned — see the fetcher.yaml note; that is a known
-    limitation of a per-subscription read, not a failure.
+    The scope is the subscription, so custom roles defined at a management group above
+    it and assignable here are NOT returned — a known limitation of a per-subscription
+    read, not a failure.
     """
     from azure.mgmt.authorization import AuthorizationManagementClient
 
@@ -403,9 +343,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every request and response header at INFO, which would
+    # dominate the runner's stderr tail. Warnings and errors still come through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -420,8 +359,8 @@ def main() -> int:
     total_definitions = 0
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list call, so a zero-role result is legible: Azure returns
-        # an empty list rather than an error for an unregistered provider.
+        # Asked BEFORE the list call: Azure returns an empty list, not an error, for an
+        # unregistered provider, so a zero-role result would otherwise be ambiguous.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.Authorization"
         )
@@ -448,8 +387,7 @@ def main() -> int:
         results={
             "custom_roles": custom_roles,
             "provider_registration_status": registration,
-            # Named in the evidence so a reader knows which permissions the escalation
-            # flags were decided by, without having to read this script.
+            # In the evidence so a reader knows which permissions decided the flags.
             "privilege_escalation_actions_checked": dict(
                 sorted(PRIVILEGE_ESCALATION_ACTIONS.items())
             ),

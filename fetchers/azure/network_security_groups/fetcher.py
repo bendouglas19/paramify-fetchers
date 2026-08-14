@@ -1,21 +1,9 @@
 #!/usr/bin/env python3
-"""
-KSI-CNA-01 / KSI-CNA-02 / KSI-CNA-03 / KSI-CNA-05: Azure network traffic controls
+"""Azure network security groups and virtual networks for one subscription.
 
-For one subscription, collects every network security group with its inline
-security rules, and every virtual network with its subnets' NSG association and
-DDoS protection state. Together these evidence the four things a reviewer asks of
-an Azure network: inbound/outbound traffic is controlled, no admin port (SSH/RDP)
-is open to the Internet, every subnet is actually behind an NSG, and DDoS
-protection is on.
-
-Field projections are ported verbatim from Prowler's
-prowler/providers/azure/services/network/network_service.py (Apache-2.0), which
-reads the same azure-mgmt-network SDK. The "open to the Internet" match replicates
-prowler/providers/azure/services/network/network_ssh_internet_access_restricted.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Ported from prowler/providers/azure/services/network/network_service.py
+(Apache-2.0); the "open to the Internet" match replicates Prowler's
+network_ssh_internet_access_restricted check.
 """
 
 import logging
@@ -47,9 +35,8 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_network_security_groups")
 
-# Prowler's match set for "the whole Internet" as a rule source, and for "any
-# protocol". Kept as literals so the evidence's own summary math matches what a
-# Prowler run would flag.
+# Prowler's match set for "the whole Internet" as a rule source and for "any
+# protocol", kept as literals so the summary math matches what Prowler would flag.
 INTERNET_SOURCE_PREFIXES = ("Internet", "*", "0.0.0.0/0")
 ANY_TCP_PROTOCOLS = ("TCP", "Tcp", "*")
 
@@ -60,14 +47,7 @@ ADMIN_PORTS = {"ssh": 22, "rdp": 3389}
 # --- projection: the only code here that touches an azure-mgmt model ---
 
 def project_security_rule(rule) -> dict:
-    """Read a `SecurityRule` model's attributes into a flat snake_case dict.
-
-    Attribute access is stable across the azure-mgmt generator styles; `as_dict()`
-    is not — on azure-mgmt-network's `_model_base` runtime it emits the camelCase
-    wire shape with a rule's fields nested under its own "properties" bag, two
-    levels below the NSG. Reading attributes sidesteps both the spelling and the
-    nesting, so the transforms below stay pure dict-in/dict-out.
-    """
+    """Read a `SecurityRule` model's attributes into a flat snake_case dict."""
     return {
         "id": model_attr(rule, "id"),
         "name": model_attr(rule, "name"),
@@ -116,15 +96,13 @@ def project_virtual_network(vnet) -> dict:
 # --- pure transforms (flat snake_case dicts in, evidence records out) ---
 
 def security_rule_record(rule: dict) -> dict:
-    """Normalize one projected NSG security rule — Prowler's exact six-field projection.
+    """Normalize one projected NSG security rule — Prowler's six-field projection.
 
-    Prowler defaults `access` to "Allow" and `direction` to "Inbound" when absent,
-    which is the conservative reading (assume the rule is permitting inbound
-    traffic unless the API says otherwise). `destination_port_ranges` /
-    `source_address_prefixes` (the plural, list-valued forms) are carried too:
-    Prowler's checks only read the singular form, but a rule that uses the plural
-    form has the singular set to null, so without them the evidence would silently
-    show an empty port for a real open rule.
+    Prowler's defaults: `access` "Allow" and `direction` "Inbound" when absent, the
+    conservative reading. The plural, list-valued `destination_port_ranges` /
+    `source_address_prefixes` are carried too, which Prowler's checks do not read: a
+    rule using the plural form has the singular set to null, so without them the
+    evidence would silently show an empty port for a real open rule.
     """
     return {
         "id": rule.get("id"),
@@ -178,9 +156,8 @@ def virtual_network_record(vnet: dict) -> dict:
 def _port_in_range(port_range, port: int) -> bool:
     """Does a rule's destination port range cover `port`?
 
-    Prowler's condition, verbatim: an exact match on the port, or a "low-high"
-    range that spans it. Extended with "*" (any port), which the SDK also returns
-    and which unambiguously covers every port.
+    Prowler's condition (exact match, or a "low-high" range spanning it), extended
+    with "*" — which the SDK also returns and which covers every port.
     """
     if not port_range:
         return False
@@ -199,12 +176,7 @@ def _port_in_range(port_range, port: int) -> bool:
 
 
 def rule_opens_port_to_internet(rule: dict, port: int) -> bool:
-    """Prowler's fail condition for "port <n> reachable from the Internet".
-
-    All five clauses must hold: the destination port range covers the port, the
-    protocol is TCP or any, the source is the whole Internet, the action is Allow,
-    and the direction is Inbound.
-    """
+    """Prowler's fail condition for "port <n> reachable from the Internet"."""
     ranges = [rule.get("destination_port_range"), *(rule.get("destination_port_ranges") or [])]
     sources = [rule.get("source_address_prefix"), *(rule.get("source_address_prefixes") or [])]
     return (
@@ -259,7 +231,7 @@ def summarize(security_groups: list[dict], virtual_networks: list[dict]) -> dict
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def collect_network(subscription_id, cred, collector: Collector) -> tuple[list[dict], list[dict]]:
     """Two subscription-wide list calls: NSGs (with inline rules) and VNets.
@@ -304,9 +276,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every HTTP request and response header at INFO, which would
+    # bury this fetcher's own lines and dominate the runner's stderr tail.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 

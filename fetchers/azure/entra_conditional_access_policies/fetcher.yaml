@@ -56,32 +56,6 @@ evidence_set:
   reference_id: EVD-AZURE-ENTRA-CA-POLICIES
   name: Microsoft Entra ID Conditional Access Policies
   instructions: >
-    Script: fetcher.py. Microsoft Graph calls (msgraph-sdk GraphServiceClient, built
-    on a GraphRequestAdapter so the HTTP transport and the OAuth scope both point at
-    the tenant's Graph host): GET /identity/conditionalAccess/policies for each
-    policy's id, displayName, state, createdDateTime, modifiedDateTime,
-    conditions.users (includeUsers / excludeUsers / includeGroups / excludeGroups /
-    includeRoles / excludeRoles), conditions.applications (includeApplications /
-    excludeApplications / includeUserActions), conditions.clientAppTypes,
-    conditions.signInRiskLevels, conditions.userRiskLevels, conditions.platforms,
-    conditions.locations, grantControls (builtInControls, operator,
-    authenticationStrength, termsOfUse) and sessionControls; and GET /organization to
-    record the tenant id and default verified domain in the evidence metadata. The
-    collection is paged manually by following @odata.nextLink. Policy state is
-    reported as Graph returns it — enabled, disabled, or
-    enabledForReportingButNotEnforced — and report-only is never counted as enabled,
-    since such a policy logs its outcome without enforcing it; every summary count
-    of what policies DO is taken over enabled policies only. Grant controls are split
-    into block vs. grant on the control's wire value, where `block` is the only
-    member that denies access. MFA coverage for Microsoft admin portals and for the
-    Windows Azure Service Management API is derived the way the CIS Azure benchmark
-    states it: the policy must be enabled, include All users, target that resource
-    (or All applications), and grant on MFA. Graph app permissions needed:
-    Policy.Read.All, plus Organization.Read.All for the tenant identity — a denied
-    organization read falls back to AZURE_TENANT_ID and is not treated as a
-    collection failure. A tenant on the free Entra tier cannot create Conditional
-    Access policies (they require Entra ID P1/P2) and returns an empty list rather
-    than an error, so total_policies of 0 means either "no policies configured" or
-    "not licensed"; the tenant's license state is not collected here. This evidence
-    is tenant-wide; it is NOT scoped by subscription and there is no ARM resource
-    provider to report a registration status for.
+    Script: fetcher.py. Microsoft Graph calls: GET
+    /identity/conditionalAccess/policies (state, conditions, grantControls,
+    sessionControls); GET /organization. Paged via @odata.nextLink.

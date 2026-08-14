@@ -48,26 +48,7 @@ evidence_set:
   name: Azure SQL Server Configuration
   instructions: >
     Script: fetcher.py. Azure SDK calls (azure-mgmt-sql SqlManagementClient):
-    servers.list() for public_network_access, minimal_tls_version,
-    restrict_outbound_network_access and administrators (sid, login,
-    administrator_type, principal_type, tenant_id, azure_ad_only_authentication);
-    then per server firewall_rules.list_by_server(resource_group, server) for each
-    rule's name, start_ip_address and end_ip_address;
-    server_blob_auditing_policies.list_by_server(resource_group, server) for state
-    and retention_days; server_security_alert_policies.get(resource_group, server,
-    "Default") for the Microsoft Defender for SQL state; and
-    server_vulnerability_assessments.get(resource_group, server, "default") for
-    storage_container_path and recurring_scans (is_enabled, emails,
-    email_subscription_admins). A firewall rule of 0.0.0.0-0.0.0.0 is Azure's "allow
-    all Azure services" pseudo-rule; 0.0.0.0-255.255.255.255 opens the server to
-    every routable address — the two are flagged separately because they are
-    different findings. administrator_type "ActiveDirectory" ⇒ an Entra ID
-    administrator is configured. minimal_tls_version is recommended at "1.2" or
-    "1.3". Auditing retention_days must exceed 90; retention_days 0 means retain
-    indefinitely and satisfies that. A vulnerability assessment with no
-    storage_container_path has nowhere to write scan results and reads as not
-    enabled. A security alert policy or vulnerability assessment Azure answers with a
-    404 was never configured and is recorded as absent, not as a collection failure.
-    A subscription that never registered the Microsoft.Sql resource provider reports
-    provider_registration_status: not_registered, which is valid evidence ("Azure SQL
-    not in use") rather than an empty result that looks like full coverage.
+    servers.list(), firewall_rules.list_by_server(),
+    server_blob_auditing_policies.list_by_server(),
+    server_security_alert_policies.get(), server_vulnerability_assessments.get().
+    Records each server's network, authentication and audit posture.

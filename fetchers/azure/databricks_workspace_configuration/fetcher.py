@@ -1,35 +1,11 @@
 #!/usr/bin/env python3
 """
-Azure Databricks workspace network isolation and disk encryption
+Azure Databricks workspace network isolation and managed-disk encryption.
 
-For every Azure Databricks workspace in one subscription, reports whether the
-control plane is reachable from the internet (`public_network_access`), whether
-cluster nodes get public IPs (secure cluster connectivity, `no_public_ip_enabled`),
-whether the workspace is injected into a customer-managed VNet
-(`custom_managed_vnet_id`), whether managed-disk encryption uses a customer-managed
-key from Key Vault, and the workspace SKU (the tier gates the isolation features —
-VNet injection and private connectivity are Premium-only).
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/databricks/databricks_service.py (Apache-2.0),
-which reads the same azure-mgmt-databricks SDK, plus the SKU (which Prowler does not
-keep) and the managed-disk key source / rotation flag, which say WHY a key counts as
-customer-managed.
-
-Two Databricks-specific shapes are worth knowing when reading this:
-
-- **The isolation settings are wrapped parameters.** `parameters.enable_no_public_ip`
-  and `parameters.custom_virtual_network_id` are not plain values but
-  `WorkspaceCustom*Parameter` models with a `.value` field, so both need a second
-  attribute hop.
-- **A missing `enable_no_public_ip` is not the same as false.** Prowler keeps it as
-  None for workspaces that do not expose the classic-compute setting at all. Here it
-  is coerced to a boolean for the validator's sake, with
-  `no_public_ip_setting_present` alongside it so an absent setting cannot be misread
-  as "nodes have public IPs".
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Ported from Prowler
+prowler/providers/azure/services/databricks/databricks_service.py (Apache-2.0), plus
+the workspace SKU and the managed-disk key source / rotation flag, which Prowler does
+not keep and which say WHY a key counts as customer-managed.
 """
 
 import logging
@@ -70,31 +46,22 @@ KEY_SOURCE_KEYVAULT = "microsoft.keyvault"
 PREMIUM_SKU = "premium"
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: the only azure-mgmt model access ---
 
 def _custom_parameter(parameters, name):
     """Read one `WorkspaceCustom*Parameter`'s `.value` off the parameters block.
 
-    Databricks wraps each workspace creation parameter in a small model rather than
-    returning the value directly, so every read here is two hops — and both hops are
-    routinely absent (`parameters` itself is None on a workspace created with all
-    defaults).
+    Databricks wraps each creation parameter in a small model instead of returning the
+    value, so every read is two hops — and both are routinely absent (`parameters` itself
+    is None on a workspace created with all defaults).
     """
     return model_attr(model_attr(parameters, name), "value")
 
 
 def project_workspace(workspace) -> dict:
-    """Read a `Workspace` model's attributes into a flat snake_case dict.
-
-    Attribute access is stable across the azure-mgmt generator styles; `as_dict()`
-    is not (azure-mgmt-databricks 3.x is on the newer `model_base` runtime, whose
-    `as_dict()` emits the camelCase wire shape nested under "properties"). Confining
-    the SDK to this one function keeps every transform below pure dict-in/dict-out,
-    and testable with no azure-* package installed.
-
-    `encryption.entities.managed_disk.key_vault_properties` is the deepest optional
-    chain in this fetcher — every hop is absent on a workspace using platform-managed
-    keys, hence `model_attr`'s None-tolerance at each step.
+    """Read a `Workspace` model into a flat snake_case dict. Every hop of
+    `encryption.entities.managed_disk.key_vault_properties` is absent on a workspace using
+    platform-managed keys, hence the None-tolerant reads.
     """
     sku = model_attr(workspace, "sku")
     parameters = model_attr(workspace, "parameters")
@@ -109,18 +76,14 @@ def project_workspace(workspace) -> dict:
         "location": model_attr(workspace, "location"),
         "provisioning_state": model_attr(workspace, "provisioning_state"),
         "managed_resource_group_id": model_attr(workspace, "managed_resource_group_id"),
-        # --- SKU: the tier gates the isolation features ---
         "sku": {
             "name": model_attr(sku, "name"),
             "tier": model_attr(sku, "tier"),
         },
-        # --- network exposure ---
         "public_network_access": model_attr(workspace, "public_network_access"),
         "required_nsg_rules": model_attr(workspace, "required_nsg_rules"),
-        # --- wrapped creation parameters ---
         "no_public_ip_enabled": _custom_parameter(parameters, "enable_no_public_ip"),
         "custom_managed_vnet_id": _custom_parameter(parameters, "custom_virtual_network_id"),
-        # --- managed disk encryption ---
         "managed_disk_encryption": {
             "key_source": model_attr(managed_disk, "key_source"),
             "key_name": model_attr(key_vault_properties, "key_name"),
@@ -138,11 +101,10 @@ def project_workspace(workspace) -> dict:
 def managed_disk_encryption_record(encryption: dict | None) -> dict:
     """Normalize the managed-disk encryption block, deciding CMK vs platform key.
 
-    A Key Vault URI (or an explicit "Microsoft.Keyvault" key source) is what makes
-    the key customer-managed; Prowler treats the presence of the whole
-    key_vault_properties block as the same signal. Databricks-managed disks are
-    always encrypted, so "encrypted: true" would be a constant — the fact that
-    varies is who holds the key.
+    A Key Vault URI (or key_source "Microsoft.Keyvault") is what makes the key
+    customer-managed; Prowler treats the presence of key_vault_properties as the same
+    signal. Databricks disks are always encrypted, so "encrypted: true" would be a
+    constant — what varies is who holds the key.
     """
     encryption = encryption if isinstance(encryption, dict) else {}
     key_source = encryption.get("key_source")
@@ -164,10 +126,11 @@ def managed_disk_encryption_record(encryption: dict | None) -> dict:
 def workspace_record(workspace: dict) -> dict:
     """Normalize one projected Databricks workspace into an evidence record.
 
-    Optional booleans are coerced with `bool(x or False)` because Azure omits a
-    false-y field rather than returning `false`, and a validator asserting `false`
-    would not match `null`. `no_public_ip_setting_present` keeps the one case where
-    absent genuinely means "this workspace has no such setting" legible.
+    Booleans are coerced with `bool(x or False)` because Azure omits a false-y field
+    rather than returning `false`, and a validator asserting `false` would not match
+    `null`. `enable_no_public_ip` is the exception Prowler keeps as None — a workspace
+    that does not expose the setting at all — so `no_public_ip_setting_present` sits
+    beside the coerced boolean and keeps absent from reading as "nodes have public IPs".
     """
     resource_id = workspace.get("id")
     sku = workspace.get("sku") or {}
@@ -181,11 +144,9 @@ def workspace_record(workspace: dict) -> dict:
         "resource_group": resource_group_from_id(resource_id),
         "provisioning_state": workspace.get("provisioning_state"),
         "managed_resource_group_id": workspace.get("managed_resource_group_id"),
-        # --- SKU ---
         "sku_name": sku.get("name"),
         "sku_tier": sku.get("tier"),
         "premium_sku": str(sku.get("name") or sku.get("tier") or "").lower() == PREMIUM_SKU,
-        # --- network exposure ---
         "public_network_access": public_network_access,
         "public_network_access_disabled": (
             str(public_network_access or "").lower() == "disabled"
@@ -197,7 +158,6 @@ def workspace_record(workspace: dict) -> dict:
         # --- VNet injection ---
         "custom_managed_vnet_id": custom_vnet,
         "vnet_injected": bool(custom_vnet),
-        # --- managed disk encryption ---
         "managed_disk_encryption": managed_disk_encryption_record(
             workspace.get("managed_disk_encryption")
         ),
@@ -235,14 +195,11 @@ def summarize(workspaces: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def collect_workspaces(subscription_id, cred, collector: Collector) -> list[dict]:
-    """One workspaces.list_by_subscription() call — everything is in the list response.
-
-    Unlike storage or App Service, no per-resource GET is needed: the workspace list
-    already carries the SKU, the network settings, the wrapped creation parameters and
-    the encryption block.
+    """One workspaces.list_by_subscription() call: no per-resource GET is needed, the list
+    already carries the SKU, network settings, wrapped parameters and encryption block.
     """
     from azure.mgmt.databricks import AzureDatabricksManagementClient
 
@@ -273,9 +230,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every HTTP request and response header at INFO, which would
+    # dominate the runner's stderr tail. Their warnings and errors still come through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -289,9 +245,9 @@ def main() -> int:
     workspaces: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list call, so a zero-workspace result is legible: Azure
-        # returns an empty list rather than an error for an unregistered provider,
-        # and Microsoft.Databricks is unregistered on most subscriptions.
+        # Asked BEFORE the list call, so a zero-workspace result is legible: Azure returns
+        # an empty list for an unregistered provider, and Microsoft.Databricks is
+        # unregistered on most subscriptions.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.Databricks"
         )

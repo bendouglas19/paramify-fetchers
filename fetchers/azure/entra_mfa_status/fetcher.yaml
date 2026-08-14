@@ -56,23 +56,7 @@ evidence_set:
   reference_id: EVD-AZURE-ENTRA-MFA
   name: Microsoft Entra ID MFA Coverage
   instructions: >
-    Script: fetcher.py. Microsoft Graph calls (msgraph-sdk GraphServiceClient, built
-    on a GraphRequestAdapter so the HTTP transport and the OAuth scope both point at
-    the tenant's Graph host): GET /users with
-    $select=id,displayName,userPrincipalName,accountEnabled,userType,signInActivity
-    for identity, account state and last sign-in (signInActivity is only returned
-    when explicitly selected); GET
-    /reports/authenticationMethods/userRegistrationDetails for isMfaCapable,
-    isMfaRegistered, isPasswordlessCapable, isSsprRegistered, isAdmin and
-    methodsRegistered; and GET /organization to record the tenant id and default
-    verified domain in the evidence metadata. Both collections are paged manually by
-    following @odata.nextLink. The two responses are joined on the user's object id
-    (userRegistrationDetails.id is that same id). Graph app permissions needed:
-    User.Read.All (or Directory.Read.All), AuditLog.Read.All for signInActivity,
-    Reports.Read.All for the registration report, and Organization.Read.All for the
-    tenant identity — a denied organization read falls back to AZURE_TENANT_ID and
-    is not treated as a collection failure. A user with no registration-details row
-    counts as not MFA-capable and is also counted in
-    users_without_registration_details, so that assumption stays visible. This
-    evidence is tenant-wide; it is NOT scoped by subscription and there is no ARM
-    resource provider to report a registration status for.
+    Script: fetcher.py. Microsoft Graph calls: GET /users with
+    $select=id,displayName,userPrincipalName,accountEnabled,userType,signInActivity;
+    GET /reports/authenticationMethods/userRegistrationDetails; GET /organization.
+    Both collections paged via @odata.nextLink.

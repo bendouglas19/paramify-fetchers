@@ -45,30 +45,8 @@ evidence_set:
   reference_id: EVD-AZURE-BACKUP-RECOVERY
   name: Azure Backup and Recovery Status
   instructions: >
-    Script: fetcher.py. Azure SDK calls:
-    resource.providers.get("Microsoft.RecoveryServices") for the resource-provider
-    registration state; azure-mgmt-recoveryservices RecoveryServicesClient
-    vaults.list_by_subscription_id() for each vault's id, name, location, sku,
-    provisioning_state, public_network_access, backup_storage_version and its
-    properties.security_settings (soft_delete_settings.soft_delete_state and
-    retention days, immutability_settings.state, multi_user_authorization),
-    properties.redundancy_settings (cross_region_restore,
-    standard_tier_storage_redundancy) and properties.encryption
-    (infrastructure_encryption, key_vault_properties.key_uri); then per vault, with
-    azure-mgmt-recoveryservicesbackup RecoveryServicesBackupClient,
-    backup_policies.list(vault_name, resource_group_name) for each policy's
-    schedule_policy and retention_policy (daily / weekly / monthly / yearly schedules
-    with their retention_duration {count, duration_type}, the flat SimpleRetentionPolicy
-    form, and sub_protection_policy[] for SAP HANA / SQL-in-VM), and
-    backup_protected_items.list(vault_name, resource_group_name) for each item's
-    workload_type, policy_id, protection_state, protection_status, health_status,
-    last_backup_status, last_backup_time and last_recovery_point. Each protected item
-    is joined to its policy by policy_id, so the item carries the retention that
-    governs it. daily_retention_days is Prowler's exact figure
-    (retention_policy.daily_schedule.retention_duration.count);
-    max_retention_days is derived across every schedule and sub-policy, converting
-    Weeks/Months/Years at 7/30/365 days, so a weekly-only policy is not read as having
-    no retention. The threshold is Prowler's MINIMUM_RETENTION_DAYS = 30 and is
-    emitted in the payload next to the percentage measured against it. Soft delete
-    "AlwaysON" counts as enabled; immutability "Unlocked" or "Locked" counts as
-    enabled.
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-recoveryservices
+    RecoveryServicesClient): vaults.list_by_subscription_id(); then
+    (azure-mgmt-recoveryservicesbackup RecoveryServicesBackupClient):
+    backup_policies.list(), backup_protected_items.list(). Retention threshold 30 days.
+    Maps to KSI-RPL-01, KSI-RPL-02, KSI-RPL-03, KSI-RPL-04.

@@ -1,35 +1,8 @@
 """Shared helpers for the Azure evidence fetchers.
 
-Every Azure fetcher follows the same shape (mirroring the GCP category's
-`_shared/gcp_common.py` and the AWS category's `_shared/aws.sh`): resolve the
-target subscription from the ambient credential, collect one evidence set, wrap
-it in a deterministic payload with a small metadata block, and exit non-zero if
-any API call failed so a partial failure never looks like success.
-
-Nothing here imports an Azure SDK at module scope — the heavy `azure.*` imports
-are kept lazy inside `credential()` / `resolve_subscription()` and inside each
-fetcher's `collect_*()`, so the pure transform functions (and their tests) import
-with only the standard library present.
-
-Design notes:
-- **SDK models are read by attribute, never via `as_dict()`.** Each fetcher has one
-  projection function per resource type that turns an azure-mgmt model into a flat
-  snake_case dict; every transform downstream is pure dict-in/dict-out. See
-  `model_attr()` below for why attribute access is the portable choice.
-- **Auth is the ambient credential chain only.** `DefaultAzureCredential()`
-  resolves the token; no secret is declared or read. See
-  fetchers/_categories/azure.yaml for the resolution order and which env vars the
-  runner lets through for each path.
-- **`environment`** is read from AZURE_ENVIRONMENT (set per target in the
-  manifest) and written into the payload's metadata block. The runner-built
-  envelope does not carry an `environment` field, so it lives in the payload.
-- **Determinism.** Resource lists are sorted by a stable identifier and the file
-  is written with sort_keys=True, so a re-run with unchanged infra is byte-stable
-  and regex validators stay quiet.
-- **`write_status()`** is the failure-reason channel. When a fetcher exits
-  non-zero the runner reads `$FETCHER_STATUS_FILE` for the reason; without it
-  `metadata.error` falls back to the tail of stderr, which turns a final
-  "Evidence saved to ..." INFO line into the reported failure reason.
+Azure SDK imports are lazy so the pure transforms and their tests import with only
+the standard library. `environment` comes from AZURE_ENVIRONMENT into the payload
+metadata because the runner-built envelope carries no `environment` field.
 """
 
 from __future__ import annotations
@@ -43,8 +16,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-# The contract's closed set of failure categories for $FETCHER_STATUS_FILE's
-# optional `code`. Exit codes stay binary (0 / non-zero); the category goes here.
+# The contract's closed set of categories for $FETCHER_STATUS_FILE's optional
+# `code`. Exit codes stay binary (0 / non-zero); the category goes here.
 STATUS_CODES = frozenset(
     {
         "auth_failed",
@@ -72,29 +45,17 @@ def sanitize_for_filename(value: str) -> str:
 
 
 def basename(resource_id: Optional[str]) -> Optional[str]:
-    """Last segment of an ARM resource ID.
-
-    ARM IDs are long ("/subscriptions/<sub>/resourceGroups/rg/providers/
-    Microsoft.Network/networkSecurityGroups/nsg1"); the human-meaningful part is
-    the tail. Full IDs are still kept alongside the short name wherever the
-    evidence needs to be joined back to a resource.
-    """
+    """Last segment of an ARM resource ID — the human-meaningful part."""
     if not resource_id:
         return resource_id
     return resource_id.rstrip("/").rsplit("/", 1)[-1]
 
 
 def resource_group_from_id(resource_id: Optional[str]) -> Optional[str]:
-    """Pull the resource group out of an ARM resource ID.
+    """Resource group from an ARM resource ID, or None for subscription-scoped IDs.
 
-    `.../resourceGroups/<rg>/providers/...` -> `<rg>`. Returns None when the ID
-    has no resource-group segment (subscription-scoped resources) or is absent.
-    Centralized because nearly every Azure evidence record needs it: the SDK's
-    per-resource-group getters (blob_services.get_service_properties, ...) take
-    the group name but `list()` only hands back the composite ID.
-
-    The segment is matched case-insensitively — ARM is inconsistent about
-    `resourceGroups` vs `resourcegroups` across services and API versions.
+    Matched case-insensitively: ARM is inconsistent about `resourceGroups` vs
+    `resourcegroups` across services and API versions.
     """
     if not resource_id:
         return None
@@ -118,42 +79,20 @@ def dig(obj: Any, *path: str) -> Any:
 # --------------------------------------------------------------------------- #
 # The SDK boundary: reading azure-mgmt model objects
 # --------------------------------------------------------------------------- #
-#
-# Each fetcher has ONE projection function per resource type that reads the SDK
-# model's attributes into a flat snake_case dict; everything downstream is a pure
-# dict-in/dict-out transform. `model_attr` is the single primitive those
-# projections are built from.
-#
-# Why attributes and not `as_dict()`: the azure-mgmt packages are not all on the
-# same code generator, and `as_dict()` is where that shows.
-#   - azure-mgmt-storage 25.x / azure-mgmt-network 31.x use the newer
-#     `_model_base` runtime, whose `as_dict()` emits the WIRE shape — camelCase
-#     keys nested under "properties" (NSG rules nested twice).
-#   - azure-mgmt-security 7.0.0 is still on the msrest generator, whose
-#     `as_dict()` emits FLAT snake_case.
-# Attribute access is snake_case and flat on BOTH: the msrest generator flattens
-# `properties.*` onto the model, and the `_model_base` generator emits a
-# `__getattr__` that forwards the same flattened names to `self.properties`
-# (returning None when `properties` is absent). So `account.encryption.key_source`
-# reads identically on either generator — which is why Prowler reads models this
-# way — and no camelCase/nesting tolerance is needed anywhere.
 
 def model_attr(model: Any, name: str) -> Any:
     """Read ONE attribute off an azure-mgmt model, normalized to a plain value.
 
-    Deliberately takes a single name: there are no alternate spellings to try and
-    no `properties` bag to fall back into. Two normalizations happen here because
-    this is the boundary where the SDK's own types stop:
+    Attributes, never `as_dict()`: on the `_model_base` SDKs (azure-mgmt-storage 25.x,
+    azure-mgmt-network 31.x) `as_dict()` emits the camelCase WIRE shape nested under
+    "properties", while msrest ones (azure-mgmt-security 7.0.0) emit flat snake_case.
+    Attribute access is flat snake_case on both — which is why Prowler reads models so.
 
-    - **Absent reads as None.** Returns None when `model` is None or has no such
-      attribute, so a nested model the API omitted (`encryption`, `key_policy`,
-      `protocol_settings`) doesn't raise partway down a projection.
-    - **Enum members unwrap to their wire string.** azure-mgmt types many fields
-      as `str` enums (`KeySource`, `SecurityRuleProtocol`, `MinimumTlsVersion`).
-      They compare equal to their value, but `str()` renders them as
-      "KeySource.MICROSOFT_KEYVAULT", not "Microsoft.Keyvault" — which would
-      silently break a downstream `str(...).lower()` comparison and put an enum
-      repr in the evidence. `as_dict()` used to do this unwrapping for us.
+    Absent reads as None, so a nested model the API omitted (`encryption`,
+    `key_policy`, `protocol_settings`) doesn't raise partway down a projection. Enums
+    unwrap to their wire string: azure-mgmt types many fields as `str` enums whose
+    `str()` renders "KeySource.MICROSOFT_KEYVAULT", not "Microsoft.Keyvault", which
+    would break a downstream `.lower()` comparison and put a repr in the evidence.
     """
     value = getattr(model, name, None)
     return value.value if isinstance(value, Enum) else value
@@ -162,10 +101,9 @@ def model_attr(model: Any, name: str) -> Any:
 class Collector:
     """Tracks per-call API failures so a partial failure surfaces as exit 1.
 
-    One subscription of five being inaccessible must not exit 0 with quietly-empty
-    data (the worst failure mode for a compliance tool). Call `guard()` around each
-    API interaction; failures accumulate and drive the exit code, a
-    `partial_failure` flag in the payload, and the `$FETCHER_STATUS_FILE` reason.
+    One inaccessible subscription of five must not exit 0 with quietly-empty data.
+    Failures drive the exit code, the payload's `partial_failure` flag, and the
+    `$FETCHER_STATUS_FILE` reason.
     """
 
     def __init__(self, logger: logging.Logger):
@@ -195,10 +133,9 @@ class Collector:
 # Failure classification for $FETCHER_STATUS_FILE's `code`
 # --------------------------------------------------------------------------- #
 
-# Matched against the recorded exception type name, then its message. Ordered
-# most-specific-first; the first matching category wins across ALL failures so a
-# run whose real problem is "the credential never resolved" doesn't get reported
-# as a generic partial_failure.
+# Matched on the recorded exception type name, then its message. Ordered
+# most-specific-first: the first match wins across ALL failures, so a run whose real
+# problem is an unresolved credential isn't reported as a generic partial_failure.
 _CODE_RULES = (
     (
         "auth_failed",
@@ -242,12 +179,7 @@ _CODE_RULES = (
 
 
 def classify_failure_code(failures: List[Dict[str, str]]) -> str:
-    """Map recorded failures onto the contract's `code` enum.
-
-    Exit codes stay binary per the contract, so this is the only place the
-    category is decided. Falls back to `partial_failure` — the honest answer when
-    some calls worked and something else didn't in a way we can't name.
-    """
+    """Map recorded failures onto the contract's `code` enum, else partial_failure."""
     if not failures:
         return "partial_failure"
     types = {(f.get("type") or "").lower() for f in failures}
@@ -261,12 +193,10 @@ def classify_failure_code(failures: List[Dict[str, str]]) -> str:
 
 
 def failure_reason(failures: List[Dict[str, str]], limit: int = 300) -> str:
-    """One-line human-readable reason for `write_status`, from recorded failures.
+    """One-line reason for `write_status`, from the first recorded failure.
 
-    Names the first failure's operation and exception, which is what an operator
-    needs to know where to look; the full set stays in the payload's
-    `metadata.api_failures`. Truncation is marked so a clipped Azure error (they run
-    to many lines) can't be mistaken for the whole message.
+    The full set stays in the payload's `metadata.api_failures`. Truncation is marked
+    so a clipped Azure error (they run to many lines) can't be read as the whole one.
     """
     if not failures:
         return "collection failed"
@@ -283,14 +213,9 @@ def failure_reason(failures: List[Dict[str, str]], limit: int = 300) -> str:
 def write_status(error: str, code: Optional[str] = None) -> None:
     """Write the failure reason to `$FETCHER_STATUS_FILE`, if the runner set one.
 
-    The runner reads this file to fill `metadata.error` on a failed invocation.
-    Without it the error falls back to the tail of stderr, which reports the last
-    log line (often a harmless INFO) as the cause. Silently a no-op when the env
-    var is unset, so a direct `python fetcher.py` invocation is unaffected.
-
-    `error` is collapsed to one line. `code` must be one of STATUS_CODES; an
-    unrecognized value is dropped rather than written, keeping the channel
-    well-formed for the runner.
+    The runner reads this file to fill `metadata.error`; without it the error falls
+    back to the tail of stderr, which reports the last log line (often a harmless
+    INFO) as the cause. A no-op when the env var is unset.
     """
     path = os.environ.get("FETCHER_STATUS_FILE")
     if not path:
@@ -307,8 +232,7 @@ def write_status(error: str, code: Optional[str] = None) -> None:
         with open(path, "w") as f:
             json.dump(status, f, sort_keys=True)
     except OSError as exc:
-        # Never let the status channel be the thing that fails the run — the
-        # non-zero exit code is still the authoritative signal.
+        # The status channel must never fail the run; the exit code is authoritative.
         _STATUS_LOGGER.warning("could not write FETCHER_STATUS_FILE %s: %s", path, exc)
 
 
@@ -326,10 +250,8 @@ def credential():
 def resolve_subscription(collector: Collector) -> Dict[str, Optional[str]]:
     """Resolve the subscription to collect from.
 
-    Explicit AZURE_SUBSCRIPTION_ID (set by the runner from a target) wins; else
-    discover the first *enabled* subscription the ambient credential can see
-    ("collect where deployed"). Returns the subscription id and where it came
-    from, for the metadata block.
+    Explicit AZURE_SUBSCRIPTION_ID (set by the runner from a target) wins; else the
+    first *enabled* subscription the ambient credential can see.
     """
     explicit = os.environ.get("AZURE_SUBSCRIPTION_ID")
     if explicit:
@@ -340,8 +262,8 @@ def resolve_subscription(collector: Collector) -> Dict[str, Optional[str]]:
 
         client = SubscriptionClient(credential())
         for sub in client.subscriptions.list():
-            # SubscriptionState serializes as "Enabled"; the enum's repr is
-            # "SubscriptionState.ENABLED". Both contain "enabled"; "Disabled",
+            # SubscriptionState serializes as "Enabled", its repr as
+            # "SubscriptionState.ENABLED"; both contain "enabled", while "Disabled",
             # "Warned", "PastDue" and "Deleted" do not.
             if "enabled" in str(getattr(sub, "state", "")).lower():
                 return getattr(sub, "subscription_id", None)
@@ -368,31 +290,22 @@ def provider_registration_status(
 ) -> str:
     """Registration state of an ARM resource provider, as evidence.
 
-    Why this exists: for most namespaces Azure returns an EMPTY LIST rather than
-    an error when the provider is not registered. Confirmed against a live
-    subscription — with Microsoft.Storage unregistered, `storage_accounts.list()`
-    yields zero accounts and raises nothing. So without this field
-    `total_storage_accounts: 0` reads identically whether the service is not in
-    use or in use and genuinely empty, and a reader cannot tell a real 0% posture
-    from an inapplicable one.
+    For most namespaces Azure returns an EMPTY LIST rather than an error when the
+    provider is not registered — confirmed live: with Microsoft.Storage unregistered,
+    `storage_accounts.list()` yields zero accounts and raises nothing. So without this
+    field `total_storage_accounts: 0` reads identically whether the service is not in
+    use or in use and genuinely empty. Microsoft.Security *does* raise "Subscription
+    Not Registered", so Defender needs no such call and reuses the field name.
 
-    Defender gets the same answer from an exception (Microsoft.Security *does*
-    raise "Subscription Not Registered"), so it does not need this call; the field
-    name is shared deliberately so both read the same way in evidence.
-
-    A not-registered provider is valid evidence, NOT a collection failure — the
-    same convention as AWS's SubscriptionRequiredException handling. Returns
-    "unknown" if the lookup itself fails, which IS recorded as a failure by
-    `guard`, since then we genuinely do not know.
+    A not-registered provider is valid evidence, NOT a collection failure — the same
+    convention as AWS's SubscriptionRequiredException handling. "unknown" means the
+    lookup itself failed, which `guard` does record.
     """
 
     def _get() -> Optional[str]:
-        # azure-mgmt-resource moved this class. Through 24.x (what Prowler pins,
-        # and what every tutorial shows) it is re-exported at the package root;
-        # by 26.0.0 that re-export is GONE and it lives under `.resources`.
-        # Verified live: the root import raises
-        # "cannot import name 'ResourceManagementClient' ... (unknown location)"
-        # on 26.0.0. Try the new home first, fall back to the old one.
+        # azure-mgmt-resource moved this class: re-exported at the package root
+        # through 24.x (what Prowler pins), GONE by 26.0.0 where it lives under
+        # `.resources` (verified live). New home first, fall back to the old one.
         try:
             from azure.mgmt.resource.resources import ResourceManagementClient  # lazy
         except ImportError:  # pragma: no cover - depends on installed SDK version
@@ -419,21 +332,14 @@ def build_payload(
     results: Dict[str, Any],
     summary: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Assemble the raw evidence dict the runner will wrap in an envelope.
-
-    `environment` comes from AZURE_ENVIRONMENT (manifest target/config). The
-    envelope adds fetcher_name/version/status/target; this metadata block adds the
-    Azure-specific context the AWS fetchers keep too (their profile/region/
-    account_id).
-    """
+    """Assemble the raw evidence dict the runner will wrap in an envelope."""
     return {
         "metadata": {
             "subscription_id": subscription_id,
             "subscription_source": subscription_source,
             "environment": os.environ.get("AZURE_ENVIRONMENT"),
             "datetime": current_timestamp(),
-            # Explicit so a validator can assert on it, and so a partially-failed
-            # run is legible from the payload alone, not only the envelope status.
+            # Explicit so a validator can assert on it without the envelope.
             "partial_failure": not collector.ok,
             "api_failures": collector.failures,
         },

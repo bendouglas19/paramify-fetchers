@@ -1,36 +1,13 @@
 #!/usr/bin/env python3
-"""
-KSI-MLA-02 / KSI-MLA-05 / KSI-CNA-01 / KSI-INR-01: Azure activity log alerts
+"""Azure activity log alert rules for one subscription, with a derived map of which
+control-plane operations they cover — one evidence set in place of eleven checks.
 
-For one subscription, the full inventory of activity log alert rules — each rule's
-enabled state, scopes, description, action groups and the decoded conditions it
-fires on — PLUS a derived map of which security-relevant control-plane operations
-those rules actually cover.
-
-**One evidence set, not fifteen fetchers.** Prowler ships eleven separate checks
-that each walk the same `activity_log_alerts.list_by_subscription_id()` response
-looking for one `operationName` condition (create/update and delete of network
-security groups, public IP addresses, policy assignments, SQL server firewall
-rules and security solutions, plus a Service Health alert). Collecting the
-inventory once and deriving the coverage map answers all of them from a single
-payload, and keeps the "which operations should be alerted on" list visible in the
-evidence instead of scattered across eleven fetcher directories.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/monitor/monitor_service.py (Apache-2.0)
-`get_alert_rules`, and the coverage predicate from
-prowler/providers/azure/services/monitor/lib/monitor_alerts.py `check_alert_rule`
-(alert enabled AND some `condition.all_of` entry with field == "operationName" and
-equals == the operation).
-
-Two deliberate extensions of Prowler's decoder, both to avoid under-reporting:
-`anyOf` / `containsAny` condition forms are decoded too (Prowler only reads
-`equals`, so a portal-created alert listing several operations under one `anyOf`
-would read as covering nothing), and operation names are compared
+Ported from prowler/providers/azure/services/monitor/monitor_service.py
+`get_alert_rules` and lib/monitor_alerts.py `check_alert_rule` (Apache-2.0). Two
+deviations, both against under-reporting: the `anyOf` / `containsAny` condition forms
+are decoded too (Prowler reads only `equals`, so an alert listing several operations
+under one `anyOf` would read as covering nothing), and operation names are compared
 case-insensitively.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
 """
 
 import logging
@@ -68,10 +45,9 @@ CATEGORY_FIELD = "category"
 INCIDENT_TYPE_FIELD = "properties.incidenttype"
 
 # The control-plane operations Prowler has a dedicated check for, keyed by what the
-# alert is FOR rather than by ARM's operation string, so the coverage map reads as
-# evidence. Several keys map to more than one operation because Azure kept a
-# classic namespace alongside the ARM one; an alert on either counts (which is how
-# monitor_alert_delete_nsg reads it).
+# alert is FOR so the coverage map reads as evidence. Some keys map to two operations
+# because Azure kept a classic namespace alongside the ARM one; either counts, as
+# monitor_alert_delete_nsg reads it.
 MONITORED_OPERATIONS = {
     # monitor_alert_create_update_nsg
     "create_update_network_security_group": ("Microsoft.Network/networkSecurityGroups/write",),
@@ -81,9 +57,8 @@ MONITORED_OPERATIONS = {
         "Microsoft.ClassicNetwork/networkSecurityGroups/delete",
     ),
     # CIS Azure "Create or Update Network Security Group Rule" / its delete twin.
-    # Prowler master folded the rule-level checks into the NSG ones; the rule
-    # operations are kept here because an NSG-scoped alert does NOT fire on a rule
-    # edit, so reporting only the group level would overstate coverage.
+    # Prowler master folded these into the NSG checks; kept separate because an
+    # NSG-scoped alert does NOT fire on a rule edit, so folding overstates coverage.
     "create_update_network_security_group_rule": (
         "Microsoft.Network/networkSecurityGroups/securityRules/write",
     ),
@@ -110,14 +85,10 @@ SERVICE_HEALTH_CATEGORY = "servicehealth"
 SERVICE_HEALTH_INCIDENT_TYPE = "incident"
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: the only code that touches an azure-mgmt model ---
 
 def project_leaf_condition(condition) -> dict:
-    """Read one `AlertRuleLeafCondition` into a flat dict.
-
-    A leaf inside an `any_of` group carries the same three fields as a top-level
-    condition minus the nesting, `contains_any` included.
-    """
+    """Read one `AlertRuleLeafCondition` (an `any_of` member) into a flat dict."""
     return {
         "field": model_attr(condition, "field"),
         "equals": model_attr(condition, "equals"),
@@ -128,10 +99,9 @@ def project_leaf_condition(condition) -> dict:
 def project_condition(condition) -> dict:
     """Read one `AlertRuleAnyOfOrLeafCondition` into a flat dict.
 
-    Three mutually exclusive forms: a leaf (`field` + `equals`), a leaf matching
-    several values (`field` + `contains_any`), or an `any_of` group of leaves.
-    Prowler's projection keeps only the first; all three are carried here so the
-    coverage decoder cannot miss an alert that used the others.
+    Three mutually exclusive forms: `field` + `equals`, `field` + `contains_any`, or an
+    `any_of` group. Prowler keeps only the first; all three are carried so the coverage
+    decoder cannot miss an alert that used the others.
     """
     return {
         "field": model_attr(condition, "field"),
@@ -146,10 +116,8 @@ def project_condition(condition) -> dict:
 def project_activity_log_alert(alert) -> dict:
     """Read an `ActivityLogAlertResource` model's attributes into a flat dict.
 
-    azure-mgmt-monitor's activity log alert API version is msrest-generated and
-    FLATTENS `properties.*` onto the model (`enabled` maps to `properties.enabled`),
-    so these are already the attribute names — verified against the installed SDK's
-    `_attribute_map`.
+    This API version is msrest-generated and FLATTENS `properties.*` onto the model
+    (`enabled` maps to `properties.enabled`), per the installed SDK's `_attribute_map`.
     """
     condition = model_attr(alert, "condition")
     actions = model_attr(alert, "actions")
@@ -177,11 +145,9 @@ def project_activity_log_alert(alert) -> dict:
 def _condition_values(condition: dict, field: str) -> set[str]:
     """Every value one projected condition matches for `field`, case-folded.
 
-    Decodes all three ARM forms — `equals`, `contains_any` and an `any_of` group of
-    leaves. Case folding is what makes the comparison robust: ARM echoes an
-    operation name back in whatever case it was written in, and Prowler's exact
-    `==` reports a correctly-configured alert as missing when the operator typed
-    "microsoft.network/networksecuritygroups/write".
+    Decodes all three ARM forms. ARM echoes an operation name back in whatever case it
+    was written in, so Prowler's exact `==` reports a correctly-configured alert as
+    missing when the operator typed it lowercase.
     """
     values: set[str] = set()
     for entry in (condition, *(condition.get("any_of") or [])):
@@ -207,8 +173,8 @@ def is_service_health_alert(alert: dict) -> bool:
     """Prowler's monitor_alert_service_health_exists predicate.
 
     Needs BOTH conditions on the same rule: category == ServiceHealth and
-    properties.incidentType == Incident. An alert with only the category fires on
-    maintenance and advisory notices too, which is not what the check asks for.
+    properties.incidentType == Incident. Category alone also fires on maintenance and
+    advisory notices.
     """
     conditions = ((alert.get("condition") or {}).get("all_of")) or []
     categories: set[str] = set()
@@ -225,9 +191,8 @@ def is_service_health_alert(alert: dict) -> bool:
 def alert_record(alert: dict) -> dict:
     """Normalize one projected alert rule into an evidence record.
 
-    `enabled` is coerced: ARM omits it on a rule created disabled, and Prowler
-    treats a falsy value as "this rule covers nothing" — which is the correct
-    reading, since a disabled rule never fires.
+    `enabled` is coerced: ARM omits it on a rule created disabled, and a falsy value
+    means the rule covers nothing — a disabled rule never fires.
     """
     resource_id = alert.get("id")
     enabled = bool(alert.get("enabled") or False)
@@ -242,8 +207,8 @@ def alert_record(alert: dict) -> dict:
         "scopes": alert.get("scopes") or [],
         "condition": {"all_of": (alert.get("condition") or {}).get("all_of") or []},
         "action_groups": [group for group in (alert.get("action_groups") or []) if group],
-        # Decoded so the inventory is readable without re-implementing ARM's
-        # condition grammar downstream. Only an ENABLED rule contributes coverage.
+        # Decoded so downstream need not re-implement ARM's condition grammar. Only
+        # an ENABLED rule contributes coverage.
         "monitored_operations": operations if enabled else [],
         "service_health_alert": enabled and is_service_health_alert(alert),
     }
@@ -284,7 +249,7 @@ def summarize(alerts: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def collect_activity_log_alerts(subscription_id, cred, collector: Collector) -> list[dict]:
     """One activity_log_alerts.list_by_subscription_id() call."""
@@ -298,7 +263,7 @@ def collect_activity_log_alerts(subscription_id, cred, collector: Collector) -> 
         return []
 
     def _list():
-        # ItemPaged: the SDK follows nextLink itself, so pagination is handled.
+        # ItemPaged: the SDK follows nextLink itself.
         return [
             alert_record(project_activity_log_alert(a))
             for a in client.activity_log_alerts.list_by_subscription_id()
@@ -315,9 +280,7 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every request header at INFO; warnings still get through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -331,8 +294,7 @@ def main() -> int:
     alerts: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list call, so a zero-alert result is legible: Azure
-        # returns an empty list rather than an error for an unregistered provider.
+        # ARM returns an empty list, not an error, for an unregistered provider.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.Insights"
         )
@@ -358,8 +320,7 @@ def main() -> int:
         collector=collector,
         results={
             "activity_log_alerts": alerts,
-            # Emitted so the evidence carries the list it is judged against, rather
-            # than the reader having to know which operations were expected.
+            # Emitted so the evidence carries the list it is judged against.
             "monitored_operations": {
                 key: list(operations) for key, operations in MONITORED_OPERATIONS.items()
             },

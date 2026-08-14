@@ -45,23 +45,7 @@ evidence_set:
   reference_id: EVD-AZURE-AKS-CONFIG
   name: Azure Kubernetes Service Cluster Configuration
   instructions: >
-    Script: fetcher.py. Azure SDK calls (azure-mgmt-containerservice
-    ContainerServiceClient): managed_clusters.list() for the whole projection — fqdn
-    and private_fqdn, public_network_access, api_server_access_profile
-    (enable_private_cluster, authorized_ip_ranges, disable_run_command), enable_rbac,
-    aad_profile (managed, enable_azure_rbac), disable_local_accounts,
-    security_profile.workload_identity.enabled, oidc_issuer_profile.enabled,
-    network_profile (network_policy, network_plugin, outbound_type),
-    kubernetes_version and current_kubernetes_version, auto_upgrade_profile
-    (upgrade_channel, node_os_upgrade_channel),
-    security_profile.defender.security_monitoring.enabled and its log analytics
-    workspace, azure_monitor_profile.metrics.enabled, disk_encryption_set_id,
-    node_resource_group, and each agent_pool_profiles entry (name,
-    enable_node_public_ip, mode, count, vm_size, os_type, os_sku, os_disk_type,
-    enable_encryption_at_host, enable_auto_scaling, orchestrator_version,
-    vnet_subnet_id). Preceded by
-    resource.providers.get("Microsoft.ContainerService") so that zero clusters is
-    distinguishable from the provider not being registered. API server access counts
-    as restricted when the cluster is private OR has authorized IP ranges; an absent
-    network_policy means pod-to-pod traffic is unrestricted; an absent or "none"
-    upgrade channel means no automatic upgrades.
+    Script: fetcher.py. Azure SDK calls: azure-mgmt-containerservice
+    ContainerServiceClient.managed_clusters.list(), preceded by azure-mgmt-resource
+    ResourceManagementClient.providers.get("Microsoft.ContainerService"). One evidence
+    file per subscription.

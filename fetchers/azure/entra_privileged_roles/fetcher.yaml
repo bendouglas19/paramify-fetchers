@@ -56,27 +56,6 @@ evidence_set:
   reference_id: EVD-AZURE-ENTRA-PRIV-ROLES
   name: Microsoft Entra ID Privileged Directory Roles
   instructions: >
-    Script: fetcher.py. Microsoft Graph calls (msgraph-sdk GraphServiceClient, built
-    on a GraphRequestAdapter so the HTTP transport and the OAuth scope both point at
-    the tenant's Graph host): GET /directoryRoles for each role's id,
-    roleTemplateId, displayName and description; then GET
-    /directoryRoles/{id}/members per role for the principals holding it (Graph does
-    not return members on the collection response and does not support
-    $expand=members on /directoryRoles, so the per-role call is required); and GET
-    /organization to record the tenant id and default verified domain in the
-    evidence metadata. Both collections are paged manually by following
-    @odata.nextLink. /directoryRoles returns only ACTIVATED roles — a role is
-    instantiated the first time it is assigned — so a built-in role absent from the
-    response has no members, and an empty response is genuine evidence of no
-    directory-role assignments rather than a truncated read. A role is flagged
-    privileged by its display name against the documented set of tenant-wide
-    administrative roles (the same way Prowler keys Global Administrator), and each
-    record carries its roleTemplateId verbatim so the GUID can be pinned
-    independently. Each member's principal kind comes from its @odata.type, so a
-    group or service principal holding a privileged role is distinguishable from a
-    user. Graph app permissions needed: Directory.Read.All (or
-    RoleManagement.Read.Directory), plus Organization.Read.All for the tenant
-    identity — a denied organization read falls back to AZURE_TENANT_ID and is not
-    treated as a collection failure. This evidence is tenant-wide; it is NOT scoped
-    by subscription and there is no ARM resource provider to report a registration
-    status for.
+    Script: fetcher.py. Microsoft Graph calls: GET /directoryRoles; GET
+    /directoryRoles/{id}/members per role; GET /organization. Both collections paged
+    via @odata.nextLink.

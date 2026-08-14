@@ -45,23 +45,9 @@ evidence_set:
   reference_id: EVD-AZURE-VM-HARDENING
   name: Azure Virtual Machine Hardening
   instructions: >
-    Script: fetcher.py. Azure SDK calls (azure-mgmt-compute ComputeManagementClient):
-    virtual_machines.list_all() for each VM's hardware_profile.vm_size,
-    security_profile (security_type, uefi_settings.secure_boot_enabled,
-    uefi_settings.v_tpm_enabled, encryption_at_host), storage_profile
-    (os_disk.name / os_type / managed_disk.id, each data_disks entry's
-    managed_disk.id or vhd.uri, image_reference), os_profile.linux_configuration
-    .disable_password_authentication and virtual_machine_scale_set.id; then
-    virtual_machine_extensions.list(resource_group, vm_name) per VM for the installed
-    guest agents (read off the result's `value`; the operation is not paginated).
-    virtual_machine_scale_sets.list_all() for each scale set's sku, orchestration
-    mode, upgrade policy and VM profile, walking virtual_machine_profile
-    .network_profile.network_interface_configurations[].ip_configurations[]
-    .load_balancer_backend_address_pools[] for its load balancer association; then
-    virtual_machine_scale_set_vms.list(resource_group, scale_set_name) per scale set
-    for its instance ids. Preceded by resource.providers.get("Microsoft.Compute") so
-    that zero VMs is distinguishable from the provider not being registered. Trusted
-    Launch is reported as enabled only when security_type is "TrustedLaunch" AND both
-    UEFI settings are on. Managed disks are reported as in use only when the OS disk
-    and every data disk have a managed_disk. SSH-key enforcement is null (not false)
-    on a Windows VM, where the setting does not exist.
+    Script: fetcher.py. Azure SDK calls: azure-mgmt-compute
+    ComputeManagementClient.virtual_machines.list_all(),
+    virtual_machine_extensions.list(resource_group, vm_name) per VM,
+    virtual_machine_scale_sets.list_all(), and
+    virtual_machine_scale_set_vms.list(resource_group, scale_set_name) per scale set;
+    preceded by ResourceManagementClient.providers.get("Microsoft.Compute").

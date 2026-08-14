@@ -2,31 +2,16 @@
 """
 Azure Database for MySQL flexible server security configuration
 
-For every MySQL flexible server in one subscription, reports the engine version, the
-full server-parameter set, and the security posture derived from it:
-`require_secure_transport`, the accepted `tls_version` list, whether the audit log is
-on and whether it records connection events, plus geo-redundant backup and the
-high-availability mode from the server model itself.
+Per flexible server: the engine version, the full server-parameter set, and the
+posture read out of it (`require_secure_transport`, the accepted `tls_version` list,
+audit logging), plus geo-redundant backup and the high-availability mode.
 
-**Every server parameter is listed, not read by name.** Prowler calls
-`configurations.list_by_server()` here and reads the parameters it needs out of the
-result, which is the OPPOSITE of what it does for PostgreSQL
-(fetchers/azure/postgresql_configuration issues one `configurations.get()` per
-parameter). Both behaviors are kept deliberately. The difference is not arbitrary:
-MySQL's audit configuration is spread across several parameters whose relevance
-depends on each other's values (`audit_log_enabled` gates `audit_log_events`, which
-is a comma-separated event-class list), and a reviewer checking "was auditing
-configured correctly" needs the whole set rather than the six fields someone decided
-mattered. Only `name: value` is kept per parameter — the SDK also returns each
-parameter's `description` and `allowed_values`, which are static engine documentation
-identical on every server, not tenant state, and would multiply the payload size.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/mysql/mysql_service.py (Apache-2.0), which reads the
-same azure-mgmt-rdbms `mysql_flexibleservers` SDK.
-
-Single-subscription per invocation; fanout across subscriptions happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+Ported from prowler/providers/azure/services/mysql/mysql_service.py (Apache-2.0).
+Every parameter is listed rather than read by name — matching Prowler, and the
+OPPOSITE of the PostgreSQL sibling — because MySQL's audit configuration is spread
+across parameters that gate each other (`audit_log_enabled` gates the
+`audit_log_events` class list), so the whole set is the evidence. Only `name: value`
+is kept; `description` and `allowed_values` are static engine documentation.
 """
 
 import logging
@@ -58,15 +43,14 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_mysql_configuration")
 
-# The parameters read out of the full configuration set. Listed here for the record;
-# the evidence keeps every parameter, so adding a field is a transform change only.
+# The posture parameters. The evidence keeps every parameter, so adding one here is a
+# transform change only.
 PARAMETER_REQUIRE_SECURE_TRANSPORT = "require_secure_transport"
 PARAMETER_TLS_VERSION = "tls_version"
 PARAMETER_AUDIT_LOG_ENABLED = "audit_log_enabled"
 PARAMETER_AUDIT_LOG_EVENTS = "audit_log_events"
 
-# MySQL reports boolean parameters as "ON" / "OFF"; Prowler lowercases and compares
-# to "on".
+# MySQL reports booleans as "ON" / "OFF"; Prowler lowercases before comparing.
 PARAMETER_ON = "on"
 
 # tls_version is a COMMA-SEPARATED list of every accepted version, not a floor — so
@@ -74,8 +58,7 @@ PARAMETER_ON = "on"
 # is still accepted. Prowler fails the server if either deprecated version appears.
 DEPRECATED_TLS_VERSIONS = ("TLSv1", "TLSv1.0", "TLSv1.1")
 
-# audit_log_events is a comma-separated list of event classes. "CONNECTION" is the
-# class that records who connected, which is what an access-audit control needs.
+# audit_log_events is a comma-separated class list; "CONNECTION" records who connected.
 AUDIT_EVENT_CONNECTION = "connection"
 
 # HighAvailability.mode is "Disabled", "ZoneRedundant" or "SameZone".
@@ -85,15 +68,11 @@ HA_DISABLED = "disabled"
 GEO_REDUNDANT_ENABLED = "enabled"
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: azure-mgmt models in, flat dicts out ---
 
 def project_mysql_server(server) -> dict:
-    """Read a `Server` model's attributes into a flat snake_case dict.
-
-    azure-mgmt-rdbms 10.1.1 is on the msrest generator, whose models flatten
-    `properties.*` onto the model itself, so these are the attribute names directly.
-    `backup`, `high_availability` and `network` are nested models that are absent on
-    a server that never configured them, hence the None-tolerant hops.
+    """`backup`, `high_availability` and `network` are nested models, absent on a server
+    that never configured them, hence the None-tolerant hops.
     """
     backup = model_attr(server, "backup")
     high_availability = model_attr(server, "high_availability")
@@ -106,10 +85,8 @@ def project_mysql_server(server) -> dict:
         "version": model_attr(server, "version"),
         "state": model_attr(server, "state"),
         "fully_qualified_domain_name": model_attr(server, "fully_qualified_domain_name"),
-        # --- network ---
         "public_network_access": model_attr(network, "public_network_access"),
         "delegated_subnet_resource_id": model_attr(network, "delegated_subnet_resource_id"),
-        # --- durability ---
         "backup_retention_days": model_attr(backup, "backup_retention_days"),
         "geo_redundant_backup": model_attr(backup, "geo_redundant_backup"),
         "high_availability_mode": model_attr(high_availability, "mode"),
@@ -118,11 +95,8 @@ def project_mysql_server(server) -> dict:
 
 
 def project_configuration(configuration) -> dict:
-    """Read one `Configuration` (server parameter) into a flat dict.
-
-    `description` and `allowed_values` are deliberately NOT read: they are static
-    engine documentation, identical across every server, and would dominate a payload
-    that carries a few hundred parameters per server.
+    """`description` and `allowed_values` are deliberately NOT read — static engine
+    documentation that would dominate a few-hundred-parameter payload per server.
     """
     return {
         "id": model_attr(configuration, "id"),
@@ -135,11 +109,8 @@ def project_configuration(configuration) -> dict:
 # --- pure transforms (flat snake_case dicts in, evidence records out) ---
 
 def configuration_map(configurations: list[dict]) -> dict[str, str | None]:
-    """Collapse the projected parameter list into a {name: value} map.
-
-    A map, not a list, because that is how every reader uses it (look up one
-    parameter by name) and because it makes the evidence file's diff between runs
-    show exactly which parameter changed.
+    """A map, not a list, so the evidence diff between runs shows which parameter
+    changed.
     """
     return {
         c["name"]: c.get("value")
@@ -155,21 +126,18 @@ def _parameter_is_on(parameters: dict, name: str) -> bool:
 
 
 def _tls_versions(value) -> list[str]:
-    """Split the comma-separated tls_version list into its accepted versions."""
     if not value:
         return []
     return [part.strip() for part in str(value).split(",") if part.strip()]
 
 
 def _audit_log_events(value) -> list[str]:
-    """Split the comma-separated audit_log_events list into its event classes."""
     if not value:
         return []
     return [part.strip() for part in str(value).split(",") if part.strip()]
 
 
 def server_record(server: dict, configurations: list[dict]) -> dict:
-    """Assemble one flexible server's configuration evidence."""
     resource_id = server.get("id")
     parameters = configuration_map(configurations)
     tls_versions = _tls_versions(parameters.get(PARAMETER_TLS_VERSION))
@@ -192,8 +160,8 @@ def server_record(server: dict, configurations: list[dict]) -> dict:
         ),
         "tls_version": parameters.get(PARAMETER_TLS_VERSION),
         "tls_versions_accepted": tls_versions,
-        # A deprecated version still being ACCEPTED is the finding — the parameter is
-        # a list of allowed versions, not a minimum.
+        # A deprecated version still being ACCEPTED is the finding: the parameter is a
+        # list of allowed versions, not a minimum.
         "tls_version_compliant": bool(
             tls_versions and not any(v in DEPRECATED_TLS_VERSIONS for v in tls_versions)
         ),
@@ -222,7 +190,7 @@ def server_record(server: dict, configurations: list[dict]) -> dict:
         "high_availability_enabled": bool(
             ha_mode is not None and str(ha_mode).lower() != HA_DISABLED
         ),
-        # --- the full parameter set (see the module docstring) ---
+        # --- the full parameter set (see the module docstring for why) ---
         "configurations": parameters,
         "total_configuration_parameters": len(parameters),
     }
@@ -254,7 +222,7 @@ def summarize(servers: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def collect_mysql_servers(subscription_id, cred, collector: Collector) -> list[dict]:
     """One servers.list(), then one configurations.list_by_server() per server."""
@@ -264,8 +232,7 @@ def collect_mysql_servers(subscription_id, cred, collector: Collector) -> list[d
 
         return MySQLManagementClient(credential=cred, subscription_id=subscription_id)
 
-    # Guarded (not a bare import at function top level) so a missing azure-mgmt-rdbms
-    # is recorded as internal_error and the evidence file is still written.
+    # Guarded: a missing azure-mgmt-rdbms becomes internal_error, evidence still written.
     client = collector.guard("mysql.MySQLManagementClient (init)", _client)
     if client is None:
         return []
@@ -304,8 +271,7 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
+    # The azure-* SDKs log every request/response header at INFO — far too noisy here.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -319,10 +285,7 @@ def main() -> int:
     servers: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list call: Azure returns an empty list rather than an
-        # error for an unregistered provider, so without this "0 servers" reads
-        # identically whether MySQL is unused or Microsoft.DBforMySQL was never
-        # registered.
+        # Asked first: an unregistered provider returns an empty list, not an error.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.DBforMySQL"
         )

@@ -2,30 +2,15 @@
 """
 Azure SQL server network exposure, authentication and audit posture
 
-For every Azure SQL logical server in one subscription, reports the posture around
-the data rather than the encryption of it (that is
-fetchers/azure/sql_encryption_status): public network access and minimum TLS
-version, the Entra ID (Azure AD) administrator, every firewall rule with the two
-exposures that matter flagged, the server blob auditing policy and its retention,
-the security alert policy (Microsoft Defender for SQL), and the vulnerability
-assessment configuration with its recurring-scan notification settings.
+Per logical server: public network access and minimum TLS version, the Entra ID
+administrator, firewall rules, blob auditing and its retention, the security alert
+policy (Defender for SQL), and the vulnerability assessment.
 
-Two firewall exposures are flagged separately because they are different findings:
-
-- `allows_all_azure_services` — the 0.0.0.0-0.0.0.0 pseudo-rule ("Allow Azure
-  services and resources to access this server"). It is not an internet-wide hole,
-  but it admits every Azure tenant's compute, so CIS treats it as a finding.
-- `allows_entire_internet` — a rule spanning 0.0.0.0-255.255.255.255, which is
-  every routable address. This is Prowler's `sqlserver_unrestricted_inbound_access`.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/sqlserver/sqlserver_service.py (Apache-2.0), which
-reads the same azure-mgmt-sql SDK; the pass/fail thresholds below (TLS 1.2+,
-auditing retention > 90 days, `administrator_type == "ActiveDirectory"`) are its
-checks' own.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Ported from prowler/providers/azure/services/sqlserver/sqlserver_service.py
+(Apache-2.0); the thresholds below (TLS 1.2+, auditing retention > 90 days,
+`administrator_type == "ActiveDirectory"`) are its checks' own. The two firewall
+exposures are flagged separately, being different findings: 0.0.0.0-0.0.0.0 admits
+every Azure tenant's compute, 0.0.0.0-255.255.255.255 every routable address.
 """
 
 import logging
@@ -57,17 +42,16 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_sql_server_configuration")
 
-# ServerExternalAdministrator.administrator_type. "ActiveDirectory" is the only
-# member of the SDK's AdministratorType enum, and its presence is what proves an
-# Entra ID admin is configured (Prowler's sqlserver_azuread_administrator_enabled).
+# ServerExternalAdministrator.administrator_type. "ActiveDirectory" is the only member
+# of the SDK's AdministratorType enum, so its presence is what proves an Entra ID admin
+# is configured (Prowler's sqlserver_azuread_administrator_enabled).
 ADMINISTRATOR_TYPE_ENTRA = "activedirectory"
 
 # minimal_tls_version values that are not deprecated. Azure spells these as bare
 # version numbers ("1.2"), unlike Storage's "TLS1_2".
 RECOMMENDED_TLS_VERSIONS = ("1.2", "1.3")
 
-# The two firewall exposures, as exact address pairs. Azure represents both as
-# ordinary rules, so they are only distinguishable by their addresses.
+# Azure represents both exposures as ordinary rules, distinguishable only by address.
 AZURE_SERVICES_RULE = ("0.0.0.0", "0.0.0.0")
 ENTIRE_INTERNET_RULE = ("0.0.0.0", "255.255.255.255")
 
@@ -75,24 +59,20 @@ ENTIRE_INTERNET_RULE = ("0.0.0.0", "255.255.255.255")
 # "Enabled" / "Disabled".
 STATE_ENABLED = "enabled"
 
-# CIS / Prowler's sqlserver_auditing_retention_90_days: retention must EXCEED 90
-# days, so exactly 90 fails. Retention 0 means "keep forever" in Azure's model, and
-# is handled explicitly below rather than falling through as "less than 91".
+# CIS / Prowler's sqlserver_auditing_retention_90_days: retention must EXCEED 90 days,
+# so exactly 90 fails — the compare below is `>`, not `>=`. Retention 0 means "keep
+# forever" in Azure's model and is handled separately, not as "less than 91".
 AUDIT_RETENTION_MINIMUM_DAYS = 90
 AUDIT_RETENTION_UNLIMITED = 0
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: azure-mgmt models in, flat dicts out ---
 
 def project_sql_server(server) -> dict:
     """Read a `Server` model's attributes into a flat snake_case dict.
 
-    azure-mgmt-sql 4.0.0 is on the `_model_base` generator, which keeps a nested
-    `properties` model but forwards the flattened snake_case names to it, so
-    `server.public_network_access` resolves to `properties.publicNetworkAccess`
-    (verified against 4.0.0). `administrators` comes back as a TYPED
-    `ServerExternalAdministrator`, not a plain dict, so attribute access works one
-    level down as well — which is what makes `model_attr` the right primitive here.
+    `administrators` comes back as a TYPED `ServerExternalAdministrator`, not a
+    plain dict, so `model_attr` works one level down as well.
     """
     administrators = model_attr(server, "administrators")
     return {
@@ -103,13 +83,11 @@ def project_sql_server(server) -> dict:
         "version": model_attr(server, "version"),
         "state": model_attr(server, "state"),
         "fully_qualified_domain_name": model_attr(server, "fully_qualified_domain_name"),
-        # --- network exposure ---
         "public_network_access": model_attr(server, "public_network_access"),
         "minimal_tls_version": model_attr(server, "minimal_tls_version"),
         "restrict_outbound_network_access": model_attr(
             server, "restrict_outbound_network_access"
         ),
-        # --- authentication ---
         "administrators": {
             "sid": model_attr(administrators, "sid"),
             "login": model_attr(administrators, "login"),
@@ -124,7 +102,6 @@ def project_sql_server(server) -> dict:
 
 
 def project_firewall_rule(rule) -> dict:
-    """Read a `FirewallRule` model into a flat dict."""
     return {
         "id": model_attr(rule, "id"),
         "name": model_attr(rule, "name"),
@@ -134,7 +111,6 @@ def project_firewall_rule(rule) -> dict:
 
 
 def project_auditing_policy(policy) -> dict:
-    """Read a `ServerBlobAuditingPolicy` model into a flat dict."""
     return {
         "id": model_attr(policy, "id"),
         "name": model_attr(policy, "name"),
@@ -148,7 +124,7 @@ def project_auditing_policy(policy) -> dict:
 
 
 def project_security_alert_policy(policy) -> dict:
-    """Read a `ServerSecurityAlertPolicy` model into a flat dict (Defender for SQL)."""
+    """Read a `ServerSecurityAlertPolicy` — Microsoft Defender for SQL."""
     return {
         "id": model_attr(policy, "id"),
         "name": model_attr(policy, "name"),
@@ -161,11 +137,7 @@ def project_security_alert_policy(policy) -> dict:
 
 
 def project_vulnerability_assessment(assessment) -> dict:
-    """Read a `ServerVulnerabilityAssessment` model into a flat dict.
-
-    `recurring_scans` is a typed `VulnerabilityAssessmentRecurringScansProperties`
-    and is frequently absent, hence the None-tolerant hop.
-    """
+    """`recurring_scans` is a typed model and often absent, hence the None-tolerant hop."""
     recurring_scans = model_attr(assessment, "recurring_scans")
     return {
         "id": model_attr(assessment, "id"),
@@ -185,7 +157,6 @@ def project_vulnerability_assessment(assessment) -> dict:
 # --- pure transforms (flat snake_case dicts in, evidence records out) ---
 
 def firewall_rule_record(rule: dict) -> dict:
-    """Normalize one projected firewall rule, flagging the two exposures."""
     addresses = (rule.get("start_ip_address"), rule.get("end_ip_address"))
     return {
         "id": rule.get("id"),
@@ -198,11 +169,9 @@ def firewall_rule_record(rule: dict) -> dict:
 
 
 def auditing_policy_record(policy: dict) -> dict:
-    """Normalize one projected auditing policy.
-
-    `retention_days: 0` is Azure's "retain indefinitely", not "retain nothing", so
-    it satisfies the >90-day requirement — reading it as 0 < 91 would report the
-    strongest possible retention as the weakest.
+    """`retention_days: 0` is Azure's "retain indefinitely", not "retain nothing", so it
+    satisfies the >90-day rule; reading it as 0 < 91 would report the strongest possible
+    retention as the weakest.
     """
     state = policy.get("state")
     retention = policy.get("retention_days")
@@ -243,11 +212,8 @@ def security_alert_policy_record(policy: dict | None) -> dict | None:
 
 
 def vulnerability_assessment_record(assessment: dict | None) -> dict | None:
-    """Normalize the projected vulnerability assessment.
-
-    Prowler reads VA as enabled from `storage_container_path` being set: the scan
-    results have nowhere to go without it, so a policy with no container path is not
-    actually assessing anything.
+    """Prowler reads VA as enabled from `storage_container_path` being set: without it
+    the scan results have nowhere to go, so nothing is actually being assessed.
     """
     if not assessment:
         return None
@@ -260,8 +226,8 @@ def vulnerability_assessment_record(assessment: dict | None) -> dict | None:
         "storage_container_path": container_path,
         "enabled": bool(container_path),
         "recurring_scans": {
-            # Coerced: Azure omits these when they were never enabled, and a
-            # validator asserting `false` would not match `null`.
+            # Coerced: Azure omits these when never enabled, and a validator
+            # asserting `false` would not match `null`.
             "is_enabled": bool(recurring.get("is_enabled") or False),
             "emails": recurring.get("emails") or [],
             "email_subscription_admins": bool(
@@ -278,7 +244,6 @@ def server_record(
     security_alert_policy: dict | None,
     vulnerability_assessment: dict | None,
 ) -> dict:
-    """Assemble one server's network / auth / audit evidence from its projected parts."""
     resource_id = server.get("id")
     administrators = server.get("administrators") or {}
     administrator_type = administrators.get("administrator_type")
@@ -336,12 +301,8 @@ def server_record(
 
 
 def summarize(servers: list[dict]) -> dict:
-    """Counts per posture dimension, with the audit percentage as the headline.
-
-    Auditing is the one setting here that is OFF by default and required by nearly
-    every framework, so it gets the percentage; the rest are absolute counts,
-    because a count of servers open to the whole internet is what a reviewer acts
-    on, not a percentage of them.
+    """Auditing is the one setting here that is OFF by default, so it gets the
+    percentage; the rest stay absolute counts.
     """
     total = len(servers)
     audited = sum(1 for s in servers if s["auditing_enabled"])
@@ -392,21 +353,17 @@ def summarize(servers: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
-# Markers for "this optional sub-resource was never configured", which Azure answers
-# with a 404 rather than an empty body. A server with no vulnerability assessment or
-# no security alert policy is the common case, and must not fail the run.
+# Azure answers "this optional sub-resource was never configured" with a 404, not an
+# empty body. A server with no vulnerability assessment or no security alert policy is
+# the common case: record the absence, never fail the run or drop the server.
 NOT_FOUND_TYPES = ("resourcenotfounderror",)
 NOT_FOUND_MARKERS = ("(resourcenotfound)", "(404)", "was not found", "could not be found")
 
 
 def is_not_found(exc: BaseException) -> bool:
-    """Is this Azure's "that optional sub-resource does not exist" answer?
-
-    LOCAL HELPER (duplicated in the sibling database fetchers) — azure_common is
-    off-limits for concurrent-edit reasons; consolidate after merge.
-    """
+    """Azure's "that optional sub-resource does not exist" answer (also in siblings)."""
     if type(exc).__name__.lower() in NOT_FOUND_TYPES:
         return True
     message = f"{getattr(exc, 'message', '') or ''} {exc}".lower()
@@ -426,10 +383,8 @@ def _optional_get(collector: Collector, operation: str, fn):
 
 
 def collect_sql_servers(subscription_id, cred, collector: Collector) -> list[dict]:
-    """One servers.list(), then four sub-resource calls per server.
-
-    Each is guarded individually so one inaccessible server or one un-configured
-    sub-resource does not blank out the rest of the subscription.
+    """One servers.list(), then four sub-resource calls per server — each guarded
+    separately so one inaccessible server does not blank out the rest.
     """
 
     def _client():
@@ -437,8 +392,7 @@ def collect_sql_servers(subscription_id, cred, collector: Collector) -> list[dic
 
         return SqlManagementClient(credential=cred, subscription_id=subscription_id)
 
-    # Guarded (not a bare import at function top level) so a missing azure-mgmt-sql
-    # is recorded as internal_error and the evidence file is still written.
+    # Guarded: a missing azure-mgmt-sql becomes internal_error, evidence still written.
     client = collector.guard("sql.SqlManagementClient (init)", _client)
     if client is None:
         return []
@@ -478,9 +432,9 @@ def collect_sql_servers(subscription_id, cred, collector: Collector) -> list[dic
         alert_policy = _optional_get(
             collector,
             f"sql.server_security_alert_policies.get ({name})",
-            # "Default" is SecurityAlertPolicyName.DEFAULT's value on
+            # "Default" is SecurityAlertPolicyName.DEFAULT's spelling on
             # azure-mgmt-sql 4.0.0 (Prowler passes lowercase "default"; the ARM path
-            # segment is case-insensitive, but the enum's own spelling is used here).
+            # segment is case-insensitive either way).
             lambda: project_security_alert_policy(
                 client.server_security_alert_policies.get(group, name, "Default")
             ),
@@ -511,8 +465,7 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
+    # The azure-* SDKs log every request/response header at INFO — far too noisy here.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -526,10 +479,7 @@ def main() -> int:
     servers: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list call: Azure returns an empty list rather than an
-        # error for an unregistered provider, so without this "0 servers" reads
-        # identically whether Azure SQL is unused or Microsoft.Sql was never
-        # registered.
+        # Asked first: an unregistered provider returns an empty list, not an error.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.Sql"
         )

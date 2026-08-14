@@ -2,41 +2,14 @@
 """
 Azure virtual machine hardening — Trusted Launch, managed disks, SSH keys, extensions
 
-For every virtual machine and virtual machine scale set in one subscription,
-collects the configuration a reviewer reads to judge how the compute is hardened:
-
-- **Boot integrity.** `security_profile.security_type` == TrustedLaunch with both
-  UEFI settings (secure boot + vTPM) on, plus `encryption_at_host`.
-- **Managed vs unmanaged disks.** `storage_profile.os_disk.managed_disk` and every
-  entry of `data_disks` — an unmanaged (page-blob) disk sits in a storage account
-  outside the disk encryption / snapshot model entirely.
-- **Credential posture on Linux.** `linux_configuration.disable_password_authentication`,
-  i.e. SSH keys only. Absent for Windows VMs, which is reported as null, not false.
-- **What is running on the guest.** The installed VM extensions (agents: Defender,
-  Azure Monitor, dependency/patch agents), by name and publisher.
-- **Provenance.** `storage_profile.image_reference` — marketplace publisher/offer/sku
-  or the id of a gallery / custom image.
-- **Scale sets.** Their load balancer backend pools and instance ids, so an empty or
-  unbalanced scale set is visible; the scale set's VM profile carries the same
-  Trusted Launch / SSH-key evidence as a standalone VM.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/vm/vm_service.py (Apache-2.0) —
-`_get_virtual_machines()`, `_get_vm_scale_sets()` and `_get_vmss_instance_ids()` —
-which read the same azure-mgmt-compute SDK. The derived readings replicate
-vm_trusted_launch_enabled (all four clauses), vm_ensure_using_managed_disks (OS disk
-AND every data disk), vm_linux_enforce_ssh_authentication and
-vm_scaleset_associated_with_load_balancer.
+Ported from `_get_virtual_machines()`, `_get_vm_scale_sets()` and
+`_get_vmss_instance_ids()` in Prowler's
+prowler/providers/azure/services/vm/vm_service.py (Apache-2.0).
 
 ONE DEPARTURE FROM PROWLER, deliberate: Prowler reads a VM's extensions from
-`vm.resources` on the list response, which ARM populates only on a single-VM GET —
-so on a real subscription that list is empty and the evidence would read "no agents
-installed" when agents are installed. Extensions are collected here with a per-VM
-virtual_machine_extensions.list() instead, the same per-resource enrichment shape
-storage_encryption_status uses for its blob/file service properties.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+`vm.resources` on the list response, which ARM populates only on a single-VM GET — so on
+a real subscription that list is empty and the evidence would read "no agents installed"
+when agents are. Extensions come from a per-VM virtual_machine_extensions.list() instead.
 """
 
 import logging
@@ -75,15 +48,14 @@ SECURITY_TYPE_TRUSTED_LAUNCH = "TrustedLaunch"
 SECURITY_TYPE_CONFIDENTIAL_VM = "ConfidentialVM"
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: the only code that touches an azure-mgmt model ---
 
 def project_image_reference(image) -> dict:
     """Read an `ImageReference` model — marketplace coordinates or an image id.
 
-    Prowler keeps only `image_reference.id`, which is None for every marketplace
-    image (the four publisher/offer/sku/version fields carry it instead), so the id
-    alone cannot answer "is this VM built from an approved image". Both forms are
-    projected. `exact_version` is what "latest" resolved to at deploy time.
+    Prowler keeps only `image_reference.id`, which is None for every marketplace image
+    (publisher/offer/sku/version carry it), so both forms are projected. `exact_version`
+    is what "latest" resolved to at deploy time.
     """
     return {
         "id": model_attr(image, "id"),
@@ -100,9 +72,8 @@ def project_image_reference(image) -> dict:
 def project_security_profile(profile) -> dict:
     """Read a `SecurityProfile` model, including the nested UEFI settings.
 
-    `security_type` is a `SecurityTypes` enum member; `model_attr` unwraps it to the
-    wire string, without which the TrustedLaunch comparison below would never match
-    (`str(SecurityTypes.TRUSTED_LAUNCH)` is "SecurityTypes.TRUSTED_LAUNCH").
+    `model_attr` unwraps the `SecurityTypes` enum to its wire string; without that the
+    TrustedLaunch comparison below would never match.
     """
     uefi = model_attr(profile, "uefi_settings")
     return {
@@ -127,9 +98,8 @@ def project_managed_disk(disk) -> dict:
 def project_storage_profile(profile) -> dict:
     """Read a `StorageProfile` model: OS disk, data disks and the source image.
 
-    A disk whose `managed_disk` is absent but whose `vhd` is set is an UNMANAGED
-    disk — a page blob in a storage account. `vhd_uri` is projected so that case is
-    positively identifiable rather than inferred from a missing field.
+    A disk whose `managed_disk` is absent but whose `vhd` is set is an UNMANAGED disk (a
+    page blob in a storage account), so `vhd_uri` is projected to identify it positively.
     """
     os_disk = model_attr(profile, "os_disk")
     return {
@@ -157,15 +127,9 @@ def project_storage_profile(profile) -> dict:
 def project_virtual_machine(vm) -> dict:
     """Read a `VirtualMachine` model's attributes into a flat snake_case dict.
 
-    Attribute access is stable across the azure-mgmt generator styles; `as_dict()`
-    is not (azure-mgmt-compute 38.x is on the `_model_base` runtime, whose
-    `as_dict()` emits the camelCase wire shape with the profiles nested under
-    "properties"). Confining the SDK to this one function keeps every transform below
-    pure dict-in/dict-out — and testable with no azure-* package installed.
-
-    Every nested profile is optional on a real response: `security_profile` is absent
-    on a generation-1 VM, `os_profile.linux_configuration` on a Windows VM,
-    `storage_profile.image_reference` on a VM built from an attached disk. Hence a
+    Every nested profile is optional on a real response — `security_profile` is absent on
+    a generation-1 VM, `os_profile.linux_configuration` on a Windows VM,
+    `storage_profile.image_reference` on a VM built from an attached disk — hence the
     None-tolerant read at each hop.
     """
     storage_profile = model_attr(vm, "storage_profile")
@@ -179,8 +143,7 @@ def project_virtual_machine(vm) -> dict:
         "location": model_attr(vm, "location"),
         "vm_size": model_attr(model_attr(vm, "hardware_profile"), "vm_size"),
         "provisioning_state": model_attr(vm, "provisioning_state"),
-        # Set when the VM is a scale-set member, which is how a VM record joins to a
-        # scale set record in this evidence set.
+        # Set when the VM is a scale-set member — the join to a scale set record.
         "virtual_machine_scale_set_id": model_attr(
             model_attr(vm, "virtual_machine_scale_set"), "id"
         ),
@@ -190,8 +153,8 @@ def project_virtual_machine(vm) -> dict:
         "security_profile": (
             project_security_profile(security_profile) if security_profile is not None else None
         ),
-        # None (not False) when the VM is not Linux — "no such setting" and
-        # "passwords allowed" are different facts.
+        # None (not False) when the VM is not Linux: "no such setting" and "passwords
+        # allowed" are different facts.
         "linux_configuration": (
             {
                 "disable_password_authentication": model_attr(
@@ -202,8 +165,8 @@ def project_virtual_machine(vm) -> dict:
             if linux_configuration is not None
             else None
         ),
-        # Extensions come from the per-VM enrichment call, not from here (see the
-        # module docstring): ARM omits `resources` on the list response.
+        # Extensions come from the per-VM enrichment call: ARM omits `resources` on the
+        # list response (see the module docstring).
         "extensions": [],
     }
 
@@ -211,12 +174,10 @@ def project_virtual_machine(vm) -> dict:
 def project_vm_extension(extension) -> dict:
     """Read a `VirtualMachineExtension` model — one installed guest agent.
 
-    `type` resolves to the ARM resource type ("Microsoft.Compute/virtualMachines/
-    extensions"), NOT the extension type: the model declares both a top-level `type`
-    and a `properties.type`, and the top-level one wins on attribute access
-    (verified against azure-mgmt-compute 38.2.0). The extension type a reviewer wants
-    ("MDE.Linux", "AzureMonitorLinuxAgent") is therefore read from `name` and
-    `publisher`, which are unambiguous.
+    `type` resolves to the ARM resource type, NOT the extension type: the model declares
+    both a top-level `type` and a `properties.type`, and the top-level one wins on
+    attribute access (azure-mgmt-compute 38.2.0), so the agent is identified from `name`
+    and `publisher`.
     """
     return {
         "id": model_attr(extension, "id"),
@@ -232,11 +193,9 @@ def project_vm_extension(extension) -> dict:
 def project_scale_set(scale_set) -> dict:
     """Read a `VirtualMachineScaleSet` model, flattening its VM profile.
 
-    The load balancer association is four optional hops deep — virtual_machine_profile
-    -> network_profile -> network_interface_configurations[] -> ip_configurations[] ->
-    load_balancer_backend_address_pools[] — and any hop can be None on a real
-    response (Prowler stacks getattr the same way). `instance_ids` is filled in by a
-    separate list call, so it starts empty here.
+    The load balancer association is four optional hops deep (network_profile ->
+    network_interface_configurations[] -> ip_configurations[] ->
+    load_balancer_backend_address_pools[]) and any hop can be None on a real response.
     """
     sku = model_attr(scale_set, "sku")
     vm_profile = model_attr(scale_set, "virtual_machine_profile")
@@ -289,15 +248,15 @@ def project_scale_set_instance(instance) -> str | None:
     return model_attr(instance, "instance_id")
 
 
-# --- pure transforms (flat snake_case dicts in, evidence records out) ---
+# --- pure transforms (dicts in, evidence records out) ---
 
 def _security_profile_record(profile: dict | None) -> dict:
     """Normalize a projected security profile, coercing the optional bools.
 
-    Azure omits `secure_boot_enabled` / `v_tpm_enabled` / `encryption_at_host` rather
-    than returning false, and Prowler reads each with a `False` default. An absent
-    profile is normalized to the same shape with everything off, so a validator can
-    assert on the fields without having to tolerate a null parent.
+    Azure omits `secure_boot_enabled` / `v_tpm_enabled` / `encryption_at_host` rather than
+    returning false, and Prowler reads each with a `False` default. An absent profile
+    normalizes to the same shape with everything off, so a validator never meets a null
+    parent.
     """
     profile = profile if isinstance(profile, dict) else {}
     uefi = profile.get("uefi_settings") or {}
@@ -314,11 +273,9 @@ def _security_profile_record(profile: dict | None) -> dict:
 def trusted_launch_enabled(security_profile: dict | None) -> bool:
     """Prowler's vm_trusted_launch_enabled condition, verbatim — all four clauses.
 
-    The security profile must exist, be of type TrustedLaunch, and have BOTH secure
-    boot and vTPM on. ConfidentialVM is NOT accepted here even though it implies the
-    same boot integrity, because Prowler's check does not accept it and the summary
-    is meant to line up with a Prowler run; `security_type` is in the record for a
-    reviewer who wants to read it differently.
+    ConfidentialVM is NOT accepted here even though it implies the same boot integrity,
+    because Prowler's check does not and the summary is meant to line up with a Prowler
+    run; `security_type` is in the record for a reviewer who reads it differently.
     """
     profile = _security_profile_record(security_profile)
     return (
@@ -329,12 +286,7 @@ def trusted_launch_enabled(security_profile: dict | None) -> bool:
 
 
 def _disk_record(disk: dict | None) -> dict:
-    """The fields an OS disk and a data disk share: identity, size, managed vs VHD.
-
-    `managed` is materialized because it is the whole point of the reading: a disk
-    with a `managed_disk.id` is a managed disk, one with only a `vhd_uri` is an
-    unmanaged page blob in a storage account.
-    """
+    """The fields an OS disk and a data disk share: identity, size, managed vs VHD."""
     disk = disk if isinstance(disk, dict) else {}
     managed = disk.get("managed_disk") or {}
     return {
@@ -350,12 +302,7 @@ def _disk_record(disk: dict | None) -> dict:
 
 
 def storage_profile_record(profile: dict | None) -> dict | None:
-    """Normalize a projected storage profile; None when the API returned none.
-
-    The OS disk and the data disks get the fields that apply to each — the OS disk
-    has no LUN, a data disk has no operating system — rather than a shared shape
-    padded out with nulls that would read as "unknown".
-    """
+    """Normalize a projected storage profile; None when the API returned none."""
     if not isinstance(profile, dict):
         return None
     os_disk_projection = profile.get("os_disk") or {}
@@ -375,9 +322,8 @@ def storage_profile_record(profile: dict | None) -> dict | None:
 def uses_managed_disks_only(storage_profile: dict | None) -> bool:
     """Prowler's vm_ensure_using_managed_disks condition, verbatim.
 
-    The OS disk must have a managed_disk, and so must every data disk. A VM with no
-    storage profile at all reads as False (Prowler's `using_managed_disks` starts
-    from the OS disk lookup, which is None then).
+    The OS disk and every data disk must have a managed_disk. A VM with no storage profile
+    reads as False (Prowler's `using_managed_disks` starts from the OS disk lookup).
     """
     if not isinstance(storage_profile, dict):
         return False
@@ -391,12 +337,7 @@ def uses_managed_disks_only(storage_profile: dict | None) -> bool:
 
 
 def extension_record(extension: dict) -> dict:
-    """Normalize one projected VM extension.
-
-    `name` falls back to the last segment of the ARM id: the id always carries the
-    extension name, so a response that omitted the field would otherwise leave the
-    agent unidentifiable in the evidence.
-    """
+    """Normalize one projected VM extension (`name` falls back to the ARM id's last segment)."""
     resource_id = extension.get("id")
     return {
         "id": resource_id,
@@ -491,10 +432,8 @@ def scale_set_record(scale_set: dict) -> dict:
 def summarize(virtual_machines: list[dict], scale_sets: list[dict]) -> dict:
     """The counts a reviewer reads first, in the same shape as the other Azure summaries.
 
-    Percentages are reported for the two readings that are a straight coverage
-    question over all VMs (Trusted Launch, managed disks). SSH-key enforcement is a
-    percentage of LINUX VMs only — a Windows VM has no such setting, and folding it
-    into the denominator would report a hardened estate as failing.
+    SSH-key enforcement is a percentage of LINUX VMs only — a Windows VM has no such
+    setting, and folding it into the denominator would fail a hardened estate.
     """
     total = len(virtual_machines)
     trusted_launch = sum(1 for v in virtual_machines if v["trusted_launch_enabled"])
@@ -542,15 +481,15 @@ def summarize(virtual_machines: list[dict], scale_sets: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def scale_set_name_from_id(resource_id: str | None) -> str | None:
     """Pull the scale set's name out of its ARM id.
 
-    Prowler parses the id rather than trusting `name`, because
-    virtual_machine_scale_set_vms.list() takes (resource_group, scale_set_name) and
-    the id is the one field guaranteed to be present. Matched case-insensitively:
-    ARM is inconsistent about `virtualMachineScaleSets` casing across API versions.
+    Prowler parses the id rather than trusting `name` because
+    virtual_machine_scale_set_vms.list() takes (resource_group, scale_set_name) and the id
+    is the one field guaranteed present. Matched case-insensitively: ARM is inconsistent
+    about `virtualMachineScaleSets` casing across API versions.
     """
     if not resource_id:
         return None
@@ -566,18 +505,12 @@ def collect_compute(
 ) -> tuple[list[dict], list[dict]]:
     """Two subscription-wide list calls plus two per-resource enrichments.
 
-    - virtual_machines.list_all() -> every VM's profiles (ItemPaged: the SDK follows
-      nextLink itself).
-    - virtual_machine_extensions.list(resource_group, vm_name) per VM -> the installed
-      guest agents. Returns a `VirtualMachineExtensionsListResult`, NOT an ItemPaged,
-      so the list is read off `.value`; the operation is not paginated.
-    - virtual_machine_scale_sets.list_all() -> every scale set.
-    - virtual_machine_scale_set_vms.list(resource_group, name) per scale set -> its
-      instance ids.
-
-    The SDK import lives inside the guarded factory so a missing azure-mgmt-compute
-    is recorded as a failure (classified `internal_error`) and still writes evidence
-    plus a status file, rather than aborting the process with a traceback.
+    Both `list_all()` calls return ItemPaged (the SDK follows nextLink itself).
+    `virtual_machine_extensions.list()` returns a `VirtualMachineExtensionsListResult`,
+    NOT an ItemPaged, so the list is read off `.value`; it is not paginated. The SDK
+    import lives inside the guarded factory so a missing azure-mgmt-compute becomes a
+    recorded failure (classified `internal_error`) with evidence plus a status file, not
+    a traceback.
     """
 
     def _client():
@@ -665,9 +598,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every request and response header at INFO, which would bury
+    # this fetcher's lines in the runner's stderr tail. Warnings still come through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 

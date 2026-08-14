@@ -1,39 +1,14 @@
 #!/usr/bin/env python3
 """
-Azure App Service (web app) configuration and hardening posture
+Azure App Service web-app transport, identity and declared-runtime posture.
 
-For every web app in one subscription, reports the transport and identity posture
-(HTTPS-only, minimum TLS version, HTTP/2, FTP/FTPS deployment state, client
-certificate mode, App Service Authentication, managed identity) together with the
-declared language runtime versions — `linux_fx_version` plus the Windows-stack
-`java_version` / `php_version` / `python_version` fields. The runtime versions are
-what a "supported / non-end-of-life runtime" control is evidenced from, so all of
-them are kept even when only one is populated for a given app.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/app/app_service.py (Apache-2.0), which reads the
-same azure-mgmt-web SDK, so the attribute paths transfer directly. Two deliberate
-divergences from Prowler:
-
-- **Auth settings are read with the GET, not the POST.** Prowler calls
-  `web_apps.get_auth_settings_v2()`, which is POST `.../config/authsettingsV2/list`
-  and needs `Microsoft.Web/sites/config/list/Action` — beyond the built-in Reader
-  role. `get_auth_settings_v2_without_secrets()` is GET
-  `.../config/authsettingsV2`, returns the same `platform.enabled`, and by
-  definition cannot hand back a secret. Reader is therefore sufficient for this
-  whole fetcher (unlike the function-app one next door).
-- **The resource group comes from the resource ID.** Prowler reads
-  `app.resource_group`, a read-only convenience property that exists only on the
-  older msrest-generated azure-mgmt-web. On 11.x (the `_utils.model_base`
-  generator) it is absent and reads as None, which would silently break every
-  per-app GET, so `resource_group_from_id()` parses it out of the ARM ID instead.
-
-Function apps are excluded here (`kind` starting with "functionapp") — they are a
-separate evidence set, fetchers/azure/function_app_configuration, because their
-collection needs permissions beyond Reader.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Ported from Prowler prowler/providers/azure/services/app/app_service.py (Apache-2.0),
+with two deviations. Auth settings come from the GET
+`get_auth_settings_v2_without_secrets`, not Prowler's POST `get_auth_settings_v2`
+(which needs `Microsoft.Web/sites/config/list/Action`), so plain Reader suffices. And
+the resource group is parsed from the ARM id: `Site.resource_group`, which Prowler
+reads, does not exist on azure-mgmt-web 11.x and reads as None, silently breaking
+every per-app GET. Function apps are a separate evidence set.
 """
 
 import logging
@@ -66,10 +41,8 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_app_service_configuration")
 
-# `kind` is a comma-joined string: "app", "app,linux", "app,linux,container",
-# "functionapp", "functionapp,linux". Prowler splits web apps from function apps on
-# exactly these prefixes, and the two sets are collected by different fetchers here
-# because the function-app calls need permissions Reader does not carry.
+# `kind` is comma-joined: "app", "app,linux", "app,linux,container", "functionapp",
+# "functionapp,linux". Prowler's split.
 WEB_APP_KIND_PREFIX = "app"
 FUNCTION_APP_KIND_PREFIX = "functionapp"
 
@@ -82,20 +55,11 @@ FTP_DISABLED_STATES = ("Disabled",)
 FTP_ENCRYPTED_STATES = ("Disabled", "FtpsOnly")
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: the only azure-mgmt model access ---
 
 def project_site(site) -> dict:
-    """Read a `Site` model's attributes into a flat snake_case dict.
-
-    Attribute access is stable across the azure-mgmt generator styles; `as_dict()`
-    is not (on the `_model_base`/`model_base` SDKs — which azure-mgmt-web 11.x is —
-    it emits the camelCase wire shape nested under "properties"). Confining the SDK
-    to this one function keeps every transform below pure dict-in/dict-out, and
-    testable with no azure-* package installed.
-
-    Values are the SDK's own, un-defaulted: `None` here means "the API did not
-    return this field". `identity` is absent on every app without a managed
-    identity, which is why each hop is `model_attr`'s None-tolerant read.
+    """Read a `Site` model into a flat snake_case dict, un-defaulted: `None` means the
+    API did not return the field (`identity` is absent without a managed identity).
     """
     identity = model_attr(site, "identity")
     return {
@@ -105,15 +69,11 @@ def project_site(site) -> dict:
         "kind": model_attr(site, "kind"),
         "state": model_attr(site, "state"),
         "default_host_name": model_attr(site, "default_host_name"),
-        # --- transport ---
         "https_only": model_attr(site, "https_only"),
-        # --- mutual TLS ---
         "client_cert_enabled": model_attr(site, "client_cert_enabled"),
         "client_cert_mode": model_attr(site, "client_cert_mode"),
-        # --- network exposure ---
         "public_network_access": model_attr(site, "public_network_access"),
         "virtual_network_subnet_id": model_attr(site, "virtual_network_subnet_id"),
-        # --- workload identity ---
         "identity": {
             "principal_id": model_attr(identity, "principal_id"),
             "tenant_id": model_attr(identity, "tenant_id"),
@@ -125,15 +85,13 @@ def project_site(site) -> dict:
 def project_site_config(config) -> dict:
     """Read a `SiteConfigResource` (web_apps.get_configuration) into a flat dict.
 
-    `ftps_state` and `min_tls_version` are SDK `str` enums (FtpsState,
-    SupportedTlsVersions); `model_attr` unwraps them to their wire value, without
-    which `str()` would put "FtpsState.DISABLED" in the evidence and a lowercased
-    comparison would silently stop matching.
+    `ftps_state` / `min_tls_version` are SDK `str` enums; `model_attr` unwraps them, or
+    the evidence carries "FtpsState.DISABLED" and comparisons silently stop matching.
     """
     return {
         "id": model_attr(config, "id"),
         "name": model_attr(config, "name"),
-        # --- declared runtime versions (all of them: only one is set per app) ---
+        # --- declared runtime versions (all kept: only one is set per app) ---
         "linux_fx_version": model_attr(config, "linux_fx_version"),
         "windows_fx_version": model_attr(config, "windows_fx_version"),
         "java_version": model_attr(config, "java_version"),
@@ -141,11 +99,9 @@ def project_site_config(config) -> dict:
         "python_version": model_attr(config, "python_version"),
         "net_framework_version": model_attr(config, "net_framework_version"),
         "node_version": model_attr(config, "node_version"),
-        # --- transport / protocol ---
         "http20_enabled": model_attr(config, "http20_enabled"),
         "ftps_state": model_attr(config, "ftps_state"),
         "min_tls_version": model_attr(config, "min_tls_version"),
-        # --- operational hardening ---
         "remote_debugging_enabled": model_attr(config, "remote_debugging_enabled"),
         "always_on": model_attr(config, "always_on"),
         "http_logging_enabled": model_attr(config, "http_logging_enabled"),
@@ -155,10 +111,9 @@ def project_site_config(config) -> dict:
 def project_auth_settings(settings) -> dict:
     """Read a `SiteAuthSettingsV2` into a flat dict.
 
-    `platform.enabled` is the field Prowler's app_ensure_auth_is_set_up check reads.
-    `global_validation` is ours: "auth is switched on" and "unauthenticated callers
-    are actually rejected" are different facts, and only the second one shows an
-    anonymous caller cannot reach the app.
+    `platform.enabled` is what Prowler's app_ensure_auth_is_set_up check reads;
+    `global_validation` goes beyond Prowler — auth being switched on and
+    unauthenticated callers actually being rejected are different facts.
     """
     platform = model_attr(settings, "platform")
     global_validation = model_attr(settings, "global_validation")
@@ -177,9 +132,8 @@ def project_auth_settings(settings) -> dict:
 def is_web_app(kind) -> bool:
     """Prowler's split: `kind` starting with "app" is a web app, not a function app.
 
-    An app with no `kind` at all is treated as a web app — that is Prowler's default
-    (`getattr(app, "kind", "app")`) and matches the API, which omits `kind` only for
-    plain Windows web apps.
+    No `kind` counts as a web app — Prowler's default (`getattr(app, "kind", "app")`),
+    and the API omits `kind` only for plain Windows web apps.
     """
     text = str(kind or WEB_APP_KIND_PREFIX).lower()
     return text.startswith(WEB_APP_KIND_PREFIX) and not text.startswith(
@@ -190,10 +144,9 @@ def is_web_app(kind) -> bool:
 def effective_client_cert_mode(client_cert_enabled, client_cert_mode) -> str:
     """Ported verbatim from Prowler's `App._get_client_cert_mode`.
 
-    The two ARM fields are not independent: `clientCertMode` keeps its last value
-    after `clientCertEnabled` is switched off, so the raw mode alone reads as
-    "Required" on an app that no longer asks for a certificate. This collapses the
-    pair into the one mode the portal shows.
+    ARM keeps `clientCertMode` at its last value after `clientCertEnabled` is switched
+    off, so the raw mode alone reads as "Required" on an app that no longer asks for a
+    certificate; this collapses the pair into the mode the portal shows.
     """
     enabled = bool(client_cert_enabled or False)
     mode = str(client_cert_mode or "Ignore")
@@ -209,14 +162,10 @@ def effective_client_cert_mode(client_cert_enabled, client_cert_mode) -> str:
 def web_app_record(site: dict) -> dict:
     """Normalize one projected web app into an evidence record.
 
-    Optional booleans are coerced with `bool(x or False)`: Azure OMITS a false-y
-    field rather than returning `false` (confirmed live against this SDK), so a
-    validator asserting `"https_only": false` would not match `null`. Absent means
-    off for every flag here — there is no third state.
-
-    `configuration` and `authentication` start as None and are filled in by the
-    per-app enrichment; None therefore means "not collected for this app", which is
-    distinguishable from a collected-but-empty block.
+    Azure omits a false-y field rather than returning `false` (confirmed live), so
+    booleans are coerced with `bool(x or False)` — a validator asserting `false` would
+    not match `null`. `configuration` / `authentication` stay None until the per-app
+    enrichment, so None means "not collected", not "collected and empty".
     """
     resource_id = site.get("id")
     identity = site.get("identity") or {}
@@ -229,26 +178,22 @@ def web_app_record(site: dict) -> dict:
         "kind": site.get("kind"),
         "state": site.get("state"),
         "default_host_name": site.get("default_host_name"),
-        # --- transport ---
         "https_only": bool(site.get("https_only") or False),
-        # --- mutual TLS ---
         "client_cert_enabled": bool(site.get("client_cert_enabled") or False),
         "client_cert_mode": site.get("client_cert_mode"),
         "effective_client_cert_mode": effective_client_cert_mode(
             site.get("client_cert_enabled"), site.get("client_cert_mode")
         ),
-        # --- network exposure ---
         "public_network_access": site.get("public_network_access"),
         "vnet_integrated": bool(site.get("virtual_network_subnet_id")),
         "vnet_subnet_id": site.get("virtual_network_subnet_id"),
-        # --- workload identity: "None" is the literal type ARM returns ---
+        # "None" is the literal identity type ARM returns.
         "identity": {
             "principal_id": identity.get("principal_id"),
             "tenant_id": identity.get("tenant_id"),
             "type": identity_type,
         },
         "managed_identity_enabled": str(identity_type or "None").lower() != "none",
-        # Filled in by the per-app enrichment.
         "configuration": None,
         "authentication": None,
     }
@@ -327,9 +272,7 @@ def summarize(apps: list[dict]) -> dict:
         "public_network_access_disabled_apps": sum(
             1 for a in apps if str(a["public_network_access"] or "").lower() == "disabled"
         ),
-        # Runtime-version evidence is per app (the versions themselves are in each
-        # record); the summary only reports how many apps declared one at all, so a
-        # reviewer can see the runtime projection was actually populated.
+        # The versions are per app; this only shows the runtime projection was populated.
         "apps_with_declared_runtime": sum(
             1
             for a in apps
@@ -349,15 +292,11 @@ def summarize(apps: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def collect_web_apps(subscription_id, cred, collector: Collector) -> list[dict]:
-    """One web_apps.list(), then a configuration + auth-settings GET per web app.
-
-    The list response carries the identity / transport / client-certificate
-    projection; the runtime versions and the protocol settings only exist on
-    `config/web`, and Easy Auth only on `config/authsettingsV2`. Both are
-    Reader-permitted GETs.
+    """One web_apps.list(), then two Reader-permitted GETs per app: `config/web` for the
+    runtime versions and protocol settings, `config/authsettingsV2` for Easy Auth.
     """
     from azure.mgmt.web import WebSiteManagementClient
 
@@ -413,9 +352,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every HTTP request and response header at INFO, which would
+    # dominate the runner's stderr tail. Their warnings and errors still come through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 

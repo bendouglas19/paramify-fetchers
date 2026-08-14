@@ -1,46 +1,21 @@
 #!/usr/bin/env python3
 """
-Azure Functions (function app) configuration and access posture
+Azure Functions (function app) network, transport, key and app-setting posture.
 
-For every function app in one subscription, reports network exposure (public
-network access, VNet integration), transport posture (HTTPS-only, FTP/FTPS state,
-minimum TLS version, HTTP/2), the declared runtime, the managed identity, whether
-function access keys are configured at all, and which application settings exist.
+Ported from the FunctionApp half of Prowler
+prowler/providers/azure/services/app/app_service.py (Apache-2.0), except that Prowler
+keeps `function_keys` and `environment_variables` values in memory and this fetcher
+keeps neither: keys are reported as presence plus NAMES, settings as NAMES only, so no
+key material and no setting value ever reaches the evidence.
 
-**No key material and no application-setting VALUE is ever written to the
-evidence.** Access keys are reported as presence plus key NAMES; application
-settings are reported as their NAMES only. That is deliberate: the whole point of
-this evidence is that key-based access and configuration exist, and a compliance
-artifact must never become a place secrets are copied to.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/app/app_service.py (Apache-2.0) — the FunctionApp
-half of it — which reads the same azure-mgmt-web SDK. Prowler keeps
-`function_keys` and `environment_variables` (name AND value) in memory; this
-fetcher keeps neither.
-
-**Reader is NOT sufficient for this fetcher.** Two of the calls are ARM POST
-`/action` operations rather than GETs:
-
-  - web_apps.list_host_keys()            POST .../host/listkeys
-      needs Microsoft.Web/sites/host/listkeys/action
-  - web_apps.list_application_settings() POST .../config/appsettings/list
-      needs Microsoft.Web/sites/config/list/Action
-
-Those two actions are exactly the custom role Prowler documents for its four
-function-app checks — the only Azure checks in Prowler that need anything beyond
-Reader. Under plain Reader (or a ReadOnly resource lock, which rejects POST
-`/action` with ScopeLocked) each call fails per app. That is reported as an explicit
-per-app `status: "not_authorized"` on the affected block and does NOT fail the run:
-a missing permission is a legible gap in the evidence, not a broken collection. Any
-other error on those calls IS recorded as a collection failure.
-
-Web apps are excluded here (`kind` not starting with "functionapp") — they are a
-separate evidence set, fetchers/azure/app_service_configuration, collectible with
-Reader alone.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Reader is NOT sufficient. Two calls are ARM POST `/action` operations:
+`web_apps.list_host_keys()` (POST .../host/listkeys) needs
+`Microsoft.Web/sites/host/listkeys/action`, and `web_apps.list_application_settings()`
+(POST .../config/appsettings/list) needs `Microsoft.Web/sites/config/list/Action` —
+the custom role Prowler documents for its function-app checks, the only Prowler Azure
+checks needing more than Reader. A ReadOnly resource lock rejects both too
+(ScopeLocked). A refusal becomes a per-app `status: "not_authorized"` and does NOT
+fail the run; any other error on those calls does. Web apps are a separate set.
 """
 
 import logging
@@ -73,8 +48,7 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_function_app_configuration")
 
-# `kind` is a comma-joined string: "functionapp", "functionapp,linux",
-# "functionapp,linux,container". Prowler's split.
+# `kind` is comma-joined: "functionapp", "functionapp,linux", … . Prowler's split.
 FUNCTION_APP_KIND_PREFIX = "functionapp"
 
 # Per-block collection status for the two privileged POST /action calls.
@@ -82,10 +56,9 @@ COLLECTED = "collected"
 NOT_AUTHORIZED = "not_authorized"
 UNAVAILABLE = "unavailable"
 
-# Markers that mean "the principal is not allowed to make this call", as opposed to
-# a transient or structural failure. ScopeLocked is included because a ReadOnly
-# resource lock rejects ARM POST /action operations (HTTP 409) even for a principal
-# that holds the action — from the evidence's point of view that is the same gap.
+# "The principal may not make this call", as opposed to a transient or structural
+# failure. ScopeLocked is here because a ReadOnly resource lock rejects ARM POST
+# /action (HTTP 409) even for a principal holding the action — the same evidence gap.
 NOT_AUTHORIZED_MARKERS = (
     "authorizationfailed",
     "does not have authorization",
@@ -96,9 +69,8 @@ NOT_AUTHORIZED_MARKERS = (
     "scope(s) are locked",
 )
 
-# App-setting NAMES worth reporting the presence of. FUNCTIONS_EXTENSION_VERSION is
-# the Functions host version ("~4") Prowler's latest-runtime check reads; its VALUE
-# is deliberately not collected, so only its presence is reported here.
+# App-setting NAMES worth reporting the presence of. FUNCTIONS_EXTENSION_VERSION holds the
+# Functions host version ("~4") Prowler's latest-runtime check reads; its VALUE is not.
 FUNCTIONS_EXTENSION_VERSION_SETTING = "FUNCTIONS_EXTENSION_VERSION"
 FUNCTIONS_WORKER_RUNTIME_SETTING = "FUNCTIONS_WORKER_RUNTIME"
 APPLICATION_INSIGHTS_SETTING = "APPINSIGHTS_INSTRUMENTATIONKEY"
@@ -109,16 +81,11 @@ FTP_DISABLED_STATES = ("Disabled",)
 FTP_ENCRYPTED_STATES = ("Disabled", "FtpsOnly")
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: the only azure-mgmt model access ---
 
 def project_function_app(site) -> dict:
-    """Read a function app's `Site` model attributes into a flat snake_case dict.
-
-    Attribute access is stable across the azure-mgmt generator styles; `as_dict()`
-    is not (azure-mgmt-web 11.x is on the newer `model_base` runtime, whose
-    `as_dict()` emits the camelCase wire shape nested under "properties").
-    `identity` is absent on every app without a managed identity, hence
-    `model_attr`'s None-tolerance at each hop.
+    """Read a function app's `Site` model into a flat snake_case dict, un-defaulted:
+    `None` means the API did not return the field.
     """
     identity = model_attr(site, "identity")
     return {
@@ -127,12 +94,9 @@ def project_function_app(site) -> dict:
         "location": model_attr(site, "location"),
         "kind": model_attr(site, "kind"),
         "state": model_attr(site, "state"),
-        # --- network exposure ---
         "public_network_access": model_attr(site, "public_network_access"),
         "virtual_network_subnet_id": model_attr(site, "virtual_network_subnet_id"),
-        # --- transport ---
         "https_only": model_attr(site, "https_only"),
-        # --- workload identity ---
         "identity": {
             "principal_id": model_attr(identity, "principal_id"),
             "tenant_id": model_attr(identity, "tenant_id"),
@@ -144,8 +108,8 @@ def project_function_app(site) -> dict:
 def project_function_config(config) -> dict:
     """Read a function app's `SiteConfigResource` (get_configuration) into a flat dict.
 
-    `ftps_state` and `min_tls_version` are SDK `str` enums; `model_attr` unwraps them
-    to the wire value so the evidence never carries "FtpsState.DISABLED".
+    `ftps_state` / `min_tls_version` are SDK `str` enums; `model_attr` unwraps them so the
+    evidence never carries "FtpsState.DISABLED".
     """
     return {
         "linux_fx_version": model_attr(config, "linux_fx_version"),
@@ -162,10 +126,9 @@ def project_function_config(config) -> dict:
 def project_host_keys(host_keys) -> dict:
     """Read a `HostKeys` model into NAMES AND PRESENCE ONLY — never key material.
 
-    The SDK model carries `master_key` (a string) and `function_keys` /
-    `system_keys` (name -> secret maps). Only the map KEYS and a boolean for the
-    master key leave this function; the secret values are dropped here, at the SDK
-    boundary, so no downstream transform can leak one by accident.
+    `master_key` is a string and `function_keys` / `system_keys` are name -> secret maps;
+    only the map keys and a master-key boolean leave here, so the secrets are dropped at
+    the SDK boundary where nothing downstream can leak one.
     """
     function_keys = model_attr(host_keys, "function_keys") or {}
     system_keys = model_attr(host_keys, "system_keys") or {}
@@ -177,11 +140,8 @@ def project_host_keys(host_keys) -> dict:
 
 
 def project_application_settings(settings) -> dict:
-    """Read a `StringDictionary` (list_application_settings) into NAMES ONLY.
-
-    `properties` is the {name: value} map of the app's application settings —
-    connection strings, instrumentation keys, and whatever else the team put there.
-    The values are dropped here at the SDK boundary; only the names travel on.
+    """Read a `StringDictionary` (list_application_settings) into NAMES ONLY — the values
+    in `properties` (connection strings, keys, anything) are dropped at the SDK boundary.
     """
     properties = model_attr(settings, "properties") or {}
     return {"names": sorted(str(name) for name in properties)}
@@ -197,9 +157,9 @@ def is_function_app(kind) -> bool:
 def is_not_authorized(exc: BaseException) -> bool:
     """Is this failure "you may not make this call", rather than a broken call?
 
-    Matched on the message rather than the exception type: ARM answers a missing
-    action with HttpResponseError(403 AuthorizationFailed), and a ReadOnly lock with
-    HttpResponseError(409 ScopeLocked) — same type, different meaning from a 500.
+    Matched on the message, not the type: ARM answers a missing action with
+    HttpResponseError(403 AuthorizationFailed) and a ReadOnly lock with
+    HttpResponseError(409 ScopeLocked) — same type as a 500, different meaning.
     """
     message = f"{getattr(exc, 'message', '') or ''} {exc}".lower()
     return any(marker in message for marker in NOT_AUTHORIZED_MARKERS)
@@ -211,10 +171,8 @@ def _one_line(text, limit: int = 200) -> str:
 
 
 def unavailable_block(status: str, reason) -> dict:
-    """The shape a privileged block takes when the call could not be made.
-
-    Booleans stay None rather than False: "we were not allowed to look" must not
-    read as "no keys are configured", which is the opposite conclusion.
+    """The shape a privileged block takes when the call could not be made: booleans stay
+    None, because "not allowed to look" must not read as "no keys are configured".
     """
     return {
         "status": status,
@@ -227,11 +185,9 @@ def unavailable_block(status: str, reason) -> dict:
 
 
 def access_keys_record(host_keys: dict) -> dict:
-    """Normalize projected host keys into the access-key evidence block.
-
-    Presence and names only — see `project_host_keys`. Prowler's
-    app_function_access_keys_configured check reads exactly this fact (are there any
-    function keys), just from the full key map.
+    """Normalize projected host keys into the access-key evidence block — presence and
+    names only. Prowler's app_function_access_keys_configured check reads the same fact
+    (are there any function keys), just from the full key map.
     """
     names = list(host_keys.get("function_key_names") or [])
     return {
@@ -260,11 +216,9 @@ def unavailable_settings_block(status: str, reason) -> dict:
 def application_settings_record(settings: dict) -> dict:
     """Normalize projected application settings — NAMES and presence flags only.
 
-    The Functions host version (FUNCTIONS_EXTENSION_VERSION, "~4") and the worker
-    runtime (FUNCTIONS_WORKER_RUNTIME, "python") are reported as CONFIGURED / not,
-    never as their value: no application-setting value belongs in evidence. The
-    language runtime version itself comes from get_configuration's
-    `linux_fx_version` instead, which is not an application setting.
+    FUNCTIONS_EXTENSION_VERSION and FUNCTIONS_WORKER_RUNTIME are reported as configured or
+    not, never as their value, so the runtime version in the evidence is
+    get_configuration's `linux_fx_version` rather than the Functions host version.
     """
     names = list(settings.get("names") or [])
     present = {name.upper() for name in names}
@@ -284,11 +238,11 @@ def application_settings_record(settings: dict) -> dict:
 def function_app_record(site: dict) -> dict:
     """Normalize one projected function app into an evidence record.
 
-    `public_access` is Prowler's derived boolean: ARM omits `publicNetworkAccess`
-    unless it was explicitly set, and anything other than "Disabled" (including
-    absent) means the app is reachable from the internet. Optional booleans are
-    coerced with `bool(x or False)` because Azure omits a false-y field rather than
-    returning `false`, and a validator asserting `false` would not match `null`.
+    `public_access` is Prowler's derived boolean: ARM omits `publicNetworkAccess` unless
+    it was explicitly set, and anything other than "Disabled" (absent included) means the
+    app is reachable from the internet. Booleans are coerced with `bool(x or False)`
+    because Azure omits a false-y field rather than returning `false`, and a validator
+    asserting `false` would not match `null`.
     """
     resource_id = site.get("id")
     identity = site.get("identity") or {}
@@ -301,21 +255,19 @@ def function_app_record(site: dict) -> dict:
         "resource_group": resource_group_from_id(resource_id),
         "kind": site.get("kind"),
         "state": site.get("state"),
-        # --- network exposure ---
         "public_network_access": public_network_access,
         "public_access": str(public_network_access or "").lower() != "disabled",
         "vnet_subnet_id": site.get("virtual_network_subnet_id"),
         "vnet_integrated": bool(site.get("virtual_network_subnet_id")),
-        # --- transport ---
         "https_only": bool(site.get("https_only") or False),
-        # --- workload identity: "None" is the literal type ARM returns ---
+        # "None" is the literal identity type ARM returns.
         "identity": {
             "principal_id": identity.get("principal_id"),
             "tenant_id": identity.get("tenant_id"),
             "type": identity_type,
         },
         "managed_identity_enabled": str(identity_type or "None").lower() != "none",
-        # Filled in by the per-app enrichment. None means "not collected".
+        # Filled in by the per-app enrichment; None means "not collected".
         "configuration": None,
         "access_keys": None,
         "application_settings": None,
@@ -339,10 +291,9 @@ def configuration_record(config: dict) -> dict:
 def summarize(apps: list[dict]) -> dict:
     """Exposure and key-management coverage across the subscription's function apps.
 
-    The `*_not_authorized` counts are part of the evidence, not diagnostics: they say
-    how much of the key / settings posture could not be read with the permissions the
-    run had, so a zero in `access_keys_configured_apps` is never mistaken for "no app
-    uses keys".
+    The `*_not_authorized` counts are evidence, not diagnostics: they say how much posture
+    the run's permissions could not read, so a zero in `access_keys_configured_apps` is
+    never mistaken for "no app uses keys".
     """
     total = len(apps)
     https_only = sum(1 for a in apps if a["https_only"])
@@ -402,16 +353,15 @@ def summarize(apps: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def _privileged_call(collector: Collector, operation: str, app_name: str, fn):
     """Run one POST /action call, classifying a permission failure as evidence.
 
-    Returns (value, status, reason). A not-authorized failure is deliberately NOT
-    routed through `Collector.guard`: the run must stay exit 0 and say in the
-    evidence which block could not be read, rather than reporting the whole
-    subscription's collection as failed because Reader is what the operator granted.
-    Anything else is recorded as a real API failure.
+    Returns (value, status, reason). A not-authorized failure is deliberately NOT routed
+    through `Collector.guard`: the run stays exit 0 and names the unreadable block in the
+    evidence, rather than failing the whole collection because Reader is what the operator
+    granted. Anything else is recorded as a real API failure.
     """
     try:
         return fn(), COLLECTED, None
@@ -433,12 +383,9 @@ def _privileged_call(collector: Collector, operation: str, app_name: str, fn):
 
 
 def collect_function_apps(subscription_id, cred, collector: Collector) -> list[dict]:
-    """One web_apps.list(), then three per-app calls (one GET, two POST /action).
-
-    The list response carries the exposure / transport / identity projection;
-    `config/web` (GET, Reader) carries the runtime and FTPS state; `host/listkeys`
-    and `config/appsettings/list` (POST /action, beyond Reader) carry the key and
-    settings posture.
+    """One web_apps.list(), then three per-app calls: `config/web` (GET, Reader) for the
+    runtime and FTPS state, `host/listkeys` and `config/appsettings/list` (POST /action,
+    beyond Reader) for the key and settings posture.
     """
     from azure.mgmt.web import WebSiteManagementClient
 
@@ -515,9 +462,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every HTTP request and response header at INFO, which would
+    # dominate the runner's stderr tail. Their warnings and errors still come through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 

@@ -2,31 +2,15 @@
 """
 Azure managed disk encryption at rest — customer-managed keys and Azure Disk Encryption
 
-For every managed disk in one subscription, reports which key encrypts it: the
-platform key (Microsoft-managed, the default), a customer-managed key held in a
-disk encryption set, or both (double encryption). Managed disks are ALWAYS
-encrypted at rest, so "encrypted: true" can never fail — the fact that varies is
-`encryption.type` and, for guest-level encryption, whether Azure Disk Encryption
-(dm-crypt / BitLocker) is switched on via `encryption_settings_collection`.
+Ported from `_get_disks()` in Prowler's
+prowler/providers/azure/services/vm/vm_service.py (Apache-2.0). The CMK reading is
+vm_ensure_{attached,unattached}_disks_encrypted_with_cmk verbatim: customer-managed when
+`encryption.type` is set and is not "EncryptionAtRestWithPlatformKey".
 
-Attached and unattached disks are reported and summarized SEPARATELY. That split
-is why this is its own evidence set: an unattached disk still holds the data of
-whatever VM it was detached from, nothing is watching it, and Prowler makes it a
-distinct finding for exactly that reason
-(vm_ensure_attached_disks_encrypted_with_cmk /
-vm_ensure_unattached_disks_encrypted_with_cmk). Every record carries `attached`
-plus the VM ids in `vms_attached`, and the summary breaks CMK coverage out three
-ways: all disks, attached only, unattached only.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/vm/vm_service.py `_get_disks()` (Apache-2.0),
-which reads the same azure-mgmt-compute SDK, so the attribute paths transfer
-directly. The CMK reading is the two checks named above, verbatim: a disk counts
-as customer-managed when `encryption.type` is set and is not
-"EncryptionAtRestWithPlatformKey".
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Managed disks are ALWAYS encrypted at rest, so "encrypted: true" can never fail — what
+varies is `encryption.type` and whether Azure Disk Encryption (dm-crypt / BitLocker) is
+on. Attached and unattached disks are summarized SEPARATELY, as Prowler's two checks do:
+an unattached disk still holds the data of whatever VM it was detached from.
 """
 
 import logging
@@ -58,27 +42,24 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_disk_encryption_status")
 
-# encryption.type (the EncryptionType enum). "EncryptionAtRestWithPlatformKey" is
-# the Microsoft-managed default; the other two involve a customer-managed key held
-# in a disk encryption set, and "…PlatformAndCustomerKeys" is double encryption.
+# encryption.type (the EncryptionType enum): "…PlatformKey" is the Microsoft-managed
+# default, the other two involve a customer-managed key held in a disk encryption set,
+# and "…PlatformAndCustomerKeys" is double encryption.
 ENCRYPTION_PLATFORM_KEY = "encryptionatrestwithplatformkey"
 ENCRYPTION_DOUBLE = "EncryptionAtRestWithPlatformAndCustomerKeys"
 
-# network_access_policy values that keep the disk's export path off the Internet.
-# "AllowAll" is the permissive default; a SAS URL can then be minted for the disk.
+# network_access_policy values that keep the disk's export path off the Internet;
+# "AllowAll" is the permissive default, under which a SAS URL can be minted for it.
 RESTRICTED_NETWORK_ACCESS_POLICIES = ("DenyAll", "AllowPrivate")
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: the only code that touches an azure-mgmt model ---
 
 def project_encryption_settings(element) -> dict:
     """Read one `EncryptionSettingsElement` — an Azure Disk Encryption key pair.
 
-    Only the Key Vault *identity* is projected, never `disk_encryption_key.secret_url`
-    or `key_encryption_key.key_url`. Those URLs address the BitLocker/dm-crypt key
-    material itself; the control-relevant fact is which vault holds it and whether
-    the volume key is itself wrapped by a KEK, so the URLs are deliberately left
-    out of the evidence file.
+    Only the vault *identity* is projected — `disk_encryption_key.secret_url` and
+    `key_encryption_key.key_url` address the key material, so they stay out of evidence.
     """
     disk_key = model_attr(element, "disk_encryption_key")
     key_encryption_key = model_attr(element, "key_encryption_key")
@@ -96,19 +77,10 @@ def project_encryption_settings(element) -> dict:
 def project_disk(disk) -> dict:
     """Read a `Disk` model's attributes into a flat snake_case dict.
 
-    Attribute access is stable across the azure-mgmt generator styles; `as_dict()`
-    is not (azure-mgmt-compute 38.x is on the `_model_base` runtime, whose
-    `as_dict()` emits the camelCase wire shape with everything but id/name/location/
-    sku/managedBy nested under "properties"). Confining the SDK to this one function
-    keeps every transform below pure dict-in/dict-out — and testable with no azure-*
-    package installed.
-
-    `model_attr`'s enum unwrapping is load-bearing here: `encryption.type` is an
-    `EncryptionType` member, and `str()` on one renders
-    "EncryptionType.ENCRYPTION_AT_REST_WITH_CUSTOMER_KEY" rather than the wire value
-    — which would invert the CMK comparison below and put an enum repr in the
-    evidence. `os_type`, `disk_state`, `sku.name`, `network_access_policy` and
-    `public_network_access` are all enums too.
+    `model_attr`'s enum unwrapping is load-bearing here: `str()` on an `EncryptionType`
+    member renders "EncryptionType.ENCRYPTION_AT_REST_WITH_CUSTOMER_KEY" rather than the
+    wire value, which would invert the CMK comparison below. `os_type`, `disk_state`,
+    `sku.name` and both network-access fields are enums too.
     """
     encryption = model_attr(disk, "encryption")
     settings_collection = model_attr(disk, "encryption_settings_collection")
@@ -137,8 +109,8 @@ def project_disk(disk) -> dict:
         "disk_size_gb": model_attr(disk, "disk_size_gb"),
         "disk_state": model_attr(disk, "disk_state"),
         "sku_name": model_attr(sku, "name"),
-        # Prowler's two sources for "which VMs is this attached to": managed_by is
-        # the single owner, managed_by_extended the shared-disk owner list.
+        # Prowler's two attachment sources: managed_by is the single owner,
+        # managed_by_extended the shared-disk owner list.
         "managed_by": model_attr(disk, "managed_by"),
         "managed_by_extended": model_attr(disk, "managed_by_extended"),
         # --- export exposure ---
@@ -147,16 +119,15 @@ def project_disk(disk) -> dict:
     }
 
 
-# --- pure transforms (flat snake_case dicts in, evidence records out) ---
+# --- pure transforms (dicts in, evidence records out) ---
 
 def is_customer_managed(encryption_type) -> bool:
     """Prowler's CMK condition, verbatim (as its inverse).
 
-    vm_ensure_attached_disks_encrypted_with_cmk fails when `not encryption_type or
-    encryption_type == "EncryptionAtRestWithPlatformKey"`, so a disk is
-    customer-managed exactly when the type is present and is something else. Written
-    as "not the platform key" rather than an allow-list of the two CMK values so a
-    future encryption type is not silently reported as platform-managed.
+    The check fails when `not encryption_type or encryption_type ==
+    "EncryptionAtRestWithPlatformKey"`. Written as "not the platform key" rather than an
+    allow-list of CMK values, so a future encryption type is not silently reported as
+    platform-managed.
     """
     if not encryption_type:
         return False
@@ -175,14 +146,11 @@ def encryption_settings_record(settings: dict) -> dict:
 def disk_record(disk: dict) -> dict:
     """Normalize one projected managed disk into an evidence record.
 
-    Takes `project_disk()`'s output. `vms_attached` is Prowler's construction:
-    managed_by first, then any managed_by_extended entries (a shared disk attached
-    to several VMs). `attached` is what the two Prowler checks branch on, so it is
-    materialized rather than left for a reader to infer from an empty list.
-
-    Optional booleans are coerced with `bool(x or False)`: Azure omits a false-y
-    field rather than returning `false`, and a validator regex asserting `false`
-    would not match `null`.
+    `vms_attached` is Prowler's construction: managed_by first, then any
+    managed_by_extended entries (a shared disk attached to several VMs); `attached` is
+    what the two Prowler checks branch on. Optional booleans are coerced with
+    `bool(x or False)`: Azure omits a false-y field, and a regex asserting `false` would
+    not match `null`.
     """
     resource_id = disk.get("id")
     settings_collection = disk.get("encryption_settings_collection") or {}
@@ -243,10 +211,7 @@ def summarize(disks: list[dict]) -> dict:
     """CMK coverage is the headline, computed three ways: all / attached / unattached.
 
     Managed disks are encrypted at rest unconditionally, so a generic "encrypted"
-    percentage would be a constant 100 and prove nothing (the same reason
-    storage_encryption_status reports CMK coverage instead). The attached /
-    unattached split mirrors Prowler's two separate checks: an orphaned disk under a
-    platform key is the finding operators most often miss.
+    percentage would be a constant 100 and prove nothing.
     """
     attached = [d for d in disks if d["attached"]]
     unattached = [d for d in disks if not d["attached"]]
@@ -267,19 +232,15 @@ def summarize(disks: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def collect_disks(subscription_id, cred, collector: Collector) -> list[dict]:
     """One subscription-wide disks.list().
 
-    The list response carries the whole encryption / attachment / export projection,
-    so no per-disk GET is needed. `disks.list()` is the subscription-scoped variant
-    (vs `list_by_resource_group`) and returns an ItemPaged, so the SDK follows
-    nextLink itself.
-
-    The SDK import lives inside the guarded factory so a missing azure-mgmt-compute
-    is recorded as a failure (classified `internal_error`) and still writes evidence
-    plus a status file, rather than aborting the process with a traceback.
+    The list response carries the whole projection (no per-disk GET needed) and is an
+    ItemPaged, so the SDK follows nextLink. The SDK import lives inside the guarded
+    factory so a missing azure-mgmt-compute becomes a recorded failure (classified
+    `internal_error`) with evidence plus a status file, not a traceback.
     """
 
     def _client():
@@ -304,9 +265,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every request and response header at INFO, which would bury
+    # this fetcher's lines in the runner's stderr tail. Warnings still come through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 

@@ -2,34 +2,14 @@
 """
 Azure SQL transparent data encryption (TDE) and its key source
 
-For every Azure SQL logical server in one subscription, reports the server's
-encryption protector — whether TDE is protected by a customer-managed key held in
-Key Vault (`server_key_type: AzureKeyVault`) or by the platform's service-managed
-key — and the per-database TDE state underneath it.
+Per logical server: the encryption protector (customer-managed Key Vault key vs the
+platform key) and each database's TDE state.
 
-TDE is ON BY DEFAULT for every database created since 2017, so a generic
-"encrypted / total" percentage would sit at a constant 100 and prove nothing. The
-fact that actually varies is the KEY SOURCE, so the summary tracks CMK coverage
-across servers, exactly as fetchers/azure/storage_encryption_status does for
-storage accounts. Per-database TDE state is still collected, because a database
-restored from an older backup or explicitly turned off can be unencrypted under
-an otherwise CMK-protected server.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/sqlserver/sqlserver_service.py (Apache-2.0),
-which reads the same azure-mgmt-sql SDK. Two divergences from Prowler, both
-verified against azure-mgmt-sql 4.0.0:
-
-- Prowler reads the TDE state as `.status`; on 4.0.0 the field is `.state`
-  (`LogicalDatabaseTransparentDataEncryption.properties.state`) and `.status` does
-  not exist. Reading Prowler's spelling here would report every database's TDE as
-  unknown.
-- Prowler calls `transparent_data_encryptions.get(...,
-  transparent_data_encryption_name="current")`; 4.0.0 renamed that parameter to
-  `tde_name`, so the name is passed POSITIONALLY below and works on either.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Ported from prowler/providers/azure/services/sqlserver/sqlserver_service.py
+(Apache-2.0), diverging twice on azure-mgmt-sql 4.0.0: the TDE state field is
+`.state`, not Prowler's `.status` (absent there — every database would read as
+unknown), and the protector name is passed POSITIONALLY because 4.0.0 renamed
+`transparent_data_encryption_name` to `tde_name`.
 """
 
 import logging
@@ -61,32 +41,22 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_sql_encryption_status")
 
-# EncryptionProtector.server_key_type. "AzureKeyVault" means TDE is protected by a
-# customer-managed key in Key Vault (BYOK); "ServiceManaged" is the platform-managed
-# default. This is the one encryption field on Azure SQL that genuinely varies.
+# EncryptionProtector.server_key_type: "AzureKeyVault" = a customer-managed Key Vault
+# key (BYOK), "ServiceManaged" = the platform default.
 SERVER_KEY_TYPE_CMK = "azurekeyvault"
 
 # TransparentDataEncryptionState. Azure returns "Enabled" / "Disabled".
 TDE_ENABLED = "enabled"
 
-# `master` exists on every logical server, is created and managed by Azure, and its
-# TDE state is not customer-controlled. Prowler excludes it from both TDE checks, so
-# the summary's user-database counts exclude it too — it stays in the evidence with
-# `is_system_database: true` so a reader can see it was accounted for, not dropped.
+# `master` is Azure-created and its TDE state is not customer-controlled, so (like
+# Prowler) it is excluded from the user-database counts — but kept in the evidence
+# with `is_system_database: true` rather than dropped.
 SYSTEM_DATABASES = ("master",)
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: azure-mgmt models in, flat dicts out ---
 
 def project_sql_server(server) -> dict:
-    """Read a `Server` model's attributes into a flat snake_case dict.
-
-    azure-mgmt-sql 4.0.0 is on the newer `_model_base` generator, which keeps a
-    nested `properties` model but also forwards the flattened snake_case names to
-    it — verified for this exact version, so `server.minimal_tls_version` resolves
-    to `properties.minimalTlsVersion`. `as_dict()` would instead emit the camelCase
-    wire shape nested under "properties", which is why nothing here uses it.
-    """
     return {
         "id": model_attr(server, "id"),
         "name": model_attr(server, "name"),
@@ -99,12 +69,7 @@ def project_sql_server(server) -> dict:
 
 
 def project_encryption_protector(protector) -> dict:
-    """Read an `EncryptionProtector` model into a flat dict — the CMK evidence.
-
-    `server_key_name` is the Key Vault key the server is bound to (or
-    "ServiceManaged" when it is not bound to one); `server_key_type` is the field
-    the CMK determination is made from.
-    """
+    """Read an `EncryptionProtector` — the CMK evidence."""
     return {
         "id": model_attr(protector, "id"),
         "name": model_attr(protector, "name"),
@@ -118,7 +83,6 @@ def project_encryption_protector(protector) -> dict:
 
 
 def project_database(database) -> dict:
-    """Read a `Database` model into a flat dict."""
     return {
         "id": model_attr(database, "id"),
         "name": model_attr(database, "name"),
@@ -132,10 +96,9 @@ def project_database(database) -> dict:
 def project_transparent_data_encryption(tde) -> dict:
     """Read a `LogicalDatabaseTransparentDataEncryption` model into a flat dict.
 
-    `state` — NOT Prowler's `status`, which does not exist on azure-mgmt-sql 4.0.0
-    (see the module docstring). The value is a `TransparentDataEncryptionState`
-    enum; `model_attr` unwraps it to "Enabled" / "Disabled" so the comparison below
-    is against a real wire string and not "TransparentDataEncryptionState.ENABLED".
+    `state`, NOT Prowler's `status` (see the module docstring). The value is a
+    `TransparentDataEncryptionState` enum, which `model_attr` unwraps to the wire
+    string "Enabled" / "Disabled" for the comparison below.
     """
     return {
         "id": model_attr(tde, "id"),
@@ -148,12 +111,7 @@ def project_transparent_data_encryption(tde) -> dict:
 # --- pure transforms (flat snake_case dicts in, evidence records out) ---
 
 def encryption_protector_record(protector: dict | None) -> dict | None:
-    """Normalize a projected encryption protector; None stays None.
-
-    None means the protector GET did not answer for this server (recorded as a
-    failure by the caller) — deliberately distinct from a protector that answered
-    "ServiceManaged", which is a real posture.
-    """
+    """None means the protector GET did not answer — not the same as "ServiceManaged"."""
     if not protector:
         return None
     return {
@@ -171,11 +129,8 @@ def encryption_protector_record(protector: dict | None) -> dict | None:
 
 
 def database_record(database: dict, tde: dict | None) -> dict:
-    """Normalize one projected database plus its TDE state.
-
-    `tde_state` is None when the TDE GET did not answer for this database. That is
-    NOT read as "disabled" — an unknown state must stay unknown, or a collection
-    gap would be published as a finding.
+    """An unanswered TDE GET stays None: reading it as "disabled" would publish a gap
+    as a finding.
     """
     name = database.get("name") or ""
     state = (tde or {}).get("state")
@@ -194,7 +149,6 @@ def database_record(database: dict, tde: dict | None) -> dict:
 
 
 def server_record(server: dict, protector: dict | None, databases: list[dict]) -> dict:
-    """Assemble one server's encryption evidence from its projected parts."""
     resource_id = server.get("id")
     protector_record = encryption_protector_record(protector)
     key_type = (protector_record or {}).get("server_key_type")
@@ -209,19 +163,17 @@ def server_record(server: dict, protector: dict | None, databases: list[dict]) -
         "version": server.get("version"),
         "state": server.get("state"),
         "fully_qualified_domain_name": server.get("fully_qualified_domain_name"),
-        # --- the encryption evidence that varies ---
+        # --- encryption ---
         "encryption_protector": protector_record,
         "server_key_type": key_type,
         "customer_managed_key": str(key_type or "").lower() == SERVER_KEY_TYPE_CMK,
-        # --- per-database TDE, excluding the Azure-managed `master` ---
+        # --- per-database TDE (user-database counts exclude `master`) ---
         "databases": databases,
         "total_databases": len(databases),
         "total_user_databases": len(user_databases),
         "tde_enabled_user_databases": sum(1 for d in user_databases if d["tde_enabled"] is True),
         "tde_disabled_user_databases": sum(1 for d in user_databases if d["tde_enabled"] is False),
-        # True only when every user database is confirmed encrypted. A server with
-        # no user databases is not "fully encrypted" — there is nothing to encrypt —
-        # so it reports None rather than a vacuous True.
+        # A server with no user databases reports None, not a vacuous True.
         "all_user_databases_tde_enabled": (
             all(d["tde_enabled"] is True for d in user_databases) if user_databases else None
         ),
@@ -229,12 +181,8 @@ def server_record(server: dict, protector: dict | None, databases: list[dict]) -
 
 
 def summarize(servers: list[dict]) -> dict:
-    """CMK coverage is the headline, not an encrypted/total percentage.
-
-    TDE is on by default on Azure SQL, so an "encrypted" percentage would be a
-    constant 100. What varies — and what a reviewer needs — is how many servers
-    protect TDE with a customer-managed Key Vault key, mirroring how
-    storage_encryption_status reports `cmk_percentage`.
+    """CMK coverage, not encrypted/total: TDE is on by default, so an "encrypted"
+    percentage would be a constant 100.
     """
     total = len(servers)
     cmk = sum(1 for s in servers if s["customer_managed_key"])
@@ -263,21 +211,17 @@ def summarize(servers: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
-# Markers for "this optional sub-resource was never configured", which Azure answers
-# with a 404 rather than an empty body. Not a collection failure — the same
-# convention as the AWS fetchers' not-enabled handling.
+# Azure answers "this optional sub-resource was never configured" with a 404, not an
+# empty body. That is evidence of absence, not a collection failure, and it must not
+# discard the rest of the server's evidence.
 NOT_FOUND_TYPES = ("resourcenotfounderror",)
 NOT_FOUND_MARKERS = ("(resourcenotfound)", "(404)", "was not found", "could not be found")
 
 
 def is_not_found(exc: BaseException) -> bool:
-    """Is this Azure's "that optional sub-resource does not exist" answer?
-
-    LOCAL HELPER (duplicated in the sibling database fetchers) — azure_common is
-    off-limits for concurrent-edit reasons; consolidate after merge.
-    """
+    """Azure's "that optional sub-resource does not exist" answer (also in siblings)."""
     if type(exc).__name__.lower() in NOT_FOUND_TYPES:
         return True
     message = f"{getattr(exc, 'message', '') or ''} {exc}".lower()
@@ -285,13 +229,7 @@ def is_not_found(exc: BaseException) -> bool:
 
 
 def _optional_get(collector: Collector, operation: str, fn):
-    """Run one GET whose absence is evidence, not a failure.
-
-    Returns None both when the resource genuinely does not exist (logged, NOT
-    recorded) and when the call failed (recorded). The caller distinguishes them by
-    checking `collector.ok` — for this fetcher's purposes both mean "no data", and
-    only the second must fail the run.
-    """
+    """Run one GET whose absence is evidence: a 404 is logged, a real failure recorded."""
     try:
         return fn()
     except Exception as exc:  # noqa: BLE001 — boundary: classify, don't crash the run
@@ -303,11 +241,8 @@ def _optional_get(collector: Collector, operation: str, fn):
 
 
 def collect_sql_servers(subscription_id, cred, collector: Collector) -> list[dict]:
-    """One servers.list(), then per server: 1 protector GET + databases + a TDE GET each.
-
-    This is the deepest per-resource fan-out of any Azure service in the catalog.
-    Every call is guarded individually so one inaccessible server does not blank out
-    the rest of the subscription.
+    """One servers.list(); per server a protector GET, databases, a TDE GET each — every
+    call guarded separately so one inaccessible server does not blank out the rest.
     """
 
     def _client():
@@ -315,9 +250,7 @@ def collect_sql_servers(subscription_id, cred, collector: Collector) -> list[dic
 
         return SqlManagementClient(credential=cred, subscription_id=subscription_id)
 
-    # Guarded (not a bare import at function top level) so a missing azure-mgmt-sql
-    # is recorded as internal_error and the evidence file is still written, rather
-    # than raising past main() and leaving no evidence and no status file.
+    # Guarded: a missing azure-mgmt-sql becomes internal_error, evidence still written.
     client = collector.guard("sql.SqlManagementClient (init)", _client)
     if client is None:
         return []
@@ -370,9 +303,8 @@ def _collect_databases(client, collector: Collector, group: str, server_name: st
             tde = _optional_get(
                 collector,
                 f"sql.transparent_data_encryptions.get ({server_name}/{database_name})",
-                # "current" passed POSITIONALLY: azure-mgmt-sql 4.0.0 renamed the
-                # parameter from Prowler's `transparent_data_encryption_name` to
-                # `tde_name`, and a positional argument works on either spelling.
+                # "current" positional: 4.0.0 renamed Prowler's
+                # `transparent_data_encryption_name` to `tde_name`.
                 lambda: project_transparent_data_encryption(
                     client.transparent_data_encryptions.get(
                         group, server_name, database_name, "current"
@@ -389,9 +321,7 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every request/response header at INFO — far too noisy here.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -405,10 +335,7 @@ def main() -> int:
     servers: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list call, so a zero-server result is legible: Azure
-        # returns an empty list rather than an error for an unregistered provider,
-        # which would otherwise make "no SQL in this subscription" indistinguishable
-        # from "Microsoft.Sql was never registered".
+        # Asked first: an unregistered provider returns an empty list, not an error.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.Sql"
         )

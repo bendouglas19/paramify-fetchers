@@ -49,14 +49,6 @@ evidence_set:
   reference_id: EVD-AZURE-NSG
   name: Azure Network Security Groups
   instructions: >
-    Script: fetcher.py. Azure SDK calls (azure-mgmt-network
-    NetworkManagementClient): network_security_groups.list_all() for each NSG's id,
-    name, location and inline security_rules[] (id, name, destination_port_range,
-    protocol, source_address_prefix, access, direction — plus the list-valued
-    destination_port_ranges / source_address_prefixes a rule uses instead of the
-    singular form); virtual_networks.list_all() for each VNet's
-    enable_ddos_protection and subnets[] with the id of the attached
-    network_security_group. A rule is read as Internet-exposed when its port range
-    covers the port, the protocol is TCP or any, the source prefix is Internet / * /
-    0.0.0.0/0, access is Allow and direction is Inbound. A subnet with a null nsg_id
-    is unprotected.
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-network NetworkManagementClient):
+    network_security_groups.list_all(), virtual_networks.list_all(). Maps to
+    KSI-CNA-01, KSI-CNA-02, KSI-CNA-03, KSI-CNA-05.

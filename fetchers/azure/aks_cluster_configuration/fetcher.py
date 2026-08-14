@@ -2,39 +2,10 @@
 """
 Azure Kubernetes Service cluster configuration — API server exposure, RBAC, monitoring
 
-For every managed cluster in one subscription, collects the control-plane
-configuration a reviewer reads to judge how the cluster is governed:
-
-- **API server exposure.** `public_fqdn` vs `private_fqdn`, whether the cluster is a
-  private cluster, and whether the API server has authorized IP ranges — the three
-  facts that together answer "who can reach the Kubernetes API".
-- **Authorization.** Kubernetes RBAC (`enable_rbac`), Entra-integrated Azure RBAC,
-  and whether the local (certificate) admin accounts are disabled, which is the
-  account that bypasses Entra entirely.
-- **Node exposure.** Each agent pool's `enable_node_public_ip`.
-- **Network policy.** `network_profile.network_policy` — absent means pod-to-pod
-  traffic is unrestricted.
-- **Patching.** The Kubernetes version (requested and running) and the auto-upgrade
-  channel for the cluster and for the node OS.
-- **Monitoring.** Microsoft Defender for Containers security monitoring and Azure
-  Monitor managed Prometheus metrics.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/aks/aks_service.py (Apache-2.0), which reads the
-same azure-mgmt-containerservice SDK, so the attribute paths transfer directly. The
-derived readings replicate aks_cluster_rbac_enabled, aks_cluster_defender_enabled,
-aks_cluster_azure_monitor_enabled, aks_cluster_local_accounts_disabled,
-aks_cluster_auto_upgrade_enabled, aks_network_policy_enabled and
-aks_clusters_public_access_disabled.
-
-ONE DEPARTURE FROM PROWLER, deliberate: Prowler drops any cluster whose
-`kubernetes_version` is falsy. Here every cluster the API returns is reported — a
-cluster mid-provision or in a failed state is exactly the one whose configuration a
-reviewer needs to see, and silently omitting it would make the evidence read as
-"this cluster does not exist".
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Ported from Prowler's prowler/providers/azure/services/aks/aks_service.py
+(Apache-2.0), with ONE DELIBERATE DEPARTURE: Prowler drops any cluster whose
+`kubernetes_version` is falsy. Every cluster the API returns is reported here — a
+cluster mid-provision or in a failed state is exactly the one a reviewer needs to see.
 """
 
 import logging
@@ -66,21 +37,15 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_aks_cluster_configuration")
 
-# auto_upgrade_profile.upgrade_channel. "none" is the literal the API returns for
-# "no automatic upgrades"; the field being absent means the same thing.
+# auto_upgrade_profile.upgrade_channel: "none" is the literal for "no automatic
+# upgrades"; an absent field means the same thing.
 UPGRADE_CHANNEL_NONE = "none"
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: the only code that touches an azure-mgmt model ---
 
 def project_agent_pool_profile(profile) -> dict:
-    """Read a `ManagedClusterAgentPoolProfile` model into a flat dict.
-
-    Prowler keeps only `name` and `enable_node_public_ip` (what its public-access
-    check reads). The pool's mode, size, count, OS and orchestrator version are
-    projected too: an agent pool IS the node estate, and "which pools run which
-    version on what" is the question a reviewer asks next.
-    """
+    """Read a `ManagedClusterAgentPoolProfile`; Prowler keeps only name + public IP."""
     return {
         "name": model_attr(profile, "name"),
         "enable_node_public_ip": model_attr(profile, "enable_node_public_ip"),
@@ -100,18 +65,9 @@ def project_agent_pool_profile(profile) -> dict:
 def project_managed_cluster(cluster) -> dict:
     """Read a `ManagedCluster` model's attributes into a flat snake_case dict.
 
-    Attribute access is stable across the azure-mgmt generator styles; `as_dict()`
-    is not (azure-mgmt-containerservice 41.x is on the `_model_base` runtime, whose
-    `as_dict()` emits the camelCase wire shape with every profile nested under
-    "properties"). Confining the SDK to this one function keeps every transform below
-    pure dict-in/dict-out — and testable with no azure-* package installed.
-
-    The Defender and Azure Monitor readings are three and two optional hops deep
-    respectively (`security_profile.defender.security_monitoring.enabled`,
-    `azure_monitor_profile.metrics.enabled`); Prowler stacks getattr the same way,
-    because a cluster that never enabled either omits the whole subtree.
-    `network_policy` and `upgrade_channel` are enum members, which `model_attr`
-    unwraps to their wire strings.
+    The Defender and Azure Monitor readings are three and two optional hops deep: a
+    cluster that never enabled either omits the whole subtree. `network_policy` and
+    `upgrade_channel` are enums, which `model_attr` unwraps to their wire strings.
     """
     network_profile = model_attr(cluster, "network_profile")
     api_server_access = model_attr(cluster, "api_server_access_profile")
@@ -173,15 +129,10 @@ def project_managed_cluster(cluster) -> dict:
     }
 
 
-# --- pure transforms (flat snake_case dicts in, evidence records out) ---
+# --- pure transforms (dicts in, evidence records out) ---
 
 def agent_pool_record(profile: dict) -> dict:
-    """Normalize one projected agent pool.
-
-    `enable_node_public_ip` / `enable_encryption_at_host` / `enable_auto_scaling` are
-    coerced with `bool(x or False)`: Azure omits them when off rather than returning
-    false, and Prowler reads `enable_node_public_ip` with a False default.
-    """
+    """Normalize one projected agent pool, coercing the optional `enable_*` flags."""
     return {
         "name": profile.get("name"),
         "enable_node_public_ip": bool(profile.get("enable_node_public_ip") or False),
@@ -201,9 +152,8 @@ def agent_pool_record(profile: dict) -> dict:
 def cluster_record(cluster: dict) -> dict:
     """Normalize one projected managed cluster into an evidence record.
 
-    Takes `project_managed_cluster()`'s output. Every optional boolean is coerced
-    with `bool(x or False)` — Azure omits a false-y field rather than returning
-    `false`, and a validator regex asserting `false` would not match `null`.
+    Optional booleans are coerced with `bool(x or False)`: Azure omits a false-y field
+    rather than returning `false`, and a regex asserting `false` would not match `null`.
     """
     resource_id = cluster.get("id")
     agent_pools = [agent_pool_record(p) for p in (cluster.get("agent_pool_profiles") or [])]
@@ -224,8 +174,8 @@ def cluster_record(cluster: dict) -> dict:
         "public_network_access": cluster.get("public_network_access"),
         "private_cluster": bool(cluster.get("enable_private_cluster") or False),
         "authorized_ip_ranges": authorized_ip_ranges,
-        # A private cluster has no public API endpoint at all, so it needs no IP
-        # allow-list; either one restricts who can reach the API server.
+        # A private cluster has no public API endpoint, so it needs no IP allow-list;
+        # either one restricts who can reach the API server.
         "api_server_access_restricted": bool(
             authorized_ip_ranges or cluster.get("enable_private_cluster")
         ),
@@ -261,7 +211,7 @@ def cluster_record(cluster: dict) -> dict:
         "node_resource_group": cluster.get("node_resource_group"),
         "agent_pool_profiles": agent_pools,
         # Prowler's aks_clusters_created_with_private_nodes reading: any pool handing
-        # its nodes a public IP puts nodes on the Internet.
+        # its nodes a public IP puts them on the Internet.
         "node_public_ip_pools": [p["name"] for p in agent_pools if p["enable_node_public_ip"]],
     }
 
@@ -296,28 +246,22 @@ def summarize(clusters: list[dict]) -> dict:
         ),
         "clusters_with_public_node_ips": sum(1 for c in clusters if c["node_public_ip_pools"]),
         "total_agent_pools": sum(len(c["agent_pool_profiles"]) for c in clusters),
-        # Sorted unique so a reviewer sees the version spread without reading every
-        # record, and so the payload stays byte-stable across runs.
+        # Sorted unique: the version spread at a glance, and a byte-stable payload.
         "kubernetes_versions": sorted(
             {c["kubernetes_version"] for c in clusters if c["kubernetes_version"]}
         ),
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def collect_clusters(subscription_id, cred, collector: Collector) -> list[dict]:
     """One subscription-wide managed_clusters.list().
 
-    The list response carries the whole projection — every profile a check reads is
-    part of the cluster resource — so no per-cluster GET is needed. `list()` is the
-    subscription-scoped variant (vs `list_by_resource_group`) and returns an
-    ItemPaged, so the SDK follows nextLink itself.
-
-    The SDK import lives inside the guarded factory so a missing
-    azure-mgmt-containerservice is recorded as a failure (classified
-    `internal_error`) and still writes evidence plus a status file, rather than
-    aborting the process with a traceback.
+    The list response carries the whole projection (no per-cluster GET needed) and is an
+    ItemPaged, so the SDK follows nextLink. The SDK import lives inside the guarded
+    factory so a missing azure-mgmt-containerservice becomes a recorded failure
+    (classified `internal_error`) with evidence plus a status file, not a traceback.
     """
 
     def _client():
@@ -344,9 +288,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every request and response header at INFO, which would bury
+    # this fetcher's lines in the runner's stderr tail. Warnings still come through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 

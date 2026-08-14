@@ -1,34 +1,12 @@
 #!/usr/bin/env python3
-"""
-KSI-SVC-04 / KSI-SVC-06 / KSI-IAM-04 / KSI-RPL-03: Azure Key Vault configuration
+"""Azure Key Vault configuration for one subscription: the authorization model, the
+recoverability, network exposure and SKU of every vault.
 
-For each key vault in one subscription, reports which access model governs it
-(Azure RBAC or the legacy vault access policies), whether it is recoverable (soft
-delete + purge protection), how it is exposed to the network (public network
-access, network ACL default action, private endpoint connections), and its SKU.
-
-`enable_rbac_authorization` is the field to read first: it decides which of the
-two authorization models applies, and Prowler splits its key/secret expiration
-checks into RBAC and non-RBAC variants on exactly that basis
-(keyvault_rbac_key_expiration_set vs keyvault_key_expiration_set_in_non_rbac). The
-access policy entries are emitted alongside it — they are the model that governs
-when RBAC is off, and Azure returns an empty list for an RBAC vault, so the same
-field answers both readings without a second evidence set.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/keyvault/keyvault_service.py (Apache-2.0), whose
-`VaultProperties` projection this matches field for field; the SKU, network ACLs
-and access policies are added here because Prowler's checks
-(keyvault_access_only_through_private_endpoints, keyvault_private_endpoints) read
-them from the raw model rather than through its own projection.
-
-No key material, secret value or certificate is read: this fetcher only calls
-vaults.list_by_subscription() on the MANAGEMENT plane and never opens a vault's
-data plane. Access policies carry principal object ids and permission verbs, not
-credentials.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Ported from prowler/providers/azure/services/keyvault/keyvault_service.py
+(Apache-2.0), plus the SKU, network ACLs and access policies Prowler reads off the raw
+model. `enable_rbac_authorization` decides how the rest reads — Azure returns an empty
+`access_policies` list for an RBAC vault. Management plane only: no key material,
+secret value or certificate is read.
 """
 
 import logging
@@ -61,35 +39,28 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_key_vault_configuration")
 
-# The two authorization models a vault can be under. Which one applies is decided
-# by `enable_rbac_authorization`, and it changes how a reviewer must read the rest
-# of the evidence: under RBAC the grants live in Azure role assignments (outside
-# this evidence set), under access policies they are the `access_policies` list.
+# Selected by `enable_rbac_authorization`. Under RBAC the grants live in Azure role
+# assignments, outside this evidence set; otherwise they are `access_policies`.
 ACCESS_MODEL_RBAC = "rbac"
 ACCESS_MODEL_ACCESS_POLICY = "access_policy"
 
 # publicNetworkAccess is OMITTED by ARM when it was never restricted, and absent
-# means Enabled — Prowler encodes the same default inline
-# (`getattr(properties, "public_network_access", "Enabled") == "Disabled"`).
+# means Enabled — Prowler encodes the same default inline.
 PUBLIC_NETWORK_ACCESS_DEFAULT = "Enabled"
 
-# networkAcls.defaultAction when the whole block is absent. ARM omits networkAcls
-# entirely on a vault that was never firewalled, and the service default is Allow.
+# ARM omits networkAcls entirely on a vault that was never firewalled, and the
+# service default for defaultAction is Allow.
 NETWORK_ACL_DEFAULT_ACTION = "Allow"
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: the only code that touches an azure-mgmt model ---
 
 def properties_bag(model):
     """Return the model's `properties` sub-model, or the model itself.
 
-    azure-mgmt-keyvault 14.x does NOT flatten `properties` onto the resource:
-    `Vault` carries exactly {id, name, type, location, tags, properties} and
-    `vault.tenant_id` is absent (verified against the installed SDK), which is why
-    Prowler reads `keyvault.properties.tenant_id`. Older msrest-generated
-    azure-mgmt-keyvault releases DO flatten it, and then there is no `properties`
-    attribute at all. Returning the model itself in that case makes one projection
-    correct on both, without the caller having to know which SDK it got.
+    azure-mgmt-keyvault 14.x does NOT flatten `properties` onto the resource, so
+    `vault.tenant_id` is absent (verified against the installed SDK); older
+    msrest-generated releases DO flatten it, leaving no `properties` at all.
     """
     bag = model_attr(model, "properties")
     return model if bag is None else bag
@@ -98,9 +69,8 @@ def properties_bag(model):
 def _str_list(value) -> list:
     """Normalize a list-valued SDK field, unwrapping any `str` enum members.
 
-    `model_attr` unwraps an enum it is handed directly, but permission verbs and
-    IP rules arrive as LISTS of enums/models; an unwrapped member would put
-    "KeyPermissions.GET" in the evidence on a `str()`-based renderer.
+    `model_attr` unwraps an enum handed to it directly, but permission verbs and IP
+    rules arrive as LISTS; an unwrapped member reads "KeyPermissions.GET".
     """
     if not isinstance(value, list):
         return []
@@ -110,12 +80,9 @@ def _str_list(value) -> list:
 def _permission_verbs(permissions, *names) -> list:
     """Read one permission-verb list off an `AccessPolicyEntry.permissions` model.
 
-    The `keys` verb list is spelled `keys_property` on azure-mgmt-keyvault 14.x:
-    the model is Mapping-like, so the generator renamed the field to keep
-    `.keys()` working. Reading `keys` there returns the BOUND METHOD — truthy, not
-    a list, and it would render as "<bound method ...>" in the evidence. So the
-    candidate spellings are tried in order and anything that is not a list is
-    discarded rather than trusted.
+    The `keys` verb list is spelled `keys_property` on azure-mgmt-keyvault 14.x (the
+    model is Mapping-like, so the generator renamed it to keep `.keys()` working):
+    reading `keys` there returns the BOUND METHOD — truthy, not a list.
     """
     for name in names:
         value = model_attr(permissions, name)
@@ -154,10 +121,8 @@ def project_private_endpoint_connection(connection) -> dict:
 def project_vault(vault) -> dict:
     """Read a `Vault` model's attributes into a flat snake_case dict.
 
-    Values are the SDK's own, un-defaulted: `None` means "the API did not return
-    this field", and `vault_record()` decides how an absence reads. Every nested
-    model (`sku`, `network_acls`, an access policy's `permissions`) is routinely
-    absent, hence `model_attr`'s None-tolerance at every hop.
+    Un-defaulted: `None` means "the API did not return this field", and `vault_record()`
+    decides how an absence reads.
     """
     properties = properties_bag(vault)
     sku = model_attr(properties, "sku")
@@ -168,7 +133,7 @@ def project_vault(vault) -> dict:
         "name": model_attr(vault, "name"),
         "location": model_attr(vault, "location"),
         "type": model_attr(vault, "type"),
-        # --- authorization model (decides how the rest reads) ---
+        # --- authorization model ---
         "tenant_id": model_attr(properties, "tenant_id"),
         "enable_rbac_authorization": model_attr(properties, "enable_rbac_authorization"),
         "access_policies": [
@@ -216,12 +181,10 @@ def project_vault(vault) -> dict:
 def vault_record(vault: dict) -> dict:
     """Normalize one projected vault into an evidence record.
 
-    Optional booleans are COERCED, not passed through: ARM omits
-    `enablePurgeProtection` / `enableRbacAuthorization` entirely when they were
-    never turned on, so the raw value is None rather than False, and a validator
-    regex asserting `false` would not match `null`. Absent means disabled here —
-    there is no third state — and Prowler reads the same absences the same way
-    (`getattr(properties, "enable_purge_protection", False)`).
+    Optional booleans are COERCED: ARM omits `enablePurgeProtection` /
+    `enableRbacAuthorization` when never turned on, so the raw value is None and a
+    validator asserting `false` would not match `null`. Absent means disabled — no
+    third state — which is how Prowler reads the same absences.
     """
     resource_id = vault.get("id")
     network_acls = vault.get("network_acls") or {}
@@ -241,8 +204,7 @@ def vault_record(vault: dict) -> dict:
         "tenant_id": vault.get("tenant_id"),
         # --- authorization model ---
         "rbac_authorization_enabled": rbac,
-        # Derived so a reader never has to know that "RBAC on" makes the
-        # access_policies list inapplicable rather than merely empty.
+        # Derived: under RBAC the access_policies list is inapplicable, not empty.
         "access_model": ACCESS_MODEL_RBAC if rbac else ACCESS_MODEL_ACCESS_POLICY,
         "access_policies": policies,
         "access_policy_count": len(policies),
@@ -275,11 +237,7 @@ def vault_record(vault: dict) -> dict:
 
 
 def summarize(vaults: list[dict]) -> dict:
-    """RBAC adoption and recoverability are the headlines.
-
-    Both are the fields a reviewer is actually asking about: which authorization
-    model is in force, and whether a deleted vault (or key) can be recovered.
-    """
+    """RBAC adoption and recoverability are the headlines."""
     total = len(vaults)
     rbac = sum(1 for v in vaults if v["rbac_authorization_enabled"])
     recoverable = sum(1 for v in vaults if v["recoverable"])
@@ -304,10 +262,10 @@ def summarize(vaults: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def collect_key_vaults(subscription_id, cred, collector: Collector) -> list[dict]:
-    """One vaults.list_by_subscription() call — the whole projection is in it."""
+    """One vaults.list_by_subscription() call."""
     from azure.mgmt.keyvault import KeyVaultManagementClient
 
     def _client():
@@ -318,7 +276,7 @@ def collect_key_vaults(subscription_id, cred, collector: Collector) -> list[dict
         return []
 
     def _list():
-        # ItemPaged: the SDK follows nextLink itself, so pagination is handled.
+        # ItemPaged: the SDK follows nextLink itself.
         return [vault_record(project_vault(v)) for v in client.vaults.list_by_subscription()]
 
     vaults = collector.guard("keyvault.vaults.list_by_subscription", _list, default=[])
@@ -330,9 +288,7 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every request header at INFO; warnings still get through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -346,8 +302,7 @@ def main() -> int:
     vaults: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list call, so a zero-vault result is legible: Azure
-        # returns an empty list rather than an error for an unregistered provider.
+        # ARM returns an empty list, not an error, for an unregistered provider.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.KeyVault"
         )

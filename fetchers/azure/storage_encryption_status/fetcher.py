@@ -1,20 +1,10 @@
 #!/usr/bin/env python3
-"""
-KSI-SVC-03 / KSI-SVC-02 / KSI-SVC-06 / KSI-RPL-03: Azure Storage encryption at rest
+"""Azure Storage encryption at rest, per storage account in one subscription.
 
-For each storage account in one subscription, reports whether the account's
-encryption key comes from Key Vault (customer-managed, CMK) or from the platform
-(Microsoft-managed), plus the transit / network / key-rotation / soft-delete
-posture around it. Azure Storage is ALWAYS encrypted at rest, so "encrypted:
-true" can never fail — the fact that varies is `encryption.key_source` (CMK vs
+Azure Storage is ALWAYS encrypted at rest, so "encrypted: true" can never fail; what
+varies is `encryption.key_source` (customer-managed Key Vault key vs
 Microsoft.Storage) and whether infrastructure (double) encryption is on.
-
-Field projections are ported verbatim from Prowler's
-prowler/providers/azure/services/storage/storage_service.py (Apache-2.0), which
-reads the same azure-mgmt-storage SDK, so the attribute paths transfer directly.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Ported from prowler/providers/azure/services/storage/storage_service.py (Apache-2.0).
 """
 
 import logging
@@ -47,15 +37,13 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_storage_encryption_status")
 
-# encryption.key_source. "Microsoft.Keyvault" means the account's encryption key
-# is a customer-managed key held in Key Vault; "Microsoft.Storage" is the
-# platform-managed default.
+# encryption.key_source: "Microsoft.Keyvault" is a customer-managed key held in Key
+# Vault; "Microsoft.Storage" is the platform-managed default.
 KEY_SOURCE_KEYVAULT = "microsoft.keyvault"
 
-# Benign, per-account, expected: the account kind simply has no Blob (or File)
-# endpoint (e.g. a FileStorage or BlockBlobStorage account). Prowler string-matches
-# these and continues; they are NOT collection failures and must not push the
-# fetcher to exit 1.
+# Expected per-account: the account kind has no Blob (or File) endpoint (e.g. a
+# FileStorage or BlockBlobStorage account). Prowler string-matches these and
+# continues; they are NOT collection failures and must not push the fetcher to exit 1.
 BENIGN_UNSUPPORTED_SERVICE = (
     "Blob is not supported for the account.",
     "File is not supported for the account.",
@@ -67,16 +55,8 @@ BENIGN_UNSUPPORTED_SERVICE = (
 def project_storage_account(account) -> dict:
     """Read a `StorageAccount` model's attributes into a flat snake_case dict.
 
-    Attribute access is stable across the azure-mgmt generator styles; `as_dict()`
-    is not (on the `_model_base` SDKs it emits the camelCase wire shape nested
-    under "properties"). Confining the SDK to this one function keeps every
-    transform below pure dict-in/dict-out — and testable with no azure-* package
-    installed.
-
-    Values are the SDK's own, un-defaulted: `None` here means "the API did not
-    return this field", and `account_record()` is what decides how to read an
-    absence. Nested models (`encryption`, `key_policy`, `sku`) are frequently
-    absent, hence `model_attr`'s None-tolerance at every hop.
+    Values are un-defaulted: `None` means the API did not return the field, and
+    `account_record()` decides how to read an absence.
     """
     encryption = model_attr(account, "encryption")
     network_rule_set = model_attr(account, "network_rule_set")
@@ -136,11 +116,7 @@ def project_blob_service_properties(properties) -> dict:
 
 
 def project_file_service_properties(properties) -> dict:
-    """Read a `FileServiceProperties` model's attributes into a flat dict.
-
-    `protocol_settings.smb` is the deepest optional chain in this fetcher — both
-    hops are routinely absent, which is why each is its own None-tolerant read.
-    """
+    """Read a `FileServiceProperties` model's attributes into a flat dict."""
     share_policy = model_attr(properties, "share_delete_retention_policy")
     smb = model_attr(model_attr(properties, "protocol_settings"), "smb")
     return {
@@ -163,9 +139,8 @@ def project_file_service_properties(properties) -> dict:
 def _retention_policy(policy: dict | None) -> dict:
     """Normalize a {enabled, days} soft-delete policy, defaulting to off/0.
 
-    Mirrors Prowler's `DeleteRetentionPolicy(enabled=... or False, days=... or 0)`:
-    an absent or explicitly-null policy reads as disabled rather than unknown,
-    because the API omits the block when the feature was never turned on.
+    Mirrors Prowler: the API omits the block when the feature was never turned on,
+    so absent reads as disabled rather than unknown.
     """
     policy = policy if isinstance(policy, dict) else {}
     return {
@@ -186,11 +161,9 @@ def _semicolon_list(value) -> list:
 def account_record(account: dict) -> dict:
     """Normalize one projected storage account into an evidence record.
 
-    Every field below is Prowler's projection, with Prowler's defaults preserved:
-    the API omits `allow_cross_tenant_replication` / `allow_shared_key_access` /
-    `network_rule_set.bypass` / `network_rule_set.default_action` when they sit at
-    their (permissive) service defaults, so absent must read as that default, not
-    as None. Takes `project_storage_account()`'s output.
+    Prowler's defaults are preserved: the API omits allow_cross_tenant_replication,
+    allow_shared_key_access and the network_rule_set fields when they sit at their
+    (permissive) service defaults, so absent must read as that default, not as None.
     """
     resource_id = account.get("id")
     network_rule_set = account.get("network_rule_set") or {}
@@ -211,9 +184,8 @@ def account_record(account: dict) -> dict:
         "encryption_type": key_source,
         "customer_managed_key": str(key_source or "").lower() == KEY_SOURCE_KEYVAULT,
         # Coerced, not passed through: Azure OMITS requireInfrastructureEncryption
-        # when it was never enabled, so the raw value is None rather than False
-        # (confirmed live). A validator regex asserting `false` would not match
-        # `null`, and absent means disabled here — there is no third state.
+        # when it was never enabled (confirmed live), and a validator regex asserting
+        # `false` would not match `null`. Absent means disabled; there is no third state.
         "infrastructure_encryption": bool(account.get("infrastructure_encryption") or False),
         # --- encryption in transit ---
         "enable_https_traffic_only": bool(account.get("enable_https_traffic_only") or False),
@@ -240,8 +212,7 @@ def account_record(account: dict) -> dict:
         # --- durability / replication ---
         "replication_settings": account.get("replication_settings"),
         "allow_cross_tenant_replication": True if cross_tenant is None else bool(cross_tenant),
-        # Filled in by the blob/file service enrichment; None means "not collected
-        # for this account" (an account kind without that endpoint).
+        # Filled in by the blob/file enrichment; None = not collected (no endpoint).
         "blob_properties": None,
         "file_service_properties": None,
     }
@@ -282,8 +253,7 @@ def summarize(accounts: list[dict]) -> dict:
     """CMK coverage is the headline, not an encrypted/total percentage.
 
     Azure Storage encrypts at rest unconditionally, so a generic "encrypted"
-    percentage would be a constant 100 and prove nothing. What varies — and what a
-    reviewer needs — is how many accounts hold a customer-managed key.
+    percentage would be a constant 100 and prove nothing.
     """
     cmk = sum(1 for a in accounts if a["customer_managed_key"])
     total = len(accounts)
@@ -323,7 +293,7 @@ def summarize(accounts: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def _is_benign_unsupported(exc: BaseException) -> bool:
     message = str(exc).strip()
@@ -333,9 +303,8 @@ def _is_benign_unsupported(exc: BaseException) -> bool:
 def collect_storage_accounts(subscription_id, cred, collector: Collector) -> list[dict]:
     """One storage_accounts.list() plus a blob/file service GET per account.
 
-    The list response already carries the whole encryption / network / key-policy
-    projection; only versioning and the soft-delete policies need the per-account
-    service-properties GETs.
+    The list response already carries the encryption / network / key-policy fields;
+    only versioning and the soft-delete policies need the per-account GETs.
     """
     from azure.mgmt.storage import StorageManagementClient
 
@@ -389,9 +358,8 @@ def collect_storage_accounts(subscription_id, cred, collector: Collector) -> lis
 def _service_properties(collector: Collector, operation: str, account_name: str, fn):
     """Run one service-properties GET, tolerating the benign "not supported" error.
 
-    Not routed through Collector.guard because one specific message must NOT be
-    recorded as an API failure: an account kind with no Blob/File endpoint answers
-    "Blob is not supported for the account.", which is expected and would
+    Not routed through Collector.guard because "Blob is not supported for the
+    account." is expected for an account kind with no such endpoint and would
     otherwise fail the whole run. Prowler skips it the same way.
     """
     try:
@@ -411,9 +379,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every HTTP request and response header at INFO, which would
+    # bury this fetcher's own lines and dominate the runner's stderr tail.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 

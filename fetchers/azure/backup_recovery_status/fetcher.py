@@ -1,33 +1,13 @@
 #!/usr/bin/env python3
-"""
-KSI-RPL-01 / KSI-RPL-02 / KSI-RPL-03 / KSI-RPL-04: Azure backup and recovery status
+"""Azure backup and recovery: every Recovery Services vault, the backup policies it
+defines, its own soft-delete / immutability / restore posture, and what it protects.
 
-For one subscription, every Recovery Services vault with the backup policies it
-defines (schedule and retention, plus the vault's own soft-delete, immutability and
-cross-region-restore posture) and the items it actually protects (workload type,
-which policy governs each, protection state and last backup status). This is the
-recovery-planning evidence: not "is backup available" but "what is protected, under
-what retention, and did the last backup succeed".
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/recovery/recovery_service.py (Apache-2.0) —
-`_get_vaults`, `_get_backup_policies`, `_get_backup_protected_items` and
-`_get_backup_policy_retention_days` — and read by the checks
-recovery_vault_has_protected_items and
-recovery_vault_backup_policy_retention_adequate (whose MINIMUM_RETENTION_DAYS = 30
-is the threshold reported here).
-
-Retention is where this goes beyond Prowler: Prowler reads only
-`retention_policy.daily_schedule.retention_duration.count`, so a policy that keeps
-weekly recovery points for twelve weeks reads as having NO retention. The whole
-retention policy is projected (daily / weekly / monthly / yearly schedules, the
-`SimpleRetentionPolicy` shape used by SQL, and the per-database
-`sub_protection_policy` list used by SAP HANA and SQL-in-VM), and a
-`max_retention_days` is derived from every duration found so the threshold is
-judged against what the policy actually keeps.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Ported from prowler/providers/azure/services/recovery/recovery_service.py (Apache-2.0),
+whose MINIMUM_RETENTION_DAYS = 30 is the threshold reported here. Retention goes beyond
+Prowler, which reads only `retention_policy.daily_schedule.retention_duration.count` —
+so a policy keeping weekly recovery points for twelve weeks reads as having NO
+retention. Every schedule shape is projected instead, and `max_retention_days` derived
+from all of them.
 """
 
 import logging
@@ -61,15 +41,14 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_backup_recovery_status")
 
-# Prowler's recovery_vault_backup_policy_retention_adequate constant. Stated in the
-# summary alongside the coverage number so the threshold the percentage is measured
-# against is never implicit.
+# Prowler's recovery_vault_backup_policy_retention_adequate constant. Emitted in the
+# summary so the threshold the percentage is measured against is never implicit.
 MINIMUM_RETENTION_DAYS = 30
 
-# RetentionDurationType -> days, for deriving one comparable retention figure from
-# the four schedule granularities. Approximate BY DESIGN (a month is not 30 days),
-# which is why the raw {count, duration_type} pairs are emitted alongside: this
-# number exists to be thresholded, not to be quoted as a fact.
+# RetentionDurationType -> days, to make the four granularities comparable.
+# Approximate BY DESIGN (a month is not 30 days), which is why the raw
+# {count, duration_type} pairs are emitted too: this number exists to be
+# thresholded, not quoted as a fact.
 RETENTION_DURATION_DAYS = {
     "days": 1,
     "weeks": 7,
@@ -77,24 +56,19 @@ RETENTION_DURATION_DAYS = {
     "years": 365,
 }
 
-# ProtectionState / last-backup values that mean the item is genuinely protected and
-# its most recent backup worked. Compared case-folded — ARM's enums are mixed case.
+# Compared case-folded, because ARM's enums are mixed case.
 PROTECTED_STATES = ("protected",)
 HEALTHY_BACKUP_STATUSES = ("completed", "success", "succeeded", "healthy")
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: the only code that touches an azure-mgmt model ---
 
 def properties_bag(model):
     """Return the model's `properties` sub-model, or the model itself.
 
-    Neither azure-mgmt-recoveryservices (`Vault`) nor
-    azure-mgmt-recoveryservicesbackup (`ProtectionPolicyResource`,
-    `ProtectedItemResource`) flattens `properties` onto the resource — the backup
-    package cannot, because `properties` is polymorphic (AzureIaaSVMProtectionPolicy
-    vs AzureSqlProtectionPolicy vs ...), which is why Prowler reads
-    `item.properties.workload_type`. Returning the model itself when there is no
-    `properties` keeps one projection correct on a flattening SDK too.
+    Neither recoveryservices nor recoveryservicesbackup flattens `properties` onto the
+    resource — the backup package cannot, because `properties` is polymorphic
+    (AzureIaaSVMProtectionPolicy vs AzureSqlProtectionPolicy vs ...).
     """
     bag = model_attr(model, "properties")
     return model if bag is None else bag
@@ -103,10 +77,9 @@ def properties_bag(model):
 def _timestamp(value) -> str | None:
     """Render a backup timestamp as one UTC ISO-8601 string.
 
-    msrest deserializes ARM's iso-8601 fields (`last_backup_time`,
-    `last_recovery_point`, a schedule's `retention_times`) into `datetime`, and
-    `json.dump(default=str)` would write "2026-08-13 02:00:00+00:00" — not the
-    "%Y-%m-%dT%H:%M:%SZ" every other Azure fetcher's timestamps use.
+    msrest deserializes ARM's iso-8601 fields into `datetime`, and
+    `json.dump(default=str)` would write "2026-08-13 02:00:00+00:00", not the
+    "%Y-%m-%dT%H:%M:%SZ" the rest of the category uses.
     """
     if value is None or isinstance(value, str):
         return value
@@ -125,13 +98,7 @@ def project_retention_duration(duration) -> dict:
 
 
 def project_retention_schedule(schedule) -> dict | None:
-    """Read one retention schedule (daily / weekly / monthly / yearly).
-
-    The four models differ only in which extra selector they carry
-    (`days_of_the_week`, `months_of_year`, a schedule format type); all four share
-    `retention_times` and `retention_duration`, which is what retention is actually
-    read from.
-    """
+    """Read one retention schedule (daily / weekly / monthly / yearly)."""
     if schedule is None:
         return None
     return {
@@ -150,10 +117,8 @@ def project_retention_schedule(schedule) -> dict | None:
 def project_retention_policy(policy) -> dict | None:
     """Read a retention policy in either of ARM's two shapes.
 
-    `LongTermRetentionPolicy` carries up to four named schedules;
-    `SimpleRetentionPolicy` (Azure SQL) carries a bare `retention_duration` with no
-    schedule at all. Both are projected into one dict so the derived retention
-    figure does not have to know which shape it got.
+    `LongTermRetentionPolicy` carries up to four named schedules; `SimpleRetentionPolicy`
+    (Azure SQL) carries a bare `retention_duration` and no schedule at all.
     """
     if policy is None:
         return None
@@ -188,10 +153,9 @@ def project_schedule_policy(schedule) -> dict | None:
 def project_backup_policy(policy) -> dict:
     """Read a `ProtectionPolicyResource` into a flat snake_case dict.
 
-    `sub_protection_policy` is the SAP HANA / SQL-in-VM shape: the policy itself has
-    no retention, and each sub-policy (Full / Differential / Log) carries its own
-    schedule and retention. Ignoring it would report those policies as having no
-    retention at all.
+    `sub_protection_policy` is the SAP HANA / SQL-in-VM shape: the policy itself has no
+    retention, each sub-policy carries its own, and ignoring it would report those
+    policies as having no retention at all.
     """
     properties = properties_bag(policy)
     return {
@@ -225,10 +189,9 @@ def project_backup_policy(policy) -> dict:
 def project_protected_item(item) -> dict:
     """Read a `ProtectedItemResource` into a flat snake_case dict.
 
-    The health fields (`last_backup_status`, `last_backup_time`, `protection_state`,
-    `health_status`) live on the workload SUBCLASSES of `ProtectedItem`, not on the
-    base — `model_attr`'s None-tolerance is what lets one projection read every
-    workload type without branching on which subclass came back.
+    The health fields live on the workload SUBCLASSES of `ProtectedItem`, not the base,
+    so `model_attr`'s None-tolerance is what lets one projection read every workload
+    type without branching on the subclass.
     """
     properties = properties_bag(item)
     return {
@@ -305,8 +268,8 @@ def project_vault(vault) -> dict:
 def retention_duration_days(duration: dict | None) -> int | None:
     """Convert one {count, duration_type} pair to a day count.
 
-    Returns None for an absent duration or an unrecognized/`Invalid` duration type,
-    which is what keeps "no retention configured" distinguishable from "0 days".
+    None for an absent duration or an unrecognized/`Invalid` type, which keeps "no
+    retention configured" distinguishable from "0 days".
     """
     if not isinstance(duration, dict):
         return None
@@ -337,9 +300,8 @@ def _retention_policy_day_counts(policy: dict | None) -> list[int]:
 def daily_retention_days(policy: dict) -> int | None:
     """Prowler's exact figure: `retention_policy.daily_schedule.retention_duration.count`.
 
-    Kept verbatim alongside the derived maximum so a reviewer comparing this
-    evidence against a Prowler run sees the same number Prowler saw. Note it is a
-    raw `count`, NOT converted — a daily schedule's duration type is always Days.
+    Kept alongside the derived maximum so a reviewer comparing against a Prowler run
+    sees the same number. A raw `count`, NOT converted — daily durations are always Days.
     """
     schedule = (policy.get("retention_policy") or {}).get("daily_schedule")
     if not isinstance(schedule, dict):
@@ -351,9 +313,9 @@ def daily_retention_days(policy: dict) -> int | None:
 def max_retention_days(policy: dict) -> int | None:
     """The longest retention this policy keeps anything for, in days.
 
-    Spans the top-level retention policy AND every sub-protection policy, because a
-    SAP HANA or SQL-in-VM policy carries all of its retention down there. None means
-    no retention could be read at all — which is itself the finding.
+    Spans the top-level policy AND every sub-protection policy, because a SAP HANA or
+    SQL-in-VM policy carries all its retention down there. None means none could be
+    read at all — itself the finding.
     """
     counts = _retention_policy_day_counts(policy.get("retention_policy"))
     for sub in policy.get("sub_protection_policies") or []:
@@ -389,9 +351,8 @@ def backup_policy_record(policy: dict) -> dict:
 def protected_item_record(item: dict, policies_by_id: dict) -> dict:
     """Normalize one projected protected item, joined to the policy governing it.
 
-    The join is what makes the item's retention legible: ARM gives the item a
-    `policy_id` and nothing else, so without it a reader cannot tell whether a
-    protected VM is kept for 7 days or 7 years.
+    ARM gives the item a `policy_id` and nothing else, so without the join a reader
+    cannot tell whether a protected VM is kept for 7 days or 7 years.
     """
     policy_id = item.get("backup_policy_id")
     policy = policies_by_id.get(policy_id) or {}
@@ -477,10 +438,8 @@ def vault_record(vault: dict) -> dict:
 def summarize(vaults: list[dict]) -> dict:
     """The headline is retention adequacy across PROTECTED ITEMS, not policies.
 
-    A vault can define a dozen policies and protect nothing; what a recovery-planning
-    reviewer needs is the fraction of things actually being backed up that are kept
-    long enough — measured against the stated threshold, which is emitted next to it
-    so the number is never a bare percentage.
+    A vault can define a dozen policies and protect nothing. The threshold is emitted
+    next to the percentage so the number is never bare.
     """
     policies = [p for v in vaults for p in v["backup_policies"]]
     items = [i for v in vaults for i in v["backup_protected_items"]]
@@ -523,19 +482,17 @@ def summarize(vaults: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def _backup_client(cred, subscription_id):
     """RecoveryServicesBackupClient, whichever module the installed SDK keeps it in.
 
-    azure-mgmt-recoveryservicesbackup 10.0.0 collapsed the multiapi layout: the
-    client is at the package root and the `activestamp` / `passivestamp`
-    sub-packages Prowler imports its MODELS from are gone. Older releases keep the
-    client under `.activestamp`. The root import is tried first (it is also
-    re-exported there on the older layout) and the sub-package is the fallback.
+    azure-mgmt-recoveryservicesbackup 10.0.0 collapsed the multiapi layout: the client
+    moved to the package root and the `activestamp` / `passivestamp` sub-packages Prowler
+    imports its MODELS from are gone. Older releases keep it under `.activestamp` and
+    re-export it at the root, so the root import goes first.
     """
-    # Both imports are lazy: kept inside the function so the pure transforms above
-    # (and their tests) import with no azure-* package present.
+    # Lazy, so the pure transforms above import with no azure-* package present.
     try:
         from azure.mgmt.recoveryservicesbackup import RecoveryServicesBackupClient
     except ImportError:  # pragma: no cover - depends on installed SDK version
@@ -557,7 +514,7 @@ def collect_vaults(subscription_id, cred, collector: Collector) -> list[dict]:
         return []
 
     def _list():
-        # ItemPaged: the SDK follows nextLink itself, so pagination is handled.
+        # ItemPaged: the SDK follows nextLink itself.
         return [project_vault(v) for v in client.vaults.list_by_subscription_id()]
 
     vaults = collector.guard(
@@ -617,9 +574,7 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every request header at INFO; warnings still get through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -633,8 +588,7 @@ def main() -> int:
     vaults: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list call, so a zero-vault result is legible: Azure
-        # returns an empty list rather than an error for an unregistered provider.
+        # ARM returns an empty list, not an error, for an unregistered provider.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.RecoveryServices"
         )

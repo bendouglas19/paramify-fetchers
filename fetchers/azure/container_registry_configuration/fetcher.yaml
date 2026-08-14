@@ -46,22 +46,7 @@ evidence_set:
   reference_id: EVD-AZURE-ACR-CONFIG
   name: Azure Container Registry Configuration
   instructions: >
-    Script: fetcher.py. Azure SDK calls: registries.list()
-    (azure-mgmt-containerregistry ContainerRegistryManagementClient) for sku.name,
-    login_server, admin_user_enabled, anonymous_pull_enabled, public_network_access,
-    network_rule_bypass_options, network_rule_set (default_action and each ip_rules
-    entry), data_endpoint_enabled, private_endpoint_connections (id, name, type,
-    private_link_service_connection_state.status, provisioning_state),
-    encryption.status, zone_redundancy and policies (quarantine, trust, retention,
-    export, azure_ad_authentication_as_arm); then, per registry,
-    diagnostic_settings.list(resource_uri=<the registry's ARM id without its leading
-    slash>) (azure-mgmt-monitor MonitorManagementClient) for the log and metric
-    categories, the destination workspace / storage account / event hub. Preceded by
-    resource.providers.get("Microsoft.ContainerRegistry") so that zero registries is
-    distinguishable from the provider not being registered. public_network_access
-    "Disabled" is the only value that counts as not publicly reachable — the field is
-    omitted when it sits at its "Enabled" default. Needs
-    azure-mgmt-monitor>=6.0.2,<7: 7.0.0 removed the diagnostic_settings operation
-    group. The diagnostic settings collected here overlap with the dedicated Azure
-    diagnostic settings evidence set, which lists subscription-scoped settings; a
-    subscription-scoped listing does not include a registry's own settings.
+    Script: fetcher.py. Azure SDK calls: azure-mgmt-containerregistry
+    ContainerRegistryManagementClient.registries.list(), then azure-mgmt-monitor
+    MonitorManagementClient.diagnostic_settings.list(resource_uri) per registry,
+    preceded by ResourceManagementClient.providers.get("Microsoft.ContainerRegistry").

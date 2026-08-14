@@ -47,24 +47,5 @@ evidence_set:
   name: Azure Cosmos DB Account Configuration
   instructions: >
     Script: fetcher.py. Azure SDK call (azure-mgmt-cosmosdb CosmosDBManagementClient):
-    database_accounts.list() — one subscription-scoped call whose response carries the
-    entire projection, so there is no per-resource fan-out. Per account the evidence
-    keeps kind, location, database_account_offer_type, document_endpoint,
-    key_vault_key_uri, disable_local_auth, default_identity,
-    is_virtual_network_filter_enabled, virtual_network_rules[], ip_rules[],
-    network_acl_bypass, public_network_access, minimal_tls_version,
-    private_endpoint_connections[], enable_automatic_failover,
-    enable_multiple_write_locations and backup_policy.type. A non-empty
-    key_vault_key_uri ⇒ the account's encryption uses a customer-managed key; absent ⇒
-    the Microsoft-managed default. disable_local_auth true ⇒ account keys are refused
-    and only Entra ID + RBAC works. public_network_access "Disabled" or
-    "SecuredByPerimeter" ⇒ not reachable from the public internet. minimal_tls_version
-    is recommended at "Tls12" or "Tls13"; an account that never set the property
-    accepts TLS 1.0, so absent is not compliant. backup_policy.type "Continuous" ⇒
-    point-in-time restore, "Periodic" ⇒ the older snapshot default. Azure omits
-    disable_local_auth, enable_automatic_failover and is_virtual_network_filter_enabled
-    when they are false rather than returning false, so each is coerced to a real
-    boolean. A subscription that never registered the Microsoft.DocumentDB resource
-    provider reports provider_registration_status: not_registered, which is valid
-    evidence ("Cosmos DB not in use") rather than an empty result that looks like full
-    coverage.
+    database_accounts.list(). Records each account's encryption key source,
+    authentication, network exposure, failover and backup policy.

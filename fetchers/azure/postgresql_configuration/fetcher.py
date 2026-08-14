@@ -2,41 +2,24 @@
 """
 Azure Database for PostgreSQL flexible server security configuration
 
-For every PostgreSQL flexible server in one subscription, reports the settings that
-show transport encryption, authentication, audit logging and durability are
-configured: `require_secure_transport`, Entra ID (Azure AD) authentication and the
-administrators configured for it, the five logging / throttling server parameters,
-every firewall rule, geo-redundant backup, and the high-availability mode.
+Per flexible server: `require_secure_transport`, Entra ID authentication and its
+administrators, the five logging / throttling server parameters, every firewall rule,
+geo-redundant backup and the high-availability mode.
 
-**Server parameters are read BY NAME, not dumped.** Prowler issues one
-`configurations.get(rg, server, "<parameter>")` per parameter it cares about rather
-than `configurations.list_by_server()`, and this fetcher keeps that: a flexible
-server exposes several HUNDRED parameters (most of them PostgreSQL engine tunables
-like `work_mem` that say nothing about security posture), so listing them all would
-bury the six that matter under kilobytes of noise and make the evidence file's diff
-unreadable between runs. The MySQL sibling fetcher deliberately does the opposite —
-see fetchers/azure/mysql_configuration, where Prowler lists everything.
+Server parameters are read BY NAME (Prowler's one `configurations.get()` per
+parameter), not dumped: a flexible server exposes several HUNDRED, nearly all engine
+tunables like `work_mem`, which would bury the six that matter. The MySQL sibling
+deliberately does the opposite. Two of the six legitimately do not exist on some
+servers, and their absence is evidence rather than a failure:
+`connection_throttle.enable` was removed in PostgreSQL 16 (a 404
+`ConfigurationNotExists` on PG16+), and `logfiles.retention_days` exists only when
+server logs are enabled.
 
-Two of those parameters legitimately DO NOT EXIST on newer servers, and their
-absence is evidence rather than a failure:
-
-- `connection_throttle.enable` was removed in PostgreSQL 16, so Azure answers a 404
-  (`ConfigurationNotExists`) on a PG16+ server.
-- `logfiles.retention_days` only exists when server logs are enabled.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/postgresql/postgresql_service.py (Apache-2.0),
-which reads the same azure-mgmt-postgresqlflexibleservers SDK. Two divergences,
-verified against azure-mgmt-postgresqlflexibleservers 2.0.0:
-
-- Prowler calls `client.servers.list()`; 2.0.0 has no `list` — the
-  subscription-wide lister is `servers.list_by_subscription()`. Both spellings are
-  tried below so either SDK generation works.
-- Prowler calls `client.administrators.list_by_server(...)`; 2.0.0 renamed that
-  operation group to `administrators_microsoft_entra`. Both are tried.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Ported from prowler/providers/azure/services/postgresql/postgresql_service.py
+(Apache-2.0). azure-mgmt-postgresqlflexibleservers 2.0.0 dropped `servers.list` for
+`servers.list_by_subscription()` and renamed the `administrators` operation group to
+`administrators_microsoft_entra`; both spellings are tried below, so either SDK
+generation works.
 """
 
 import logging
@@ -68,9 +51,8 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_postgresql_configuration")
 
-# The server parameters read by name, mapping the evidence field to the PostgreSQL
-# parameter's real name. Exactly Prowler's set; the dotted names are Azure's own
-# spelling for parameters that are not bare PostgreSQL GUCs.
+# Evidence field -> the parameter's real name. Exactly Prowler's set; the dotted names
+# are Azure's own spelling for parameters that are not bare PostgreSQL GUCs.
 SERVER_PARAMETERS = {
     "require_secure_transport": "require_secure_transport",
     "log_checkpoints": "log_checkpoints",
@@ -80,51 +62,42 @@ SERVER_PARAMETERS = {
     "log_retention_days": "logfiles.retention_days",
 }
 
-# Parameters whose absence is expected on some server versions (see the module
-# docstring) and must therefore not be recorded as a collection failure.
+# Absence is expected on some server versions (see the module docstring), so it must
+# not be recorded as a collection failure.
 OPTIONAL_PARAMETERS = ("connection_throttling", "log_retention_days")
 
-# Prowler uppercases every parameter value and compares against "ON", because
-# PostgreSQL reports booleans as the lowercase strings "on" / "off" while Azure's
-# portal shows them capitalized. Uppercasing at the boundary keeps one spelling in
-# the evidence.
+# PostgreSQL reports booleans as lowercase "on" / "off" while Azure's portal
+# capitalizes them; uppercasing at the boundary (Prowler's `.value.upper()`) keeps one
+# spelling in the evidence.
 PARAMETER_ON = "ON"
 
 # AuthConfig.active_directory_auth serializes as "Enabled" / "Disabled".
 AUTH_ENABLED = "ENABLED"
 
 # HighAvailability.mode is "Disabled", "ZoneRedundant" or "SameZone"; anything other
-# than Disabled (or absent) means a standby replica exists.
+# than Disabled means a standby replica exists.
 HA_DISABLED = "disabled"
 
 # Backup.geo_redundant_backup serializes as "Enabled" / "Disabled".
 GEO_REDUNDANT_ENABLED = "enabled"
 
-# Azure's "allow public access from any Azure service" pseudo-rule, which admits
-# every Azure tenant's compute. Prowler's
-# postgresql_flexible_server_allow_access_services_disabled matches exactly this.
+# Azure's "allow public access from any Azure service" pseudo-rule, which admits every
+# Azure tenant's compute (Prowler's
+# postgresql_flexible_server_allow_access_services_disabled).
 AZURE_SERVICES_RULE = ("0.0.0.0", "0.0.0.0")
 ENTIRE_INTERNET_RULE = ("0.0.0.0", "255.255.255.255")
 
-# Prowler's postgresql_flexible_server_log_retention_days_greater_3 passes only when
-# retention is strictly inside (3, 8) — Azure's own supported range for this
-# parameter tops out at 7 days, so a larger value means the parameter was not
-# actually applied.
+# Prowler's postgresql_flexible_server_log_retention_days_greater_3 passes only strictly
+# inside (3, 8): Azure's supported range for this parameter tops out at 7 days, so a
+# larger value means the parameter was never actually applied.
 LOG_RETENTION_MINIMUM_DAYS = 3
 LOG_RETENTION_MAXIMUM_DAYS = 8
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: azure-mgmt models in, flat dicts out ---
 
 def project_postgresql_server(server) -> dict:
-    """Read a `Server` model's attributes into a flat snake_case dict.
-
-    azure-mgmt-postgresqlflexibleservers 2.0.0 is still on the msrest generator,
-    whose models flatten `properties.*` onto the model itself, so these names are
-    the attribute names directly. Reading them by attribute rather than via
-    `as_dict()` keeps this fetcher on the same footing as the `_model_base` ones,
-    whose `as_dict()` emits the camelCase wire shape nested under "properties".
-    """
+    """Read a `Server` model's attributes into a flat snake_case dict."""
     auth_config = model_attr(server, "auth_config")
     backup = model_attr(server, "backup")
     high_availability = model_attr(server, "high_availability")
@@ -137,14 +110,11 @@ def project_postgresql_server(server) -> dict:
         "version": model_attr(server, "version"),
         "state": model_attr(server, "state"),
         "fully_qualified_domain_name": model_attr(server, "fully_qualified_domain_name"),
-        # --- authentication ---
         "active_directory_auth": model_attr(auth_config, "active_directory_auth"),
         "password_auth": model_attr(auth_config, "password_auth"),
         "auth_tenant_id": model_attr(auth_config, "tenant_id"),
-        # --- network ---
         "public_network_access": model_attr(network, "public_network_access"),
         "delegated_subnet_resource_id": model_attr(network, "delegated_subnet_resource_id"),
-        # --- durability ---
         "backup_retention_days": model_attr(backup, "backup_retention_days"),
         "geo_redundant_backup": model_attr(backup, "geo_redundant_backup"),
         "high_availability_mode": model_attr(high_availability, "mode"),
@@ -153,7 +123,6 @@ def project_postgresql_server(server) -> dict:
 
 
 def project_configuration(configuration) -> dict:
-    """Read a `Configuration` (one server parameter) into a flat dict."""
     return {
         "id": model_attr(configuration, "id"),
         "name": model_attr(configuration, "name"),
@@ -164,7 +133,6 @@ def project_configuration(configuration) -> dict:
 
 
 def project_firewall_rule(rule) -> dict:
-    """Read a `FirewallRule` model into a flat dict."""
     return {
         "id": model_attr(rule, "id"),
         "name": model_attr(rule, "name"),
@@ -174,7 +142,6 @@ def project_firewall_rule(rule) -> dict:
 
 
 def project_entra_admin(admin) -> dict:
-    """Read an `AdministratorMicrosoftEntra` model into a flat dict."""
     return {
         "id": model_attr(admin, "id"),
         "name": model_attr(admin, "name"),
@@ -188,12 +155,9 @@ def project_entra_admin(admin) -> dict:
 # --- pure transforms (flat snake_case dicts in, evidence records out) ---
 
 def parameter_value(configuration: dict | None) -> str | None:
-    """Uppercased value of one server parameter; None when it was not collected.
-
-    Prowler's `.value.upper()`, made None-safe. None means "the parameter does not
-    exist on this server or could not be read" — deliberately distinct from "OFF",
-    because reporting an uncollected parameter as off would publish a collection gap
-    as a finding.
+    """Uppercased value of one server parameter; None when it was not collected. None
+    ("absent here, or unreadable") stays distinct from "OFF", which would publish a
+    collection gap as a finding.
     """
     if not configuration:
         return None
@@ -202,7 +166,6 @@ def parameter_value(configuration: dict | None) -> str | None:
 
 
 def firewall_rule_record(rule: dict) -> dict:
-    """Normalize one projected firewall rule, flagging the two exposures."""
     addresses = (rule.get("start_ip_address"), rule.get("end_ip_address"))
     return {
         "id": rule.get("id"),
@@ -215,7 +178,6 @@ def firewall_rule_record(rule: dict) -> dict:
 
 
 def entra_admin_record(admin: dict) -> dict:
-    """Normalize one projected Entra ID administrator."""
     return {
         "id": admin.get("id"),
         "name": admin.get("name"),
@@ -243,7 +205,6 @@ def server_record(
     firewall_rules: list[dict],
     entra_admins: list[dict],
 ) -> dict:
-    """Assemble one flexible server's configuration evidence."""
     resource_id = server.get("id")
     active_directory_auth = str(server.get("active_directory_auth") or "").upper()
     ha_mode = server.get("high_availability_mode")
@@ -352,7 +313,7 @@ def summarize(servers: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 # Markers for "this parameter / sub-resource does not exist on this server", which
 # Azure answers with a 404 rather than an empty body.
@@ -365,18 +326,13 @@ NOT_FOUND_MARKERS = (
     "could not be found",
 )
 
-# Azure's answer when Entra ID authentication was never switched on for a server:
-# listing its administrators is rejected rather than returning an empty list. Prowler
-# skips this exact phrase, and it must not fail the run.
+# With Entra ID authentication off, Azure REJECTS the administrators list instead of
+# returning an empty one. Prowler skips this exact phrase; it must not fail the run.
 ENTRA_AUTH_DISABLED_MARKER = "authentication is not enabled"
 
 
 def is_not_found(exc: BaseException) -> bool:
-    """Is this Azure's "that parameter / sub-resource does not exist" answer?
-
-    LOCAL HELPER (duplicated in the sibling database fetchers) — azure_common is
-    off-limits for concurrent-edit reasons; consolidate after merge.
-    """
+    """Azure's "that parameter / sub-resource does not exist" answer (also in siblings)."""
     if type(exc).__name__.lower() in NOT_FOUND_TYPES:
         return True
     message = f"{getattr(exc, 'message', '') or ''} {exc}".lower()
@@ -390,13 +346,9 @@ def is_entra_auth_disabled(exc: BaseException) -> bool:
 
 
 def _operation_group(client, *names):
-    """First operation group on `client` that exists, by name.
-
-    LOCAL HELPER — azure-mgmt-postgresqlflexibleservers renamed both the
-    subscription-wide server lister and the Entra administrators group between the
-    generation Prowler pins and 2.0.0 (see the module docstring). Trying both keeps
-    one fetcher working across either, instead of failing with an AttributeError that
-    would classify as a generic partial_failure.
+    """First operation group on `client` that exists, by name. 2.0.0 renamed the Entra
+    administrators group (see the module docstring); trying both spellings avoids an
+    AttributeError classified as a generic partial_failure.
     """
     for name in names:
         group = getattr(client, name, None)
@@ -406,12 +358,9 @@ def _operation_group(client, *names):
 
 
 def _collect_parameters(client, collector: Collector, group, server_name) -> dict:
-    """One configurations.get() per parameter in SERVER_PARAMETERS.
-
-    By name rather than list_by_server() — see the module docstring for why. An
-    absent OPTIONAL_PARAMETERS entry is logged and left None; an absent required one
-    is recorded, because it means the read failed rather than the parameter being
-    retired.
+    """One configurations.get() per parameter in SERVER_PARAMETERS. An absent
+    OPTIONAL_PARAMETERS entry is logged and left None; an absent required one is
+    recorded — that means the read failed, not that the parameter was retired.
     """
     parameters: dict[str, str | None] = {}
     for field, parameter_name in SERVER_PARAMETERS.items():
@@ -469,24 +418,21 @@ def collect_postgresql_servers(subscription_id, cred, collector: Collector) -> l
     """One servers list, then per server: 6 parameter GETs + firewall + Entra admins."""
 
     def _client():
-        # Lazy import: the pure transforms above must stay importable with no
-        # azure-mgmt-postgresqlflexibleservers installed (that is what lets the
-        # fixture tests run without the SDK).
+        # Lazy import: keeps a missing SDK inside the guard below, where it becomes
+        # a recorded failure and a status file rather than an import-time crash.
         from azure.mgmt.postgresqlflexibleservers import PostgreSQLManagementClient
 
         return PostgreSQLManagementClient(credential=cred, subscription_id=subscription_id)
 
-    # Guarded (not a bare import at function top level) so a missing
-    # azure-mgmt-postgresqlflexibleservers is recorded as internal_error and the
-    # evidence file is still written.
+    # Guarded: a missing SDK becomes internal_error, evidence still written.
     client = collector.guard("postgresql.PostgreSQLManagementClient (init)", _client)
     if client is None:
         return []
 
     def _list():
         servers_group = client.servers
-        # 2.0.0 dropped `list` in favor of `list_by_subscription`; Prowler pins a
-        # generation that still has `list`.
+        # 2.0.0 dropped `list` for `list_by_subscription`; Prowler pins a generation
+        # that still has `list`.
         lister = None
         for name in ("list", "list_by_subscription"):
             lister = getattr(servers_group, name, None)
@@ -538,8 +484,7 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
+    # The azure-* SDKs log every request/response header at INFO — far too noisy here.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -553,10 +498,7 @@ def main() -> int:
     servers: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list call: Azure returns an empty list rather than an
-        # error for an unregistered provider, so without this "0 servers" reads
-        # identically whether PostgreSQL is unused or Microsoft.DBforPostgreSQL was
-        # never registered.
+        # Asked first: an unregistered provider returns an empty list, not an error.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.DBforPostgreSQL"
         )

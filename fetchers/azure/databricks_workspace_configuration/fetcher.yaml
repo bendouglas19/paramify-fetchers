@@ -43,21 +43,7 @@ evidence_set:
   reference_id: EVD-AZURE-DBRICKS-CONFIG
   name: Azure Databricks Workspace Configuration
   instructions: >
-    Script: fetcher.py. Permissions: the built-in **Reader** role on the subscription
-    is sufficient — both calls are GETs, and no Databricks data-plane (workspace API)
-    call is made. Azure SDK calls (azure-mgmt-databricks
-    AzureDatabricksManagementClient): resource.providers.get("Microsoft.Databricks")
-    first, so a zero-workspace result is distinguishable from "Databricks is not in
-    use" (the provider is unregistered on most subscriptions and the list then comes
-    back empty rather than erroring); then workspaces.list_by_subscription(), whose
-    response carries everything else — sku.name / sku.tier, public_network_access,
-    required_nsg_rules, provisioning_state, managed_resource_group_id,
-    parameters.enable_no_public_ip.value (secure cluster connectivity),
-    parameters.custom_virtual_network_id.value (VNet injection) and
-    encryption.entities.managed_disk (key_source, key_vault_properties.key_name /
-    key_version / key_vault_uri, rotation_to_latest_key_version_enabled). A Key Vault
-    URI, or key_source "Microsoft.Keyvault", is what makes the managed-disk key
-    customer-managed; the disks are always encrypted, so the fact that varies is who
-    holds the key. Workspaces that do not expose enable_no_public_ip at all are
-    reported with no_public_ip_setting_present false, so an absent setting is not read
-    as "cluster nodes have public IPs".
+    Script: fetcher.py. Azure SDK calls: resource.providers.get("Microsoft.Databricks"),
+    then azure-mgmt-databricks AzureDatabricksManagementClient
+    workspaces.list_by_subscription(). Reader is sufficient — both are GETs, and no
+    Databricks workspace-API call is made.

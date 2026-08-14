@@ -1,27 +1,10 @@
 #!/usr/bin/env python3
-"""
-KSI-MLA-03 / KSI-MLA-04 / KSI-CNA-07: Microsoft Defender for Cloud plan coverage
+"""Microsoft Defender for Cloud plan coverage for one subscription.
 
-For one subscription, reports every Defender for Cloud pricing plan (Servers,
-Storage Accounts, Containers, SQL, Key Vault, …): whether it is on the Standard
-(paid, protecting) tier or Free, how much free trial is left, and which per-plan
-extensions (agentless VM scanning, vulnerability assessment, file integrity
-monitoring, …) are enabled. This is the evidence that vulnerability detection and
-host/container hardening are actually switched on, not merely available.
-
-Field projections are ported verbatim from Prowler's
-prowler/providers/azure/services/defender/defender_service.py (Apache-2.0), which
-reads the same azure-mgmt-security SDK.
-
-"Subscription Not Registered" is VALID EVIDENCE, not a failure: it means the
-Microsoft.Security resource provider was never registered on the subscription, so
-Defender for Cloud is simply not in use. Reported as
-`provider_registration_status: not_registered` with an exit 0 — the same
-convention the AWS fetchers apply to SubscriptionRequiredException in
-fetchers/aws/_shared/aws.sh ("not enabled" is a finding, not a broken run).
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+A subscription that never registered Microsoft.Security reports
+`provider_registration_status: not_registered` and still exits 0 — "not enabled" is a
+finding, not a broken run, as in the AWS fetchers.
+Ported from prowler/providers/azure/services/defender/defender_service.py (Apache-2.0).
 """
 
 import logging
@@ -50,14 +33,12 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_defender_plans")
 
-# The message Azure returns when Microsoft.Security was never registered on the
-# subscription. Prowler matches this exact phrase on ResourceNotFoundError; we
-# match the phrase on any exception so a differently-typed wrapper from another
-# SDK version still reads as "not in use" rather than "collection failed".
+# Prowler matches this phrase on ResourceNotFoundError; we match it on any exception,
+# so a differently-typed wrapper from another SDK version still reads as "not in use"
+# rather than "collection failed".
 PROVIDER_NOT_REGISTERED_MARKER = "subscription not registered"
 
-# The tier that means the plan is actually protecting resources. "Free" is the
-# no-op tier that every subscription has by default.
+# The tier that actually protects resources; "Free" is the default no-op tier.
 PROTECTED_TIER = "standard"
 
 REGISTERED = "registered"
@@ -70,16 +51,13 @@ UNKNOWN = "unknown"
 def _iso8601_duration(value) -> str | None:
     """Render a `timedelta` as the ISO-8601 duration string the wire carries.
 
-    azure-mgmt-security types `freeTrialRemainingTime` as a duration, so the SDK
-    hands the attribute over already parsed into a `timedelta` — where the removed
-    `as_dict()` used to re-serialize it to "P25D" on the way out. Without this the
-    evidence would carry `json.dump(default=str)`'s rendering of a timedelta
-    ("25 days, 0:00:00") instead, changing the payload for identical input.
-
-    Matches the SDK serializer's output exactly: zero-valued components are
-    omitted, a bare zero is "P0D", and fractional seconds keep no trailing zeros
-    ("P2DT30.5S"). Anything that is not a timedelta (a plain string from a future
-    SDK, or None) passes straight through.
+    azure-mgmt-security types `freeTrialRemainingTime` as a duration, so the SDK hands
+    the attribute over already parsed into a `timedelta` — where the removed
+    `as_dict()` used to re-serialize it to "P25D". Without this the evidence would
+    carry `json.dump(default=str)`'s "25 days, 0:00:00" instead. Matches the SDK
+    serializer exactly: zero-valued components omitted, a bare zero is "P0D",
+    fractional seconds keep no trailing zeros ("P2DT30.5S"). Non-timedeltas (a plain
+    string from a future SDK, or None) pass straight through.
     """
     if not isinstance(value, timedelta):
         return value
@@ -104,14 +82,7 @@ def _iso8601_duration(value) -> str | None:
 
 
 def project_pricing(pricing) -> dict:
-    """Read a `Pricing` model's attributes into a flat snake_case dict.
-
-    azure-mgmt-security is still on the msrest generator, which flattens
-    `properties.*` onto the model, so these names are already the attribute names.
-    Reading them directly (rather than via `as_dict()`) is what keeps this fetcher
-    on the same footing as the `_model_base` ones, whose `as_dict()` emits the
-    camelCase wire shape instead.
-    """
+    """Read a `Pricing` model's attributes into a flat snake_case dict."""
     return {
         "id": model_attr(pricing, "id"),
         "name": model_attr(pricing, "name"),
@@ -135,10 +106,9 @@ def _as_bool(value) -> bool:
     """Coerce azure-mgmt-security's STRING boolean enums to a real bool.
 
     `Extension.is_enabled` is typed `str` and carries the `IsEnabled` enum whose
-    members are the literal strings "True" and "False" — so a plain `bool(value)`
-    reports a DISABLED extension as enabled, because `bool("False") is True`. This
-    is the one field in these three fetchers where Azure models a boolean as a
-    string; storage/network return real JSON booleans.
+    members are the literal strings "True" and "False", so a plain `bool(value)`
+    reports a DISABLED extension as enabled (`bool("False") is True`). Storage and
+    network return real JSON booleans.
     """
     if isinstance(value, bool) or value is None:
         return bool(value)
@@ -146,12 +116,10 @@ def _as_bool(value) -> bool:
 
 
 def pricing_record(pricing: dict) -> dict:
-    """Normalize one projected Defender plan — Prowler's exact five-field projection.
+    """Normalize one projected Defender plan — Prowler's five-field projection.
 
     `extensions` collapses the SDK's list of {name, is_enabled, ...} objects into a
-    flat {name: bool} map, which is how Prowler's checks read it and how a reviewer
-    wants to see it. `free_trial_remaining_time` is an ISO-8601 duration string by
-    the time it gets here (see `_iso8601_duration`).
+    flat {name: bool} map, which is how Prowler's checks read it.
     """
     extensions = pricing.get("extensions") or []
     return {
@@ -186,7 +154,7 @@ def summarize(plans: list[dict], registration_status: str) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def is_provider_not_registered(exc: BaseException) -> bool:
     """Is this the benign "Microsoft.Security was never registered" answer?"""
@@ -197,8 +165,8 @@ def is_provider_not_registered(exc: BaseException) -> bool:
 def collect_pricings(subscription_id, cred, collector: Collector) -> tuple[list[dict], str]:
     """One pricings.list(scope_id=...) call; returns (plans, registration_status).
 
-    The scope is the subscription itself. The response is a single PricingList with
-    a `.value` array — not an ItemPaged — so there is nothing to paginate.
+    The response is a single PricingList with a `.value` array — not an ItemPaged —
+    so there is nothing to paginate.
     """
     from azure.mgmt.security import SecurityCenter
 
@@ -217,8 +185,8 @@ def collect_pricings(subscription_id, cred, collector: Collector) -> tuple[list[
         ]
     except Exception as exc:  # noqa: BLE001 — boundary: classify, don't crash the run
         if is_provider_not_registered(exc):
-            # Deliberately NOT collector.record(): Defender for Cloud not being in
-            # use is the finding, so this must stay exit 0 with empty plans.
+            # Deliberately NOT collector.record(): Defender not being in use is the
+            # finding, so this must stay exit 0 with empty plans.
             logger.warning(
                 "Microsoft.Security is not registered on subscription %s — "
                 "Defender for Cloud is not in use; reporting status %s",
@@ -237,9 +205,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every HTTP request and response header at INFO, which would
+    # bury this fetcher's own lines and dominate the runner's stderr tail.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -269,8 +236,7 @@ def main() -> int:
         collector=collector,
         results={
             "defender_plans": plans,
-            # Surfaced in results as well as summary so a validator can assert on
-            # the payload's own account of whether the service is even in use.
+            # Also in results so a validator can assert the service is in use at all.
             "provider_registration_status": registration_status,
         },
         summary=summarize(plans, registration_status),

@@ -46,22 +46,6 @@ evidence_set:
   reference_id: EVD-AZURE-DIAG-SETTINGS
   name: Azure Activity Log Diagnostic Settings
   instructions: >
-    Script: fetcher.py. Azure SDK calls: resource.providers.get("Microsoft.Insights")
-    for the resource-provider registration state, then azure-mgmt-monitor
-    MonitorManagementClient diagnostic_settings.list(resource_uri="subscriptions/<id>/")
-    — the SUBSCRIPTION scope, which is where the Activity Log's own export settings
-    live. Per setting: id, name, storage_account_id (and its short storage account
-    name), workspace_id, event_hub_name, event_hub_authorization_rule_id,
-    service_bus_rule_id, marketplace_partner_id, log_analytics_destination_type, and
-    logs[] with each entry's category, category_group, enabled flag and
-    retention_policy (enabled, days). A setting selects categories individually or by
-    group; category_group "allLogs" captures every category, so it is read as covering
-    the required four (Administrative, Security, Alert, Policy) rather than none. The
-    summary reports category coverage as the union across settings, and separately how
-    many single settings carry all four required categories — Prowler's stricter
-    reading in monitor_diagnostic_setting_with_appropriate_categories. Scope is the
-    subscription only: diagnostic_settings.list takes one resource URI, so
-    per-resource settings (Key Vault audit logs, SQL auditing) belong to that
-    service's own evidence set. Needs azure-mgmt-monitor < 7 — the 7.0.0 rewrite
-    removed the diagnostic_settings operation group, and its absence is reported as a
-    named failure.
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-monitor<7 MonitorManagementClient):
+    diagnostic_settings.list(resource_uri="subscriptions/<id>/"), at subscription scope.
+    Maps to KSI-MLA-01, KSI-MLA-02, KSI-MLA-06, KSI-PIY-06.

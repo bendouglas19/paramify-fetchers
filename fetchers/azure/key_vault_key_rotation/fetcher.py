@@ -1,54 +1,14 @@
 #!/usr/bin/env python3
-"""
-KSI-SVC-06 / KSI-SVC-05 / KSI-SVC-03: Azure Key Vault key rotation and expiration
+"""Azure Key Vault key rotation for one subscription: each key's rotation policy and
+expiry, each secret's expiry. No key material or secret value is read.
 
-For each key vault in one subscription, reports every key's rotation policy and
-expiration date, plus every secret's expiration date — the evidence that key
-management is automated rather than manual.
-
-**This fetcher spans TWO PLANES, which is the whole reason it exists separately
-from azure_key_vault_configuration.** The management plane
-(azure-mgmt-keyvault: keys.list / secrets.list) enumerates what a vault holds but
-CANNOT see a key's rotation policy in a LIST response, so Prowler builds a
-data-plane `azure.keyvault.keys.KeyClient` per vault and calls
-list_properties_of_keys() then get_key_rotation_policy() per key. Both planes are
-read here and merged by key name: the management plane is the inventory (it works
-with plain ARM Reader), the data plane adds the rotation policy (it needs a Key
-Vault data-plane grant on top).
-
-**Verified live, and better than Prowler's premise:** the management plane's
-per-key `keys.get` DOES return `rotationPolicy` (plus `kty` and `keySize`) — only
-`keys.list` omits them. Confirmed against a real vault, where `keys.list` returned
-just `{attributes, keyUri}` while `keys.get` on the same key returned
-`rotationPolicy.lifetimeActions`. So each listed key is followed by one GET: it
-fills in the key's strength, and it means a collector holding ONLY ARM Reader still
-gets rotation policies for a vault whose data plane it cannot open. The data plane
-still wins where it is reachable (it is the authoritative view, and it carries the
-policy's own attributes), and `rotation_policy_source` records which plane each
-answer came from.
-
-**A vault the credential cannot open on the data plane is EXPECTED, not a
-collection failure.** ARM Reader conveys no data actions, so a perfectly healthy
-vault answers 403 to list_properties_of_keys(). Prowler catches HttpResponseError
-there and logs "has no access policy configured for keyvault" rather than failing;
-this fetcher records it as that vault's `data_plane_status` and leaves the exit
-code alone. Only a management-plane failure (or a transport failure, which is not
-an HttpResponseError) flips the run to exit 1.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/keyvault/keyvault_service.py (Apache-2.0) —
-`_get_keys`, `_get_single_rotation_policy` and `_get_secrets` — and read by the
-checks keyvault_key_rotation_enabled, keyvault_rbac_key_expiration_set,
-keyvault_key_expiration_set_in_non_rbac, keyvault_rbac_secret_expiration_set and
-keyvault_non_rbac_secret_expiration_set.
-
-**No key material or secret value is ever read or emitted.** Key names, dates,
-public cryptographic parameters (type / size / curve) and rotation policies only;
-secret names and dates only. The data-plane calls used here return key METADATA —
-neither `get_key` nor any secret-value call is made.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Ported from prowler/providers/azure/services/keyvault/keyvault_service.py (Apache-2.0).
+Both planes are read and merged by key name, and `rotation_policy_source` records which
+answered. Contrary to Prowler's premise, verified live: the management plane's per-key
+`keys.get` returns `rotationPolicy`, `kty` and `keySize` where `keys.list` returns none,
+so ARM Reader alone yields rotation policies. A vault whose data plane the credential
+cannot open answers 403 — recorded as `data_plane_status` inaccessible, a posture, not a
+failed run.
 """
 
 import logging
@@ -81,64 +41,50 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_key_vault_key_rotation")
 
-# Per-vault data-plane outcome. "inaccessible" is a normal posture, not a fault:
-# the ambient credential holds ARM Reader (control plane) but no Key Vault data
-# action, so the rotation policies simply cannot be read for that vault.
+# Per-vault data-plane outcome. "inaccessible" is a normal posture, not a fault: a
+# credential can hold ARM Reader (control plane) and no Key Vault data action.
 DATA_PLANE_ACCESSIBLE = "accessible"
 DATA_PLANE_INACCESSIBLE = "inaccessible"
 DATA_PLANE_NOT_ATTEMPTED = "not_attempted"
 
-# The lifetime action that means "Key Vault will rotate this key by itself".
-# Case-insensitive on purpose: the data plane's KeyRotationPolicyAction spells it
-# "Rotate" while azure-mgmt-keyvault's KeyRotationPolicyActionType spells it
-# "rotate" (both verified against the installed SDKs), and this fetcher merges
-# policies from both planes into one field.
+# Matched case-insensitively because the two planes disagree: the data plane's
+# KeyRotationPolicyAction spells it "Rotate", azure-mgmt-keyvault's
+# KeyRotationPolicyActionType "rotate" (both verified against the installed SDKs).
 ROTATE_ACTION = "rotate"
 
-# Where a merged rotation policy came from, so a reader can tell "no policy" from
-# "we could not see the policy".
+# Which plane a merged policy came from: "no policy" vs "we could not see it".
 SOURCE_DATA_PLANE = "data_plane"
 SOURCE_MANAGEMENT_PLANE = "management_plane"
 
-# Fallback vault data-plane host suffix, used only when the management plane did
-# not return `vault_uri`. Prowler hardcodes this form; reading `vault_uri` first is
-# what keeps the fetcher correct in the sovereign clouds, where the suffix is
-# vault.usgovcloudapi.net / vault.azure.cn instead.
+# Fallback host suffix, used only when ARM returned no `vault_uri`. Prowler
+# hardcodes this form; preferring `vault_uri` is what keeps this correct in the
+# sovereign clouds (vault.usgovcloudapi.net / vault.azure.cn).
 DEFAULT_VAULT_URI_SUFFIX = "vault.azure.net"
 
 
-# --- projection: the only code here that touches an SDK model ---
+# --- projection: the only code that touches an SDK model ---
 
 def properties_bag(model):
     """Return the model's `properties` sub-model, or the model itself.
 
-    azure-mgmt-keyvault 14.x does NOT flatten `properties` onto the resource
-    (`Key` carries exactly {id, name, type, location, tags, properties}), which is
-    why Prowler reads `secret.properties.attributes`. Older msrest-generated
-    releases DO flatten it, and then there is no `properties` attribute at all —
-    returning the model itself covers that shape with the same projection.
+    azure-mgmt-keyvault 14.x does NOT flatten `properties` onto the resource, which
+    is why Prowler reads `secret.properties.attributes`. Older msrest-generated
+    releases DO flatten it, and then there is no `properties` attribute at all.
     """
     bag = model_attr(model, "properties")
     return model if bag is None else bag
 
 
 def _iso8601_duration(value) -> str | None:
-    """Render a `timedelta` as the ISO-8601 duration string the wire carries.
+    """Render a `timedelta` as the ISO-8601 duration string the wire carries ("P90D").
 
-    Rotation policies are all durations — `expires_in`, `time_after_create`,
-    `time_before_expiry` — and the wire format is "P90D". The installed SDKs type
-    them as `str` and hand them over unchanged, but msrest deserializes a
-    duration-typed field into a `timedelta`, and then `json.dump(default=str)`
-    would write "90 days, 0:00:00" into the evidence instead: a payload change for
-    identical input. This was a real bug on
-    azure-mgmt-security's free_trial_remaining_time (see
-    fetchers/azure/defender_plans/fetcher.py, whose implementation this copies),
-    so every duration field emitted here goes through it.
-
-    Matches the SDK serializer's output exactly: zero-valued components are
-    omitted, a bare zero is "P0D", and fractional seconds keep no trailing zeros
-    ("P2DT30.5S"). Anything that is not a timedelta (the plain string the current
-    SDKs return, or None) passes straight through.
+    The installed SDKs type rotation durations as `str`, but msrest deserializes a
+    duration-typed field into a `timedelta`, and `json.dump(default=str)` would then
+    write "90 days, 0:00:00" — a payload change for identical input (a real bug on
+    azure-mgmt-security's free_trial_remaining_time; see
+    fetchers/azure/defender_plans/fetcher.py, which this copies). Matches the SDK
+    serializer exactly: zero components omitted, a bare zero is "P0D", fractional
+    seconds keep no trailing zeros ("P2DT30.5S"). Non-timedeltas pass through.
     """
     if not isinstance(value, timedelta):
         return value
@@ -165,17 +111,11 @@ def _iso8601_duration(value) -> str | None:
 def _iso8601_timestamp(value) -> str | None:
     """Render a key/secret attribute date as one UTC ISO-8601 string.
 
-    The SAME conceptual field arrives in two different types from ONE package:
-    azure-mgmt-keyvault 14.x types `KeyAttributes.created/updated/expires` as
-    `int` (epoch seconds, straight off the wire) but `SecretAttributes`' inherited
-    equivalents as `datetime` (the generator applies format="unix-timestamp"
-    there), and the data plane's `KeyProperties.created_on` is a `datetime` again.
-    All three verified against the installed SDK.
-
-    Left alone, `json.dump(default=str)` would write 1749081600 for a key's
-    expiry and "2026-06-05 00:00:00+00:00" for a secret's — two renderings of one
-    field in one evidence file, neither matching the other fetchers' timestamps.
-    This normalizes all of them to the category's "%Y-%m-%dT%H:%M:%SZ".
+    One conceptual field, three types, all verified against the installed SDK:
+    azure-mgmt-keyvault 14.x types `KeyAttributes.created/updated/expires` as `int`
+    epoch seconds, `SecretAttributes`' inherited equivalents as `datetime`, and the
+    data plane's `KeyProperties.created_on` as `datetime`. Left alone, one evidence
+    file carries both 1749081600 and "2026-06-05 00:00:00+00:00".
     """
     if value is None or isinstance(value, str):
         return value
@@ -191,12 +131,7 @@ def _iso8601_timestamp(value) -> str | None:
 
 
 def project_management_key(key) -> dict:
-    """Read an azure-mgmt-keyvault `Key` (control-plane list item) into a flat dict.
-
-    Public parameters only: `kty` / `key_size` / `curve_name` describe the key's
-    strength, which is the evidence a reviewer wants for KSI-SVC-03. The key
-    material itself is not exposed by this API and is never requested.
-    """
+    """Read an azure-mgmt-keyvault `Key` into a flat dict — public parameters only."""
     properties = properties_bag(key)
     attributes = model_attr(properties, "attributes")
     return {
@@ -223,9 +158,8 @@ def project_management_key(key) -> dict:
 def project_management_secret(secret) -> dict:
     """Read an azure-mgmt-keyvault `Secret` into a flat dict — NAME AND DATES ONLY.
 
-    `SecretProperties.value` exists on this model and is deliberately NOT read:
-    the evidence must never carry secret material. Nor is `content_type`, which is
-    caller-supplied free text.
+    `SecretProperties.value` exists on this model and is deliberately NOT read, nor
+    is `content_type` (caller-supplied free text).
     """
     properties = properties_bag(secret)
     attributes = model_attr(properties, "attributes")
@@ -242,11 +176,7 @@ def project_management_secret(secret) -> dict:
 
 
 def project_key_properties(properties) -> dict:
-    """Read a data-plane `azure.keyvault.keys.KeyProperties` into a flat dict.
-
-    Same shape as `project_management_key`, so the two planes merge into one
-    record. The data plane spells the dates `*_on` and returns them as datetimes.
-    """
+    """Read a data-plane `KeyProperties` into `project_management_key`'s shape."""
     return {
         "id": model_attr(properties, "id"),
         "name": model_attr(properties, "name"),
@@ -267,8 +197,7 @@ def project_key_properties(properties) -> dict:
 def project_rotation_policy(policy) -> dict | None:
     """Read a data-plane `KeyRotationPolicy` into a flat dict.
 
-    Every duration goes through `_iso8601_duration`; `action` is an enum on this
-    plane, which `model_attr` unwraps to its wire string ("Rotate").
+    `action` is an enum on this plane, which `model_attr` unwraps to "Rotate".
     """
     if policy is None:
         return None
@@ -295,11 +224,9 @@ def project_rotation_policy(policy) -> dict | None:
 def project_management_rotation_policy(policy) -> dict | None:
     """Read an azure-mgmt-keyvault `RotationPolicy` into the SAME flat dict.
 
-    The control plane nests what the data plane flattens: the duration lives under
-    `lifetime_actions[].trigger` and the verb under `lifetime_actions[].action.type`
-    (spelled "rotate", lowercase, unlike the data plane's "Rotate"). Projecting
-    both planes to one shape is what lets a single `rotation_policy_record` and a
-    single summary read either source.
+    The control plane nests what the data plane flattens: the duration under
+    `lifetime_actions[].trigger`, the verb under `lifetime_actions[].action.type` and
+    spelled "rotate", not "Rotate".
     """
     if policy is None:
         return None
@@ -352,9 +279,8 @@ def rotation_policy_record(policy: dict | None) -> dict | None:
 def has_rotate_action(policy: dict | None) -> bool:
     """Prowler's keyvault_key_rotation_enabled predicate, case-insensitively.
 
-    Prowler compares `action.action == "Rotate"`, which is the data plane's
-    spelling; the control plane says "rotate". Comparing case-folded means a
-    policy merged from either plane reads the same, so the evidence never claims a
+    Prowler compares `action.action == "Rotate"` (the data plane's spelling) where the
+    control plane says "rotate", so case-folding is what stops the evidence claiming a
     rotating key has no rotation.
     """
     if not policy:
@@ -370,11 +296,9 @@ def key_record(
 ) -> dict:
     """Normalize one projected key (from either plane) into an evidence record.
 
-    `policy_readable` is the caller's assertion that it got a DEFINITIVE answer
-    about this key's rotation policy — the plane it asked answered, whether with a
-    policy or with "there is none". It is what separates "this key does not rotate"
-    from "we could not see whether it rotates", and it is the denominator the
-    summary's rotation percentage is measured over.
+    `policy_readable` asserts a DEFINITIVE answer about this key's policy — the plane
+    answered, with a policy or with "there is none". It separates "does not rotate"
+    from "could not see", and is the denominator of the rotation percentage.
     """
     policy = rotation_policy_record(key.get("rotation_policy"))
     expires = _iso8601_timestamp(key.get("expires"))
@@ -382,9 +306,8 @@ def key_record(
         "id": key.get("id"),
         "name": key.get("name"),
         "location": key.get("location"),
-        # Coerced: ARM omits `enabled` on a key that was never disabled, and absent
-        # means enabled for a key attribute set — but a validator asserting `true`
-        # would not match `null`, so the default is made explicit.
+        # Coerced: ARM omits `enabled` on a key never disabled, and absent means
+        # enabled — but a validator asserting `true` would not match `null`.
         "enabled": True if key.get("enabled") is None else bool(key.get("enabled")),
         "created": _iso8601_timestamp(key.get("created")),
         "updated": _iso8601_timestamp(key.get("updated")),
@@ -392,7 +315,6 @@ def key_record(
         "not_before": _iso8601_timestamp(key.get("not_before")),
         "expiration_set": expires is not None,
         "recovery_level": key.get("recovery_level"),
-        # Public cryptographic parameters — key strength, never key material.
         "key_type": key.get("key_type"),
         "key_size": key.get("key_size"),
         "curve_name": key.get("curve_name"),
@@ -422,10 +344,9 @@ def secret_record(secret: dict) -> dict:
 def merge_rotation_policies(keys: list[dict], data_plane_policies: dict) -> list[dict]:
     """Attach each data-plane rotation policy to its management-plane key, by name.
 
-    Prowler's merge, with one addition: a key the data plane knows about but the
-    management-plane list did not return is still emitted (rather than dropped), so
-    the count of keys in the evidence can never be quietly short. Prowler's
-    `keys_dict[name]` lookup silently discards those.
+    Prowler's merge plus one addition: a key the data plane knows but the
+    management-plane list did not return is still emitted, never quietly dropped the
+    way Prowler's `keys_dict[name]` lookup drops it.
     """
     by_name = {key["name"]: key for key in keys if key.get("name")}
     for name, policy in sorted(data_plane_policies.items()):
@@ -435,9 +356,8 @@ def merge_rotation_policies(keys: list[dict], data_plane_policies: dict) -> list
             keys.append(record)
             by_name[name] = record
         if policy is None:
-            # The data plane was open but answered nothing for this key (a 404, or a
-            # rotation-policy read the credential is not granted). Whatever the
-            # management plane already knows stands; readability is not upgraded.
+            # A 404 (or an ungranted policy read) for one key: what the management
+            # plane knows stands, and readability is not upgraded.
             continue
         normalized = rotation_policy_record(policy)
         record["rotation_policy"] = normalized
@@ -457,9 +377,8 @@ def vault_record(vault: dict) -> dict:
         "resource_group": resource_group_from_id(resource_id),
         "vault_uri": vault.get("vault_uri"),
         "rbac_authorization_enabled": bool(vault.get("enable_rbac_authorization") or False),
-        # Whether the data plane could be opened AT ALL, and why not when it could
-        # not. Carried per vault because it decides how `rotation_policy: null`
-        # reads: "no policy configured" vs "not visible to this credential".
+        # Per vault, because it decides how `rotation_policy: null` reads: "no policy
+        # configured" vs "not visible to this credential".
         "data_plane_status": vault.get("data_plane_status") or DATA_PLANE_NOT_ATTEMPTED,
         "data_plane_message": vault.get("data_plane_message"),
         "keys": vault.get("keys") or [],
@@ -470,10 +389,8 @@ def vault_record(vault: dict) -> dict:
 def summarize(vaults: list[dict]) -> dict:
     """Rotation-policy coverage across keys is the headline.
 
-    Measured over the keys whose policy could actually be READ, on either plane
-    (`rotation_policy_readable`), because a percentage computed over keys the
-    collector was never able to ask about would measure the fetcher's permissions
-    rather than the tenant's key management.
+    Measured over `rotation_policy_readable` keys only: keys the collector could never
+    ask about would measure its permissions, not the tenant's key management.
     """
     keys = [key for vault in vaults for key in vault["keys"]]
     secrets = [secret for vault in vaults for secret in vault["secrets"]]
@@ -508,23 +425,16 @@ def summarize(vaults: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def is_data_plane_inaccessible(exc: BaseException) -> bool:
     """Is this "the credential cannot open this vault's data plane"?
 
-    Prowler catches `azure.core.exceptions.HttpResponseError` around the whole
-    data-plane block and logs "has no access policy configured for keyvault". This
-    matches the same class by walking the exception's class NAMES rather than using
-    isinstance, for two reasons: every HTTP-shaped Key Vault error is a subclass
-    (ResourceNotFoundError for a key with no policy, ClientAuthenticationError for
-    a 401, HttpResponseError itself for a 403), and the predicate stays importable
-    and testable with no azure-core installed.
-
-    A TRANSPORT failure (ServiceRequestError, a DNS or TLS error) is deliberately
-    NOT in that class hierarchy, so it still lands on Collector and flips the run
-    to exit 1 — "the vault is unreachable" is a broken run, "this credential holds
-    no data actions" is a posture.
+    Prowler's `HttpResponseError` catch, matched by walking class NAMES rather than
+    isinstance: every HTTP-shaped Key Vault error is a subclass, and the predicate
+    stays importable with no azure-core installed. A TRANSPORT failure
+    (ServiceRequestError, DNS, TLS) is NOT in that hierarchy, so it still reaches
+    Collector and exits 1 — unreachable is a broken run, no data action is a posture.
     """
     return any(cls.__name__ == "HttpResponseError" for cls in type(exc).__mro__)
 
@@ -532,10 +442,9 @@ def is_data_plane_inaccessible(exc: BaseException) -> bool:
 def vault_data_plane_uri(vault: dict) -> str | None:
     """The vault's data-plane URL: `vault_uri` from ARM, else Prowler's form.
 
-    Prowler hardcodes f"https://{name}.vault.azure.net/". Preferring the
-    `vault_uri` ARM already returned is what keeps this correct in Azure
-    Government / China, whose vault hosts are vault.usgovcloudapi.net /
-    vault.azure.cn.
+    Prowler hardcodes f"https://{name}.vault.azure.net/"; preferring ARM's own
+    `vault_uri` is what keeps this correct in Azure Government / China
+    (vault.usgovcloudapi.net / vault.azure.cn).
     """
     uri = vault.get("vault_uri")
     if uri:
@@ -547,11 +456,10 @@ def vault_data_plane_uri(vault: dict) -> str | None:
 def collect_management_plane_keys(client, collector: Collector, group: str, name: str) -> list[dict]:
     """keys.list for one vault, then one keys.get per key.
 
-    The GET is not redundant: ARM's LIST response carries only `{attributes,
-    keyUri}` (verified live), while the GET adds `kty`, `keySize` and —
-    crucially — `rotationPolicy`. Both are `Microsoft.KeyVault/vaults/keys/read`,
-    so if the list succeeded the GET is permitted too, and a failure on it is a
-    real collection failure rather than a posture.
+    The GET is not redundant: ARM's LIST response carries only `{attributes, keyUri}`
+    (verified live) while the GET adds `kty`, `keySize` and — crucially —
+    `rotationPolicy`. Both are `Microsoft.KeyVault/vaults/keys/read`, so a GET failure
+    after a successful list is a real collection failure, not a posture.
     """
     records = []
     for listed in client.keys.list(group, name):
@@ -573,8 +481,8 @@ def collect_management_plane_keys(client, collector: Collector, group: str, name
 def collect_management_plane(subscription_id, cred, collector: Collector) -> list[dict]:
     """vaults.list_by_subscription(), then keys.list/get + secrets.list per vault.
 
-    All of these are control-plane calls covered by ARM Reader, so a failure here IS
-    a collection failure and goes through `Collector.guard`.
+    All control-plane and covered by ARM Reader, so a failure here IS a collection
+    failure and goes through `Collector.guard`.
     """
     from azure.mgmt.keyvault import KeyVaultManagementClient
 
@@ -586,7 +494,7 @@ def collect_management_plane(subscription_id, cred, collector: Collector) -> lis
         return []
 
     def _list_vaults():
-        # ItemPaged: the SDK follows nextLink itself, so pagination is handled.
+        # ItemPaged: the SDK follows nextLink itself.
         return [
             {
                 "id": model_attr(v, "id"),
@@ -636,9 +544,8 @@ def collect_management_plane(subscription_id, cred, collector: Collector) -> lis
 def collect_rotation_policies(vault: dict, cred, collector: Collector) -> None:
     """Open one vault's data plane and read every key's rotation policy.
 
-    Mutates `vault` with `data_plane_status` / `data_plane_message` and merges the
-    policies into its `keys`. Nothing here can flip the exit code except a
-    non-HTTP failure — see `is_data_plane_inaccessible`.
+    Nothing here can flip the exit code except a non-HTTP failure — see
+    `is_data_plane_inaccessible`.
     """
     from azure.keyvault.keys import KeyClient
 
@@ -655,8 +562,8 @@ def collect_rotation_policies(vault: dict, cred, collector: Collector) -> None:
         properties = list(key_client.list_properties_of_keys())
     except Exception as exc:  # noqa: BLE001 — boundary: classify, don't crash the run
         if is_data_plane_inaccessible(exc):
-            # Prowler's exact reading: a vault the credential holds no data action
-            # on is a posture to report, not a failed collection.
+            # Prowler's exact reading: a vault the credential holds no data action on
+            # is a posture to report, not a failed collection.
             logger.warning(
                 "key vault %s: data plane not accessible to this credential "
                 "(no Key Vault data-plane role assignment or access policy) — %s",
@@ -711,9 +618,7 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every request header at INFO; warnings still get through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -727,8 +632,7 @@ def main() -> int:
     vaults: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list call, so a zero-vault result is legible: Azure
-        # returns an empty list rather than an error for an unregistered provider.
+        # ARM returns an empty list, not an error, for an unregistered provider.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.KeyVault"
         )

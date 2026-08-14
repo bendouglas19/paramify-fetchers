@@ -46,18 +46,7 @@ evidence_set:
   reference_id: EVD-AZURE-DISK-ENC
   name: Azure Managed Disk Encryption
   instructions: >
-    Script: fetcher.py. Azure SDK calls (azure-mgmt-compute ComputeManagementClient):
-    disks.list() for the whole projection — encryption.type,
-    encryption.disk_encryption_set_id, encryption_settings_collection (enabled,
-    encryption_settings_version, and each element's disk/key encryption key source
-    vault id), os_type, disk_size_gb, disk_state, sku.name, managed_by and
-    managed_by_extended (the VMs the disk is attached to), network_access_policy and
-    public_network_access. Preceded by resource.providers.get("Microsoft.Compute") so
-    that zero disks is distinguishable from the provider not being registered.
-    encryption.type "EncryptionAtRestWithPlatformKey" ⇒ Microsoft-managed default;
-    "EncryptionAtRestWithCustomerKey" or "EncryptionAtRestWithPlatformAndCustomerKeys"
-    ⇒ customer-managed key from a disk encryption set (the latter is double
-    encryption). Disks with no attached VM are summarized separately from attached
-    ones, because an orphaned disk keeps its former VM's data under whatever key it
-    was created with. Key Vault secret/key URLs are deliberately not collected — only
-    the vault ids.
+    Script: fetcher.py. Azure SDK calls: azure-mgmt-compute
+    ComputeManagementClient.disks.list(), preceded by azure-mgmt-resource
+    ResourceManagementClient.providers.get("Microsoft.Compute"). One evidence file per
+    subscription.

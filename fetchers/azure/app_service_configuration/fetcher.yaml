@@ -46,22 +46,6 @@ evidence_set:
   reference_id: EVD-AZURE-APPSVC-CONFIG
   name: Azure App Service Configuration
   instructions: >
-    Script: fetcher.py. Permissions: the built-in **Reader** role on the
-    subscription is sufficient — every call below is a GET. Azure SDK calls
-    (azure-mgmt-web WebSiteManagementClient): resource.providers.get("Microsoft.Web")
-    first, so a zero-app result is distinguishable from "App Service is not in use";
-    then web_apps.list() for kind, state, default_host_name, https_only,
-    client_cert_enabled / client_cert_mode, public_network_access,
-    virtual_network_subnet_id and identity (principal_id / tenant_id / type); then
-    per web app web_apps.get_configuration(resource_group_name, name) (GET
-    config/web) for linux_fx_version, windows_fx_version, java_version, php_version,
-    python_version, net_framework_version, node_version, http20_enabled, ftps_state,
-    min_tls_version, remote_debugging_enabled, always_on and http_logging_enabled;
-    and web_apps.get_auth_settings_v2_without_secrets(resource_group_name, name) (GET
-    config/authsettingsV2) for platform.enabled,
-    global_validation.require_authentication and unauthenticated_client_action. The
-    without-secrets GET is used deliberately in place of get_auth_settings_v2, which
-    is a POST needing Microsoft.Web/sites/config/list/Action and can return secrets.
-    Apps whose kind starts with "functionapp" are skipped here. The effective client
-    certificate mode is derived from the (client_cert_enabled, client_cert_mode)
-    pair, because ARM keeps the mode after the toggle is switched off.
+    Script: fetcher.py. Azure SDK calls: resource.providers.get("Microsoft.Web"), then
+    azure-mgmt-web WebSiteManagementClient web_apps.list(), get_configuration() and
+    get_auth_settings_v2_without_secrets() per web app. Reader is sufficient — all GETs.

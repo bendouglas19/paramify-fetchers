@@ -52,18 +52,7 @@ evidence_set:
   reference_id: EVD-AZURE-STORAGE-ENC
   name: Azure Storage Encryption
   instructions: >
-    Script: fetcher.py. Azure SDK calls (azure-mgmt-storage
-    StorageManagementClient): storage_accounts.list() for the encryption, transit,
-    network and key-policy projection (encryption.key_source,
-    encryption.require_infrastructure_encryption, enable_https_traffic_only,
-    minimum_tls_version, allow_blob_public_access, public_network_access,
-    network_rule_set, private_endpoint_connections, key_policy, sku.name,
-    allow_cross_tenant_replication, allow_shared_key_access,
-    default_to_o_auth_authentication); then per account
-    blob_services.get_service_properties(resource_group, name) for versioning and
-    container soft delete, and file_services.get_service_properties(resource_group,
-    name) for share soft delete and SMB channel encryption. key_source
-    "Microsoft.Keyvault" ⇒ customer-managed key; "Microsoft.Storage" ⇒
-    Microsoft-managed default encryption. An account kind with no Blob or File
-    endpoint answers "… is not supported for the account." and is skipped — that is
-    expected, not a collection failure.
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-storage StorageManagementClient):
+    storage_accounts.list(), blob_services.get_service_properties(),
+    file_services.get_service_properties(). Maps to KSI-SVC-02, KSI-SVC-03,
+    KSI-SVC-06, KSI-RPL-03.

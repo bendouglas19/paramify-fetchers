@@ -1,41 +1,17 @@
 #!/usr/bin/env python3
 """
-Azure Policy assignments — what governance is assigned to the subscription
+Azure Policy assignments in effect on one subscription — its own and the ones
+inherited from a management group.
 
-For one subscription, reports every Azure Policy assignment in effect (its own and
-the ones inherited from a management group): what is assigned, at which scope, with
-which parameters, which scopes are excluded, whether it is ENFORCED or audit-only,
-and — resolved from the referenced definition — the definition's human-readable
-name and whether it is a built-in or a custom policy.
-
-**What is ported and what is ours.** Prowler's
-prowler/providers/azure/services/policy/policy_service.py (Apache-2.0) is very thin
-here: it keeps `id`, `name` and `enforcement_mode`, and its single check
-(policy_ensure_asc_enforcement_enabled) only asserts that the SecurityCenterBuiltIn
-assignment's enforcement_mode is "Default". That is a small slice of a large
-compliance surface, so this fetcher goes past it. Ported from Prowler: `id`, `name`,
-`enforcement_mode`. Ours: `display_name`, `description`, `policy_definition_id`,
-`scope`, `scope_kind`, `inherited_from_management_group`, `not_scopes`,
-`parameters`, `enforced`, the identity/location of the assignment, the resolved
-`policy_definition` block (display_name + policy_type BuiltIn/Custom/Static, and
-whether the reference is a single definition or an initiative), and the whole
-summary.
-
-Definition resolution is best-effort by design. A management-group-scoped custom
-definition is frequently unreadable with subscription-scoped Reader, and the
-assignment record is already complete without it, so a failed lookup is reported as
-`policy_definition.status: "unavailable"` with the reason and does NOT fail the run
-or flip the exit code. Every other API call here is guarded normally.
-
-`PolicyClient` has moved twice: it was re-exported at `azure.mgmt.resource`'s root
-through 24.x (what Prowler imports), lives at `azure.mgmt.resource.policy` in the
-split-out `azure-mgmt-resource-policy` distribution, and is absent from
-azure-mgmt-resource 25.x/26.x entirely. The import below tries both surviving paths,
-mirroring `azure_common.provider_registration_status`'s handling of the same churn
-for `ResourceManagementClient`.
-
-Single-subscription per invocation; fanout across subscriptions happens at the
-runner layer (see fetcher.yaml: supports_targets: true).
+Prowler's prowler/providers/azure/services/policy/policy_service.py (Apache-2.0) keeps
+only `id`, `name` and `enforcement_mode`, and its single check asserts that the
+SecurityCenterBuiltIn assignment is enforcing. This fetcher goes past that: the scope
+and notScopes, the parameters, the assignment identity, the resolved definition
+(display name, BuiltIn / Custom / Static) and the summary are ours. Resolution is
+best-effort by design — a management-group-scoped custom definition is frequently
+unreadable with subscription-scoped Reader and the assignment record is complete
+without it, so a failed lookup is reported as `policy_definition.status: "unavailable"`
+and does NOT fail the run. Every other API call here is guarded normally.
 """
 
 import logging
@@ -67,14 +43,13 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_policy_assignments")
 
-# enforcementMode. "Default" enforces the policy's effect (deny / deployIfNotExists
-# actually act); "DoNotEnforce" is what the portal calls "Disabled" — the policy
-# still evaluates and reports compliance but changes nothing. ARM omits the field
-# when it sits at its "Default" service default, so absent reads as enforced.
+# enforcementMode. "Default" enforces the effect (deny / deployIfNotExists act);
+# "DoNotEnforce" is the portal's "Disabled" — still evaluates, changes nothing. ARM omits
+# the field at its "Default" service default, so absent reads as enforced.
 ENFORCED_MODE = "default"
 
-# The subscription-scope assignment Defender for Cloud creates, and the only
-# assignment Prowler's one policy check looks at.
+# Defender for Cloud's own subscription-scope assignment — the only one Prowler's policy
+# check looks at.
 SECURITY_CENTER_BUILTIN_ASSIGNMENT = "SecurityCenterBuiltIn"
 
 # policy_definition.status values.
@@ -82,10 +57,9 @@ RESOLVED = "resolved"
 UNAVAILABLE = "unavailable"
 UNSUPPORTED = "unsupported"
 
-# The two things an assignment can point at: one definition, or an initiative
-# (policy set) bundling many. Matched case-insensitively — ARM returns
-# "/PROVIDERS/MICROSOFT.AUTHORIZATION/POLICYDEFINITIONS/..." in upper case for some
-# management-group assignments (confirmed live).
+# An assignment points at one definition or at an initiative (policy set) bundling many.
+# Matched case-insensitively: ARM returns the path upper-cased for some management-group
+# assignments (confirmed live).
 DEFINITION_SEGMENT = "policydefinitions"
 SET_DEFINITION_SEGMENT = "policysetdefinitions"
 DEFINITION_KIND = "policy_definition"
@@ -98,15 +72,13 @@ MANAGEMENT_GROUP_SCOPE = "management_group"
 UNKNOWN_SCOPE = "unknown"
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: the only azure-mgmt model access ---
 
 def _parameter_values(parameters) -> dict:
     """Unwrap {name: ParameterValuesValue} into a plain {name: value} map.
 
-    The SDK wraps every assignment parameter in a one-field model, so a raw
-    projection would write `{"tagName": {}}` (the model's repr) into the evidence
-    instead of the value. Assignment parameters are policy configuration — allowed
-    locations, a required tag name, a Log Analytics workspace id — not credentials.
+    The SDK wraps every assignment parameter in a one-field model, so a raw projection
+    would write the model's repr (`{"tagName": {}}`) into the evidence, not the value.
     """
     if not parameters:
         return {}
@@ -122,12 +94,9 @@ def _parameter_values(parameters) -> dict:
 def project_policy_assignment(assignment) -> dict:
     """Read a `PolicyAssignment` model's attributes into a flat snake_case dict.
 
-    Attribute access is stable across the azure-mgmt generator styles; `as_dict()`
-    is not (this client is on the newer `model_base` runtime, whose `as_dict()`
-    emits the camelCase wire shape nested under "properties"). `enforcement_mode` is
-    an SDK `str` enum, which `model_attr` unwraps to "Default"/"DoNotEnforce" — left
-    wrapped, `str()` would put "EnforcementMode.DEFAULT" in the evidence and the
-    comparison below would silently stop matching.
+    `enforcement_mode` is an SDK `str` enum, which `model_attr` unwraps to
+    "Default"/"DoNotEnforce" — left wrapped, the evidence would carry
+    "EnforcementMode.DEFAULT" and the comparison below would silently stop matching.
     """
     identity = model_attr(assignment, "identity")
     return {
@@ -147,10 +116,8 @@ def project_policy_assignment(assignment) -> dict:
 
 
 def project_policy_definition(definition) -> dict:
-    """Read a `PolicyDefinition` / `PolicySetDefinition` into a flat dict.
-
-    `policy_type` is an SDK `str` enum whose members are "BuiltIn", "Custom" and
-    "Static"; `model_attr` unwraps it.
+    """Read a `PolicyDefinition` / `PolicySetDefinition` into a flat dict. `policy_type` is
+    an SDK `str` enum ("BuiltIn", "Custom", "Static") that `model_attr` unwraps.
     """
     return {
         "display_name": model_attr(definition, "display_name"),
@@ -162,17 +129,14 @@ def project_policy_definition(definition) -> dict:
 # --- pure transforms (flat snake_case dicts in, evidence records out) ---
 
 def parse_definition_reference(definition_id) -> dict:
-    """Work out what a `policyDefinitionId` points at and who can read it.
+    """Work out what a `policyDefinitionId` points at and which getter can read it.
 
-    The same field carries five shapes, and each needs a different getter:
+    The same field carries five shapes:
       /providers/Microsoft.Authorization/policyDefinitions/<name>          built-in
       /providers/Microsoft.Authorization/policySetDefinitions/<name>       built-in initiative
       /subscriptions/<sub>/providers/.../policyDefinitions/<name>          subscription custom
       /providers/Microsoft.Management/managementGroups/<mg>/providers/...  MG custom
       (anything else)                                                     unknown
-
-    Matched case-insensitively: ARM returns the whole path upper-cased for some
-    management-group assignments (confirmed live).
     """
     segments = [s for s in str(definition_id or "").split("/") if s]
     lowered = [s.lower() for s in segments]
@@ -234,10 +198,9 @@ def definition_block(status: str, reference: dict, definition: dict | None, reas
 def assignment_record(assignment: dict) -> dict:
     """Normalize one projected policy assignment into an evidence record.
 
-    `enforced` is the fact Prowler's one check asserts, made explicit as a boolean so
-    a validator does not have to know that "Default" means enforcing and
-    "DoNotEnforce" means audit-only. An absent enforcement_mode reads as enforced,
-    because ARM omits the field at its service default.
+    `enforced` is the fact Prowler's one check asserts, made an explicit boolean so a
+    validator need not know that "Default" enforces and "DoNotEnforce" is audit-only. An
+    absent enforcement_mode reads as enforced: ARM omits the field at its service default.
     """
     scope = assignment.get("scope")
     mode = assignment.get("enforcement_mode")
@@ -251,8 +214,8 @@ def assignment_record(assignment: dict) -> dict:
         "policy_definition_id": assignment.get("policy_definition_id"),
         "scope": scope,
         "scope_kind": kind,
-        # An assignment made on a management group shows up in every subscription
-        # under it; saying so keeps "we assigned this" separate from "this reached us".
+        # A management-group assignment shows up in every subscription under it; this
+        # keeps "we assigned this" separate from "this reached us".
         "inherited_from_management_group": kind == MANAGEMENT_GROUP_SCOPE,
         "not_scopes": list(assignment.get("not_scopes") or []),
         "excluded_scope_count": len(assignment.get("not_scopes") or []),
@@ -261,8 +224,8 @@ def assignment_record(assignment: dict) -> dict:
         "enforced": str(mode or ENFORCED_MODE).lower() == ENFORCED_MODE,
         "assignment_identity_type": assignment.get("identity_type"),
         "location": assignment.get("location"),
-        # Filled in by the definition enrichment; the shape is always present so the
-        # evidence never has to be read with two different layouts in mind.
+        # Filled in by the definition enrichment; always present, so the evidence never
+        # has two layouts to read.
         "policy_definition": definition_block(UNAVAILABLE, reference, None, "not resolved"),
     }
 
@@ -304,8 +267,7 @@ def summarize(assignments: list[dict]) -> dict:
             1 for a in assignments if a["excluded_scope_count"] > 0
         ),
         "assignments_with_parameters": sum(1 for a in assignments if a["parameters"]),
-        # Prowler's single policy check in one field: Defender for Cloud's own
-        # subscription-scope assignment, and whether it is enforcing.
+        # Prowler's single policy check, in two fields.
         "security_center_builtin_assigned": any(
             a["name"] == SECURITY_CENTER_BUILTIN_ASSIGNMENT for a in assignments
         ),
@@ -316,15 +278,15 @@ def summarize(assignments: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def policy_client(cred, subscription_id):
     """Build a PolicyClient, tolerating the class's two remaining import paths.
 
     `azure.mgmt.resource.policy` is where the split-out `azure-mgmt-resource-policy`
-    distribution puts it (and where azure-mgmt-resource <= 24.x also had it); the
-    root re-export only existed through 24.x. azure-mgmt-resource 25.x and 26.x ship
-    neither — they contain only `resources` — so this fetcher needs
+    distribution puts it (and where azure-mgmt-resource <= 24.x also had it); the root
+    re-export Prowler imports existed only through 24.x. azure-mgmt-resource 25.x and
+    26.x ship neither — only `resources` — so this fetcher needs
     `azure-mgmt-resource-policy` installed alongside a modern azure-mgmt-resource.
     """
     try:
@@ -338,11 +300,9 @@ def policy_client(cred, subscription_id):
 def _lookup_definition(client, reference: dict, subscription_id):
     """Read the referenced definition, or say why it could not be read.
 
-    Returns (projected_definition | None, status, reason). Deliberately NOT routed
-    through `Collector.guard`: the assignment evidence is complete without the
-    definition's display name, and a management-group-scoped definition is routinely
-    unreadable with subscription-scoped Reader. Failing the whole run over an
-    enrichment lookup would turn a normal permission boundary into a red run.
+    Returns (projected_definition | None, status, reason). Deliberately NOT routed through
+    `Collector.guard`: failing the run over an enrichment lookup would turn a normal
+    permission boundary into a red run.
     """
     kind, name, scope = reference.get("kind"), reference.get("name"), reference.get("source_scope")
     if not kind or not name:
@@ -359,8 +319,8 @@ def _lookup_definition(client, reference: dict, subscription_id):
         )
     elif scope == SUBSCRIPTION_SCOPE:
         if reference.get("subscription_id") != subscription_id:
-            # The client is bound to one subscription; a definition custom to a
-            # different one is not reachable from here.
+            # The client is bound to one subscription; a definition custom to another one
+            # is not reachable from here.
             return (
                 None,
                 UNSUPPORTED,
@@ -387,10 +347,9 @@ def _lookup_definition(client, reference: dict, subscription_id):
 def collect_policy_assignments(subscription_id, cred, collector: Collector) -> list[dict]:
     """One policy_assignments.list(), then one cached definition GET per definition.
 
-    `list()` at subscription scope returns the subscription's own assignments AND the
-    ones it inherits from its management groups, which is what "in effect here" means.
-    Definition lookups are cached by definition id, so an initiative assigned five
-    times costs one GET.
+    `list()` at subscription scope returns the subscription's own assignments AND the ones
+    it inherits from its management groups — what "in effect here" means. Lookups are
+    cached by definition id, so an initiative assigned five times costs one GET.
     """
     client = collector.guard("policy.PolicyClient (init)", lambda: policy_client(cred, subscription_id))
     if client is None:
@@ -422,9 +381,8 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
-    # Their warnings and errors still come through.
+    # The azure-* SDKs log every HTTP request and response header at INFO, which would
+    # dominate the runner's stderr tail. Their warnings and errors still come through.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -438,10 +396,8 @@ def main() -> int:
     assignments: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Microsoft.Authorization is registered on every subscription in practice, but
-        # the field is collected for the same reason the other Azure fetchers collect
-        # it: a zero-assignment result then reads as "no governance assigned" rather
-        # than "the provider is not there".
+        # Microsoft.Authorization is registered on every subscription in practice, but the
+        # field is collected anyway so zero assignments reads as "no governance assigned".
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.Authorization"
         )

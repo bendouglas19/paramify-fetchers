@@ -47,24 +47,6 @@ evidence_set:
   reference_id: EVD-AZURE-KEYVAULT-CFG
   name: Azure Key Vault Configuration
   instructions: >
-    Script: fetcher.py. Azure SDK calls: resource.providers.get("Microsoft.KeyVault")
-    for the resource-provider registration state (so "no key vaults in use" is
-    distinguishable from "in use but empty" — ARM returns an empty list, not an
-    error, for an unregistered provider), then azure-mgmt-keyvault
-    KeyVaultManagementClient vaults.list_by_subscription() for each vault's
-    properties: tenant_id, enable_rbac_authorization, access_policies[] (tenant_id,
-    object_id, application_id, permissions for keys / secrets / certificates /
-    storage), enable_soft_delete, enable_purge_protection,
-    soft_delete_retention_in_days, public_network_access, network_acls (bypass,
-    default_action, ip_rules, virtual_network_rules),
-    private_endpoint_connections[], sku (family, name), vault_uri,
-    enabled_for_deployment, enabled_for_disk_encryption,
-    enabled_for_template_deployment, provisioning_state.
-    enable_rbac_authorization decides which authorization model applies and is
-    reported as access_model (rbac / access_policy) — under RBAC the grants live in
-    Azure role assignments and access_policies is empty; under access policies the
-    entries listed here are the grants. recoverable is soft delete AND purge
-    protection. ARM omits the optional booleans when they were never enabled, so an
-    absent value is reported as false, and an absent public_network_access as its
-    "Enabled" service default. The management plane only — the vault data plane is
-    never opened, so no key or secret value is read.
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-keyvault KeyVaultManagementClient):
+    vaults.list_by_subscription(). Management plane only. Maps to KSI-SVC-04,
+    KSI-SVC-06, KSI-IAM-04, KSI-RPL-03.

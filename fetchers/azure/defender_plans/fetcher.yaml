@@ -52,13 +52,5 @@ evidence_set:
   name: Microsoft Defender for Cloud Plans
   instructions: >
     Script: fetcher.py. Azure SDK call (azure-mgmt-security SecurityCenter):
-    pricings.list(scope_id="subscriptions/<subscription_id>") — one subscription-
-    scoped call returning a PricingList whose .value carries every plan. Per plan
-    the evidence keeps resource_id, resource_name, pricing_tier,
-    free_trial_remaining_time, and extensions collapsed to {name: is_enabled}.
-    pricing_tier "Standard" ⇒ the plan is actively protecting; "Free" ⇒ the default
-    no-op tier. If the call answers ResourceNotFoundError "Subscription Not
-    Registered", Microsoft.Security was never registered on the subscription and
-    Defender for Cloud is not in use: the evidence records
-    provider_registration_status: not_registered with an empty plan list and the run
-    still succeeds.
+    pricings.list(scope_id="subscriptions/<subscription_id>") for every Defender for
+    Cloud plan. Maps to KSI-CNA-07, KSI-MLA-03, KSI-MLA-04.

@@ -2,27 +2,14 @@
 """
 Azure Cosmos DB account security configuration
 
-For every Cosmos DB database account in one subscription, reports the API kind and
-the posture around it: whether the virtual-network firewall is on, whether key-based
-(local) auth is disabled so only Entra ID + RBAC can be used, automatic failover, the
-backup policy mode, public network access, the minimum TLS version, private endpoint
-connections, and whether the account's data is encrypted with a customer-managed key
-(`key_vault_key_uri`).
+Per database account: the API kind, customer-managed-key encryption, local-auth,
+network exposure (virtual-network firewall, IP rules, private endpoints, TLS floor),
+automatic failover and the backup policy mode.
 
-Cosmos DB, like Azure Storage, is ALWAYS encrypted at rest, so the summary tracks
-CMK coverage — the percentage of accounts holding a customer-managed Key Vault key —
-rather than a generic encrypted/total that would sit at a constant 100. That mirrors
-fetchers/azure/storage_encryption_status and fetchers/azure/sql_encryption_status.
-
-Field projections are ported from Prowler's
-prowler/providers/azure/services/cosmosdb/cosmosdb_service.py (Apache-2.0), which
-reads the same azure-mgmt-cosmosdb SDK. Prowler's service does not project
-`key_vault_key_uri`, the virtual-network / IP rule lists or `network_acl_bypass`;
-those are added here because CMEK presence and the actual allow-lists are what make
-the "firewall enabled" flag meaningful as evidence rather than a bare boolean.
-
-Single-subscription per invocation; fanout across subscriptions happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+Ported from prowler/providers/azure/services/cosmosdb/cosmosdb_service.py
+(Apache-2.0), adding `key_vault_key_uri`, the virtual-network / IP rule lists and
+`network_acl_bypass`: without the allow-lists, "firewall enabled" is a bare boolean a
+reviewer cannot check.
 """
 
 import logging
@@ -54,36 +41,26 @@ from azure_common import (  # noqa: E402
 
 logger = logging.getLogger("azure_cosmosdb_configuration")
 
-# BackupPolicy.type. "Continuous" gives point-in-time restore; "Periodic" is the
-# older snapshot mode and is the default on accounts created without an explicit
-# choice.
+# BackupPolicy.type. "Continuous" gives point-in-time restore; "Periodic" is the older
+# snapshot mode and the default when no explicit choice was made.
 BACKUP_POLICY_CONTINUOUS = "continuous"
 
-# PublicNetworkAccess values that mean the account is not reachable from the public
-# internet. "SecuredByPerimeter" is Microsoft's Network Security Perimeter, which
-# Prowler accepts alongside "Disabled".
+# "SecuredByPerimeter" is Microsoft's Network Security Perimeter, which Prowler accepts
+# alongside "Disabled" as not reachable from the public internet.
 PRIVATE_NETWORK_ACCESS = ("disabled", "securedbyperimeter")
 
-# MinimalTlsVersion. Azure spells these "Tls" / "Tls11" / "Tls12" / "Tls13"; only the
-# last two are acceptable. NOTE the absent case is NOT compliant: an account that
-# never set the property accepts TLS 1.0.
+# MinimalTlsVersion is spelled "Tls" / "Tls11" / "Tls12" / "Tls13". Absent is NOT
+# compliant: an account that never set the property accepts TLS 1.0.
 RECOMMENDED_TLS_VERSIONS = ("tls12", "tls13")
 
 
-# --- projection: the only code here that touches an azure-mgmt model ---
+# --- projection: azure-mgmt models in, flat dicts out ---
 
 def project_database_account(account) -> dict:
-    """Read a `DatabaseAccountGetResults` model's attributes into a flat dict.
-
-    azure-mgmt-cosmosdb 10.0.0 is on the newer `_model_base` generator, which keeps a
-    nested `properties` model but forwards the flattened snake_case names to it —
-    verified for this exact version, so `account.disable_local_auth` resolves to
-    `properties.disableLocalAuth`. `backup_policy` comes back as the TYPED subclass
-    the discriminator selected (`ContinuousModeBackupPolicy` /
-    `PeriodicModeBackupPolicy`), so `.type` is readable one level down.
-
-    Values are the SDK's own, un-defaulted: None here means "the API did not return
-    this field", and `account_record()` decides how to read an absence.
+    """`backup_policy` comes back as the TYPED subclass the discriminator selected
+    (`ContinuousModeBackupPolicy` / `PeriodicModeBackupPolicy`), so `.type` reads one
+    level down. Values stay un-defaulted — None means the API did not return the
+    field, and `account_record()` decides how to read an absence.
     """
     backup_policy = model_attr(account, "backup_policy")
     return {
@@ -95,10 +72,8 @@ def project_database_account(account) -> dict:
         "tags": model_attr(account, "tags"),
         "database_account_offer_type": model_attr(account, "database_account_offer_type"),
         "document_endpoint": model_attr(account, "document_endpoint"),
-        # --- authentication ---
         "disable_local_auth": model_attr(account, "disable_local_auth"),
         "default_identity": model_attr(account, "default_identity"),
-        # --- network exposure ---
         "is_virtual_network_filter_enabled": model_attr(
             account, "is_virtual_network_filter_enabled"
         ),
@@ -127,9 +102,7 @@ def project_database_account(account) -> dict:
             }
             for pec in (model_attr(account, "private_endpoint_connections") or [])
         ],
-        # --- encryption at rest ---
         "key_vault_key_uri": model_attr(account, "key_vault_key_uri"),
-        # --- durability ---
         "enable_automatic_failover": model_attr(account, "enable_automatic_failover"),
         "enable_multiple_write_locations": model_attr(
             account, "enable_multiple_write_locations"
@@ -141,13 +114,10 @@ def project_database_account(account) -> dict:
 # --- pure transforms (flat snake_case dicts in, evidence records out) ---
 
 def account_record(account: dict) -> dict:
-    """Normalize one projected Cosmos DB account into an evidence record.
-
-    Every optional boolean is coerced with `bool(x or False)`: Azure OMITS
-    `disableLocalAuth`, `enableAutomaticFailover` and
-    `isVirtualNetworkFilterEnabled` when they sit at their false-y defaults rather
-    than returning `false`, and a validator regex asserting `false` would not match
-    `null`. Absent means disabled for all three — there is no third state.
+    """Optional booleans are coerced with `bool(x or False)`: Azure OMITS
+    `disableLocalAuth`, `enableAutomaticFailover` and `isVirtualNetworkFilterEnabled`
+    at their false-y defaults rather than returning `false`, and a validator regex
+    asserting `false` would not match `null`. Absent means disabled for all three.
     """
     resource_id = account.get("id")
     key_vault_key_uri = account.get("key_vault_key_uri")
@@ -166,7 +136,7 @@ def account_record(account: dict) -> dict:
         "tags": account.get("tags") or {},
         "database_account_offer_type": account.get("database_account_offer_type"),
         "document_endpoint": account.get("document_endpoint"),
-        # --- encryption at rest (the evidence that actually varies) ---
+        # --- encryption at rest ---
         "key_vault_key_uri": key_vault_key_uri,
         "customer_managed_key": bool(key_vault_key_uri),
         # --- authentication ---
@@ -181,8 +151,7 @@ def account_record(account: dict) -> dict:
             str(public_network_access or "").lower() in PRIVATE_NETWORK_ACCESS
         ),
         "minimal_tls_version": minimal_tls_version,
-        # An account that never set minimalTlsVersion accepts TLS 1.0, so absent is
-        # NOT compliant here.
+        # Absent accepts TLS 1.0, so it is not compliant.
         "minimal_tls_version_recommended": (
             str(minimal_tls_version or "").lower() in RECOMMENDED_TLS_VERSIONS
         ),
@@ -218,12 +187,8 @@ def account_record(account: dict) -> dict:
 
 
 def summarize(accounts: list[dict]) -> dict:
-    """CMK coverage is the headline, not an encrypted/total percentage.
-
-    Cosmos DB encrypts at rest unconditionally, so an "encrypted" percentage would be
-    a constant 100 and prove nothing. What varies is how many accounts hold a
-    customer-managed Key Vault key — the same reasoning as
-    storage_encryption_status's `cmk_percentage`.
+    """CMK coverage, not encrypted/total: Cosmos DB encrypts at rest unconditionally, so
+    an "encrypted" percentage would be a constant 100.
     """
     total = len(accounts)
     cmk = sum(1 for a in accounts if a["customer_managed_key"])
@@ -255,10 +220,8 @@ def summarize(accounts: list[dict]) -> dict:
 
 
 def _count_by_kind(accounts: list[dict]) -> dict:
-    """Accounts per API kind (GlobalDocumentDB / MongoDB / Parse).
-
-    Sorted so the summary block is byte-stable between runs, which is what keeps a
-    regex validator from firing on key reordering alone.
+    """Accounts per API kind, sorted so the summary block is byte-stable between runs
+    (a regex validator must not fire on key reordering alone).
     """
     counts: dict[str, int] = {}
     for account in accounts:
@@ -267,23 +230,17 @@ def _count_by_kind(accounts: list[dict]) -> dict:
     return dict(sorted(counts.items()))
 
 
-# --- collection (lazy azure imports; not exercised by the fixture tests) ---
+# --- collection (lazy azure imports) ---
 
 def collect_database_accounts(subscription_id, cred, collector: Collector) -> list[dict]:
-    """One database_accounts.list() — the whole projection is in that response.
-
-    Unlike the SQL fetchers, Cosmos DB needs no per-resource fan-out: every field in
-    the evidence comes off the account model itself.
-    """
+    """One database_accounts.list() — the whole projection is in that response."""
 
     def _client():
         from azure.mgmt.cosmosdb import CosmosDBManagementClient  # lazy
 
         return CosmosDBManagementClient(credential=cred, subscription_id=subscription_id)
 
-    # Guarded (not a bare import at function top level) so a missing
-    # azure-mgmt-cosmosdb is recorded as internal_error and the evidence file is
-    # still written.
+    # Guarded: a missing azure-mgmt-cosmosdb becomes internal_error, evidence still written.
     client = collector.guard("cosmosdb.CosmosDBManagementClient (init)", _client)
     if client is None:
         return []
@@ -304,8 +261,7 @@ def main() -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    # The azure-* SDKs log every HTTP request and response header at INFO, which
-    # buries this fetcher's own lines and would dominate the runner's stderr tail.
+    # The azure-* SDKs log every request/response header at INFO — far too noisy here.
     logging.getLogger("azure").setLevel(logging.WARNING)
     load_dotenv()
 
@@ -319,10 +275,7 @@ def main() -> int:
     accounts: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
-        # Asked BEFORE the list call: Azure returns an empty list rather than an
-        # error for an unregistered provider, so without this "0 accounts" reads
-        # identically whether Cosmos DB is unused or Microsoft.DocumentDB was never
-        # registered.
+        # Asked first: an unregistered provider returns an empty list, not an error.
         registration = provider_registration_status(
             collector, subscription_id, cred, "Microsoft.DocumentDB"
         )
