@@ -1,0 +1,67 @@
+name: azure_app_service_configuration
+version: 0.1.0
+description: >
+  For each App Service web app in the subscription, reports the transport and
+  identity posture — HTTPS-only, minimum TLS version, HTTP/2, FTP/FTPS deployment
+  state, client certificate mode (the effective mode, not the stale raw field),
+  App Service Authentication ("Easy Auth") and whether unauthenticated callers are
+  rejected, managed identity, VNet integration and public network access — together
+  with the declared language runtime versions (linux_fx_version, windows_fx_version,
+  java / php / python / node / .NET), which is what a supported-runtime control is
+  evidenced from. Function apps are excluded; they are collected by
+  azure_function_app_configuration, whose calls need more than Reader.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_app_service_configuration.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-APPSVC-CONFIG
+  name: Azure App Service Configuration
+  instructions: >
+    Script: fetcher.py. Permissions: the built-in **Reader** role on the
+    subscription is sufficient — every call below is a GET. Azure SDK calls
+    (azure-mgmt-web WebSiteManagementClient): resource.providers.get("Microsoft.Web")
+    first, so a zero-app result is distinguishable from "App Service is not in use";
+    then web_apps.list() for kind, state, default_host_name, https_only,
+    client_cert_enabled / client_cert_mode, public_network_access,
+    virtual_network_subnet_id and identity (principal_id / tenant_id / type); then
+    per web app web_apps.get_configuration(resource_group_name, name) (GET
+    config/web) for linux_fx_version, windows_fx_version, java_version, php_version,
+    python_version, net_framework_version, node_version, http20_enabled, ftps_state,
+    min_tls_version, remote_debugging_enabled, always_on and http_logging_enabled;
+    and web_apps.get_auth_settings_v2_without_secrets(resource_group_name, name) (GET
+    config/authsettingsV2) for platform.enabled,
+    global_validation.require_authentication and unauthenticated_client_action. The
+    without-secrets GET is used deliberately in place of get_auth_settings_v2, which
+    is a POST needing Microsoft.Web/sites/config/list/Action and can return secrets.
+    Apps whose kind starts with "functionapp" are skipped here. The effective client
+    certificate mode is derived from the (client_cert_enabled, client_cert_mode)
+    pair, because ARM keeps the mode after the toggle is switched off.
