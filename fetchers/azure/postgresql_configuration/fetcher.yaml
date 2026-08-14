@@ -1,0 +1,77 @@
+name: azure_postgresql_configuration
+version: 0.1.0
+description: >
+  For each Azure Database for PostgreSQL flexible server in the subscription,
+  reports the settings that show transport encryption, authentication, audit logging
+  and durability are configured: require_secure_transport, Entra ID (Azure AD)
+  authentication with the administrators assigned to it, the log_checkpoints /
+  log_connections / log_disconnections / connection_throttling / log_retention_days
+  server parameters, every firewall rule with the 0.0.0.0-0.0.0.0 "allow all Azure
+  services" pseudo-rule flagged, geo-redundant backup, and the high-availability
+  mode. Server parameters are read by name rather than dumped, because a flexible
+  server exposes several hundred of them and the rest are engine tunables.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_postgresql_configuration.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-POSTGRESQL-CONFIG
+  name: Azure PostgreSQL Flexible Server Configuration
+  instructions: >
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-postgresqlflexibleservers
+    PostgreSQLManagementClient): servers.list_by_subscription() (servers.list() on
+    older SDK generations) for each flexible server's version, state,
+    auth_config.active_directory_auth, auth_config.password_auth,
+    network.public_network_access, backup.backup_retention_days,
+    backup.geo_redundant_backup and high_availability.mode; then per server SIX
+    configurations.get(resource_group, server, "<parameter>") calls reading
+    require_secure_transport, log_checkpoints, log_connections, log_disconnections,
+    connection_throttle.enable and logfiles.retention_days BY NAME — not
+    configurations.list_by_server(), because a flexible server exposes several
+    hundred parameters and the remainder are PostgreSQL engine tunables that say
+    nothing about security posture; firewall_rules.list_by_server(resource_group,
+    server) for each rule's name, start_ip_address and end_ip_address; and
+    administrators_microsoft_entra.list_by_server(resource_group, server)
+    (administrators.list_by_server on older SDK generations) for the Entra ID
+    administrators' object_id, principal_name, principal_type and tenant_id.
+    Parameter values are uppercased, so "ON" means enabled. A firewall rule of
+    0.0.0.0-0.0.0.0 is Azure's "allow public access from any Azure service"
+    pseudo-rule. Entra ID authentication counts as configured only when
+    active_directory_auth is Enabled AND at least one administrator is assigned. Log
+    retention is compliant strictly between 3 and 8 days, Azure's supported range for
+    that parameter. connection_throttle.enable was removed in PostgreSQL 16 and
+    logfiles.retention_days exists only when server logs are on, so a 404 on either
+    is recorded as absent rather than as a collection failure; likewise listing
+    administrators on a server with Entra authentication off. A subscription that
+    never registered the Microsoft.DBforPostgreSQL resource provider reports
+    provider_registration_status: not_registered, which is valid evidence
+    ("PostgreSQL not in use") rather than an empty result that looks like full
+    coverage.
