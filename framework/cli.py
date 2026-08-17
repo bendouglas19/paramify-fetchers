@@ -365,6 +365,9 @@ def doctor_cmd(
     require_upload: bool = typer.Option(
         False, "--require-upload", help="Fail if the run could not be uploaded"
     ),
+    probe: bool = typer.Option(
+        False, "--probe", help="Authenticate to each cloud category and report the identity"
+    ),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON"),
 ):
     """Preflight: Python, required CLIs and packages, and (with a manifest) secrets.
@@ -380,6 +383,7 @@ def doctor_cmd(
         Path(manifest) if manifest else None,
         upload_config=Path(upload_config) if upload_config else None,
         require_upload=require_upload,
+        probe=probe,
     )
     if json_out:
         typer.echo(json.dumps(rep, indent=2))
@@ -420,6 +424,20 @@ def doctor_cmd(
                 )
         typer.echo("  fix: pip install -r requirements.txt")
 
+    if rep.get("probes"):
+        typer.echo("\nCredentials (live):")
+        for pr in rep["probes"]:
+            if pr["ok"]:
+                typer.echo(f"  {ok_mark} {pr['category']:6s} {pr['identity']}")
+                # The detail line is the point of the probe: credentials that
+                # authenticate against the wrong account produce a clean run
+                # full of empty evidence.
+                bits = [f"{k}={v}" for k, v in (pr["detail"] or {}).items() if v]
+                if bits:
+                    typer.echo(f"           {'  '.join(bits)}")
+            else:
+                typer.echo(f"  {bad_mark} {pr['category']:6s} {pr['error']}")
+
     up = rep.get("upload")
     if up:
         typer.echo("\nUpload:")
@@ -453,7 +471,15 @@ def doctor_cmd(
             else:
                 typer.echo(f"  {bad_mark} {fr['use']}  missing: {', '.join(fr['missing'])}")
 
-    typer.echo(f"\n{'All good.' if rep['ok'] else 'Issues found — see above.'}")
+    if not rep["ok"]:
+        typer.echo("\nIssues found — see above.")
+    elif any(not pr["ok"] for pr in rep.get("probes") or []):
+        # The checks that gate the exit code passed, but a live credential did
+        # not answer. Saying "All good" over the top of that is how a preflight
+        # teaches people to stop reading it.
+        typer.echo("\nChecks passed, but a live credential check failed — see above.")
+    else:
+        typer.echo("\nAll good.")
     raise typer.Exit(0 if rep["ok"] else 1)
 
 

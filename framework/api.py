@@ -46,6 +46,7 @@ from framework.paramify_auth import (
     resolve_base_url,
     resolve_upload_token,
 )
+from framework.probe import probe_categories
 from framework.runner import manifest_loader
 
 
@@ -330,6 +331,7 @@ def doctor(
     *,
     upload_config: Optional[Path] = None,
     require_upload: bool = False,
+    probe: bool = False,
 ) -> dict:
     """Preflight check for running fetchers here.
 
@@ -348,6 +350,11 @@ def doctor(
     Upload readiness is always reported but only counts toward `ok` when
     `require_upload` is set, since collecting evidence without uploading it is a
     legitimate workflow that should not fail a preflight.
+
+    `probe` additionally authenticates against each cloud category and reports
+    which identity answered. It is opt-in because it is the only part of doctor
+    that touches the network, and its results never gate `ok` — see
+    framework/probe.py.
     """
     py = sys.version_info
     python = {
@@ -445,6 +452,12 @@ def doctor(
     # without breaking collect-only runs, which legitimately need no token.
     upload = upload_readiness(root, config_path=upload_config)
 
+    # Opt-in because, unlike every other check here, these make network calls.
+    # A failed probe is reported but never gates `ok`: it can fail for reasons
+    # that are not the operator's problem (an offline laptop, a blocked IMDS
+    # endpoint) and a preflight that cries wolf gets ignored.
+    probes = probe_categories(categories) if probe else []
+
     ok = python["ok"]
     if tools_required:
         tools_ok = all(t["present"] for t in tools)
@@ -464,6 +477,7 @@ def doctor(
         "manifest": manifest_report,
         "upload": upload,
         "upload_required": require_upload,
+        "probes": probes,
         "ok": ok,
     }
 
