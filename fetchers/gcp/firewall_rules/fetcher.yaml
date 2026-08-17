@@ -1,0 +1,46 @@
+name: gcp_firewall_rules
+version: 0.1.0
+description: >
+  Every VPC firewall rule in the project with the fields that decide network
+  exposure: direction, the allowed and denied protocol/port ranges, source and
+  destination ranges, the target tags and service accounts the rule narrows to,
+  priority, disabled state, and Firewall Rules Logging. Derives which rules let
+  the internet (0.0.0.0/0 or ::/0) reach a remote-administration or datastore
+  port, so the SSH/RDP-open-to-the-world question is answered from the summary.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_firewall_rules.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+evidence_set:
+  reference_id: EVD-GCP-FW-RULES
+  name: VPC Firewall Rules
+  instructions: >
+    Script: fetcher.py. Google Cloud client library call: compute
+    firewalls.list(). One evidence file per project.

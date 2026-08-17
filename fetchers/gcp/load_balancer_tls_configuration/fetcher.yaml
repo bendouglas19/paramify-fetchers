@@ -1,0 +1,48 @@
+name: gcp_load_balancer_tls_configuration
+version: 0.1.0
+description: >
+  Transport-encryption posture of every HTTPS/SSL load balancer front end in the
+  project: each target HTTPS proxy and target SSL proxy, the SSL policy attached
+  to it, and each policy's minimum TLS version, profile (COMPATIBLE / MODERN /
+  RESTRICTED / FIPS_202205 / CUSTOM) and resolved cipher list. Every proxy also
+  carries its effective minimum TLS version and profile, because a proxy with no
+  SSL policy runs Google's permissive default (TLS 1.0, COMPATIBLE) — the finding
+  this evidence exists to surface.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_load_balancer_tls_configuration.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+evidence_set:
+  reference_id: EVD-GCP-LB-TLS
+  name: Load Balancer TLS Configuration
+  instructions: >
+    Script: fetcher.py. Google Cloud client library calls: compute
+    targetHttpsProxies.aggregatedList(), targetSslProxies.list(),
+    sslPolicies.aggregatedList(). One evidence file per project.

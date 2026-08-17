@@ -1,0 +1,55 @@
+# GCP platform posture evidence — the configuration controls that are not about
+# data at rest: GKE cluster hardening, Cloud Logging (the CloudTrail analogue),
+# and IAM service accounts + their keys.
+#
+# Kept separate from examples/gcp_data_at_rest.yaml because the theme is
+# different, not because the wiring is: same ADC auth, same per-project fanout,
+# and the two manifests can be merged into one run if you'd rather.
+#
+# Auth is Application Default Credentials (ADC) — there is no secret to set.
+#   - Local:      gcloud auth application-default login
+#   - In-cluster: GKE Workload Identity (metadata server; nothing to wire)
+# See fetchers/gcp/README.md for the read-only role each fetcher needs, and note
+# that these three fetchers have NOT yet had a live-tenant run (the data-at-rest
+# three have) — expect to reconcile the permission list on your first run.
+#
+# Fanout is per PROJECT. Each fetcher lists one target per project; `environment`
+# labels that project's evidence (prod / preprod) and is written into the payload
+# metadata. Omitting `project` would fall back to the ADC default project
+# ("collect where deployed") — here we name it explicitly so the run is
+# reproducible and multi-project-ready.
+#
+# Replace the project id below with your own.
+run:
+  output_dir: ./evidence
+
+  platforms:
+    gcp:
+      # Optional: let the non-sensitive ADC selectors through the runner's env
+      # whitelist. Only take effect if actually set. No secret here by design.
+      auth:
+        passthrough_env:
+          - CLOUDSDK_CONFIG
+          - GOOGLE_CLOUD_PROJECT
+
+  fetchers:
+    # A project with no GKE clusters is fine: if container.googleapis.com is
+    # disabled the fetcher records that (metadata.skipped_calls,
+    # summary.gke_api_readable: false) and still exits 0.
+    - use: gcp_gke_cluster_configuration
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    # Reads the project's ancestry so an organization- or folder-level aggregated
+    # sink is credited too. A project-scoped role can't make those reads; they are
+    # tolerated and listed in metadata.skipped_calls rather than failing the run.
+    - use: gcp_cloud_logging_configuration
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    - use: gcp_iam_service_accounts
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod

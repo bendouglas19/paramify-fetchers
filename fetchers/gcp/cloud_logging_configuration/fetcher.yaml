@@ -1,0 +1,53 @@
+name: gcp_cloud_logging_configuration
+version: 0.1.0
+description: >
+  The GCP analogue of the CloudTrail configuration evidence set. For the project,
+  reports every log sink (destination, filter, whether it exports everything,
+  whether it is disabled, include_children on ancestor sinks), every log bucket
+  (retention days, locked, CMEK, lifecycle state), the project-level log-router
+  CMEK and storage-location settings, and each log-based metric paired with the
+  alert policies that fire on it — the GCP shape of a metric filter with an alarm.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_cloud_logging_configuration.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+ksis:
+  - KSI-MLA-01       # Centralized, tamper-resistant logging — sinks, locked buckets, retention, CMEK
+  - KSI-CMT-01       # Log and monitor system modifications — audit-log sinks + metric/alert pairs
+
+evidence_set:
+  reference_id: EVD-GCP-LOGGING-CONFIG
+  name: Cloud Logging Configuration
+  instructions: >
+    Script: fetcher.py. Google Cloud client library calls: logging
+    sinks.list(), buckets.list(), settings.get(), metrics.list(); monitoring
+    alertPolicies.list(); cloudresourcemanager projects.get() and
+    folders.get() to walk ancestry for org and folder sinks. One evidence
+    file per project.

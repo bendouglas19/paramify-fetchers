@@ -1,0 +1,53 @@
+# GCP data-at-rest evidence — encryption at rest across Persistent Disks (+
+# snapshots), Cloud Storage, Cloud SQL, and the Cloud KMS keys they reference.
+#
+# Auth is Application Default Credentials (ADC) — there is no secret to set.
+#   - Local:      gcloud auth application-default login
+#   - In-cluster: GKE Workload Identity (metadata server; nothing to wire)
+# See fetchers/gcp/README.md for the read-only role each fetcher needs.
+#
+# Fanout is per PROJECT. Each fetcher lists one target per project; `environment`
+# labels that project's evidence (prod / preprod) and is written into the payload
+# metadata. Omitting `project` would fall back to the ADC default project
+# ("collect where deployed") — here we name it explicitly so the run is
+# reproducible and multi-project-ready.
+#
+# Replace the project id below with your own (the throwaway test project from
+# project-instructions/gcp-test-environment-setup.md was paramify-gcp-test-<rand>).
+run:
+  output_dir: ./evidence
+
+  platforms:
+    gcp:
+      # Optional: let the non-sensitive ADC selectors through the runner's env
+      # whitelist. Only take effect if actually set. No secret here by design.
+      auth:
+        passthrough_env:
+          - CLOUDSDK_CONFIG
+          - GOOGLE_CLOUD_PROJECT
+
+  fetchers:
+    - use: gcp_persistent_disk_encryption_status
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    - use: gcp_cloud_storage_encryption_status
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    - use: gcp_cloud_sql_encryption_status
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    # gcp_kms_key_rotation is intentionally omitted here until it has one green
+    # live-tenant re-run (its first run hit a list_locations bug, now fixed). Add
+    # this back once verified:
+    # - use: gcp_kms_key_rotation
+    #   config:
+    #     kms_locations: us-central1        # optional; skips cloudkms.locations.list
+    #   targets:
+    #     - project: paramify-gcp-test-7107
+    #       environment: preprod

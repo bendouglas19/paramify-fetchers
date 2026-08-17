@@ -1,0 +1,47 @@
+name: gcp_api_keys_inventory
+version: 0.1.0
+description: >
+  Every API key in the project, with its creation and last-update time, its age
+  against the 90-day rotation interval, and both restriction axes unpacked: which
+  API services it may call (flagging the cloudapis.googleapis.com wildcard, which
+  restricts nothing) and which referrers, IP ranges, Android packages or iOS bundle
+  ids may present it. A key with neither axis set is unrestricted — a bearer
+  credential that works against every enabled API from anywhere. No key string is
+  ever read.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_api_keys_inventory.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+evidence_set:
+  reference_id: EVD-GCP-API-KEYS
+  name: API Keys Inventory and Restrictions
+  instructions: >
+    Script: fetcher.py. Google Cloud client library call: apikeys
+    keys.list(). No key string is read. One evidence file per project.

@@ -1,0 +1,50 @@
+name: gcp_iam_custom_roles
+version: 0.1.0
+description: >
+  Every custom IAM role defined for the project — plus the organization's custom
+  roles when they are readable, since those are bindable inside the project. For
+  each role: its id, launch stage, deleted state, and the full permission list,
+  classified into the escalation paths that let a holder step outside the role —
+  *.setIamPolicy, iam.serviceAccounts.actAs and the token-signing permissions,
+  iam.roles.update and friends, service-account key creation, and create/update on
+  a surface that runs code as an attached identity. Also reports how many services
+  each role spans and whether it is genuinely read-only.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_iam_custom_roles.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+evidence_set:
+  reference_id: EVD-GCP-IAM-CUSTOM-ROLES
+  name: IAM Custom Role Definitions
+  instructions: >
+    Script: fetcher.py. Google Cloud client library calls: iam roles.list()
+    for the project and, where readable, the organization;
+    cloudresourcemanager projects.get() and folders.get() for ancestry. One
+    evidence file per project.

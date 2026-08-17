@@ -1,0 +1,66 @@
+# GCP compute posture evidence — the network-exposure and host-hardening controls
+# for Compute Engine: firewall rules, per-instance hardening, VPC/subnet
+# segmentation, and load balancer TLS.
+#
+# Kept separate from examples/gcp_data_at_rest.yaml and
+# examples/gcp_platform_posture.yaml because the theme is different, not because
+# the wiring is: same ADC auth, same per-project fanout, and any of the three
+# manifests can be merged into one run if you'd rather.
+#
+# Auth is Application Default Credentials (ADC) — there is no secret to set.
+#   - Local:      gcloud auth application-default login
+#   - In-cluster: GKE Workload Identity (metadata server; nothing to wire)
+# All four fetchers read the Compute Engine API only; `roles/compute.viewer` (or
+# the project-level read-only role in fetchers/gcp/README.md) covers every call.
+# NOTE: these four have NOT yet had a live-tenant run — expect to reconcile the
+# permission list on your first run.
+#
+# Fanout is per PROJECT. Each fetcher lists one target per project; `environment`
+# labels that project's evidence (prod / preprod) and is written into the payload
+# metadata. Omitting `project` would fall back to the ADC default project
+# ("collect where deployed") — here we name it explicitly so the run is
+# reproducible and multi-project-ready.
+#
+# Replace the project id below with your own.
+run:
+  output_dir: ./evidence
+
+  platforms:
+    gcp:
+      # Optional: let the non-sensitive ADC selectors through the runner's env
+      # whitelist. Only take effect if actually set. No secret here by design.
+      auth:
+        passthrough_env:
+          - CLOUDSDK_CONFIG
+          - GOOGLE_CLOUD_PROJECT
+
+  fetchers:
+    # The "is SSH/RDP open to 0.0.0.0/0" evidence. Read
+    # summary.rules_exposing_sensitive_ports_to_internet and the
+    # ssh_open_to_internet / rdp_open_to_internet booleans first.
+    - use: gcp_firewall_rules
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    # Per-instance hardening. GKE node VMs appear here too, flagged
+    # `gke_managed: true` — their posture is judged by
+    # gcp_gke_cluster_configuration, not by this evidence set.
+    - use: gcp_compute_instance_configuration
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    # Network segmentation: auto-mode vs custom-mode VPCs, the `default` network,
+    # per-subnet Private Google Access and VPC flow logs.
+    - use: gcp_vpc_network_configuration
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod
+
+    # A project with no HTTPS load balancer is fine: the fetcher reports zero
+    # proxies and zero SSL policies and still exits 0.
+    - use: gcp_load_balancer_tls_configuration
+      targets:
+        - project: paramify-gcp-test-7107
+          environment: preprod

@@ -1,0 +1,63 @@
+name: gcp_iam_policy_bindings
+version: 0.1.0
+description: >
+  The project's IAM policy, read both ways: every binding with its role and its
+  members, and the same policy rolled up per principal so every role one identity
+  holds is visible in one place. Flags primitive roles (owner/editor/viewer),
+  service accounts granted administrative or primitive roles, allUsers /
+  allAuthenticatedUsers members, members outside the organization's domain,
+  consumer Google accounts, service accounts owned by another project, and
+  bindings gated on an IAM condition. Also reports whether Cloud Audit Logging is
+  configured on the policy and which identities are exempted from it.
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_iam_policy_bindings.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target for multi-project runs.
+
+config_schema:
+  organization_domain:
+    type: string
+    required: false
+    env: GCP_ORGANIZATION_DOMAIN
+    description: >
+      Your organization's primary domain (e.g. example.com), used to tell members
+      inside the organization from external ones. Optional — omit and the fetcher
+      reads it from the project's parent organization, a call that sits above the
+      project and that a project-scoped read-only role usually cannot make. When
+      neither is available the evidence reports
+      summary.external_members_evaluated: false rather than zero external members.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+evidence_set:
+  reference_id: EVD-GCP-IAM-BINDINGS
+  name: IAM Policy Bindings and Audit Configuration
+  instructions: >
+    Script: fetcher.py. Google Cloud client library calls:
+    cloudresourcemanager projects.getIamPolicy() at policy version 3,
+    projects.get(), organizations.get() and folders.get() for ancestry. One
+    evidence file per project.

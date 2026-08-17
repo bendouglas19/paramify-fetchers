@@ -1,0 +1,50 @@
+name: gcp_persistent_disk_encryption_status
+version: 0.1.0
+description: >
+  For each Compute Engine persistent disk and snapshot in the project, reports
+  whether encryption at rest uses a customer-managed key (CMEK) or the default
+  Google-managed key, plus the KMS key name where set. Aggregates CMEK-coverage
+  percentages. GCP encrypts all disks/snapshots at rest by default, so the
+  evidence that varies is CMEK vs Google-managed, not "encrypted: true/false".
+category: gcp
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gcp_persistent_disk_encryption_status.json
+  aggregation: per_target
+
+target_schema:
+  project:
+    type: string
+    required: false
+    env: GOOGLE_CLOUD_PROJECT
+    description: >
+      GCP project id to collect from. Optional — omit to use the ADC default
+      project ("collect where deployed"); set one target per project to fan out.
+  environment:
+    type: string
+    required: false
+    env: GCP_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the
+      evidence metadata. Optional — set per target so multi-project runs are
+      labelled per environment.
+
+secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
+
+ksis:
+  - KSI-SVC-03       # Protection of data at rest (mirrors aws block_storage_encryption_status)
+  - KSI-RPL-03       # Server-side/backup encryption — snapshots (mirrors aws ebs_snapshot_status)
+
+evidence_set:
+  reference_id: EVD-GCP-PD-ENC
+  name: Persistent Disk Encryption
+  instructions: >
+    Script: fetcher.py. Google Cloud client library calls: compute
+    disks.aggregatedList(), snapshots.list(). One evidence file per project.
