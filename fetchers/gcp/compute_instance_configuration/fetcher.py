@@ -5,29 +5,13 @@ GCP Compute Engine Instance Configuration
 Per-instance hardening posture for every VM in one project: Shielded VM (secure
 boot, vTPM, integrity monitoring), Confidential Computing, OS Login, serial-port
 access, IP forwarding, block-project-ssh-keys, the attached service account and
-its OAuth scopes, public-IP presence and deletion protection — plus the
-project-wide defaults those settings inherit from, so an instance that simply
-does not override OS Login is still read correctly.
+its OAuth scopes, public-IP presence and deletion protection. OS Login is
+resolved per instance rather than read project-wide — an instance's own
+`enable-oslogin` metadata overrides the project default, which is collected
+alongside it. Instance metadata is read key by key on purpose: the same block
+carries `startup-script` and `ssh-keys`, which must never land in evidence.
 
-Instance metadata is read key by key on purpose: the same block carries
-`startup-script` and `ssh-keys`, which must never land in evidence. Only the
-documented hardening keys are copied, and SSH keys reduce to a presence flag.
-
-Ported from Prowler's GCP compute service (prowler/providers/gcp/services/
-compute/compute_service.py, Apache-2.0) and its per-instance checks. Disk
-encryption is out of scope — gcp_persistent_disk_encryption_status covers it.
-
-Departures from the Prowler original:
-- **No per-zone fanout.** Prowler lists zones then instances in each, one
-  threaded call per zone; `instances.aggregatedList` returns every zone in one
-  paged call.
-- **Shielded VM secure boot is reported too.** Prowler's model carries only vTPM
-  and integrity monitoring, but the same `shieldedInstanceConfig` block carries
-  `enableSecureBoot`, the third leg. `shielded_vm_enabled` keeps Prowler's
-  two-field definition so the two stay comparable.
-- **OS Login is resolved, not assumed project-wide.** An instance's own
-  `enable-oslogin` metadata overrides the project default, so the effective value
-  is computed and `os_login_source` records which level decided it.
+Ported from Prowler's GCP compute service (Apache-2.0).
 """
 
 import logging

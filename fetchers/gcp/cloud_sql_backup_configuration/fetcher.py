@@ -6,21 +6,10 @@ Recovery-planning evidence for each Cloud SQL instance in one project: whether
 automated backups run and in which window, whether point-in-time recovery is on,
 how many backups and days of transaction log are retained, and whether the
 instance is regional (standby in a second zone, automatic failover) or zonal.
+Siblings gcp_cloud_sql_network_configuration and gcp_cloud_sql_encryption_status
+project different slices of the same `instances.list` response.
 
-Ported from Prowler's GCP Cloud SQL service (prowler/providers/gcp/services/
-cloudsql/cloudsql_service.py, Apache-2.0). Prowler stops at two booleans;
-the same `instances.list` response carries the retention counts, the window and
-the replica topology, which is what turns "backups are on" into recovery
-evidence. Siblings gcp_cloud_sql_network_configuration and
-gcp_cloud_sql_encryption_status project different slices of that one response.
-
-Departures from the Prowler original:
-- **PITR is read per engine.** MySQL signals it through `binaryLogEnabled`,
-  PostgreSQL and SQL Server through `pointInTimeRecoveryEnabled`. Reading only
-  one would report every instance on the other engine as unprotected. Both raw
-  fields stay beside the derived answer.
-- **High availability is scoped to primaries.** A read replica inherits
-  availabilityType from its primary, so the HA percentage covers primaries only.
+Ported from Prowler's GCP Cloud SQL service (Apache-2.0).
 """
 
 import logging

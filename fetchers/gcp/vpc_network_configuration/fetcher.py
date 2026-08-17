@@ -9,23 +9,7 @@ and when enabled the aggregation interval, sampling rate, metadata setting and
 any capture filter. Whether the auto-created `default` network still exists is
 reported explicitly.
 
-The legacy/auto/custom rule is Prowler's, and it is a presence test rather than a
-boolean read: `autoCreateSubnetworks` absent entirely means a legacy (pre-subnet)
-network, present-and-true means auto mode, present-and-false custom. Verified
-against google-cloud-compute, whose `to_dict()` omits unset optional fields, so
-the presence test survives the REST-to-GAPIC move.
-
-Ported from Prowler's GCP compute service (prowler/providers/gcp/services/
-compute/compute_service.py, Apache-2.0) and its network checks.
-
-Departures from the Prowler original:
-- **No per-region fanout.** `subnetworks.aggregatedList` returns every region's
-  subnets in one paged call.
-- **Flow logs are read from logConfig, not the legacy flag.** Prowler reads the
-  deprecated top-level `enableFlowLogs`; the field the API maintains is
-  `logConfig.enable`. This prefers that and falls back, and reports the flow-log
-  parameters Prowler drops — a subnet logging at 0.1% sampling is not the same
-  evidence as one logging at 100%.
+Ported from Prowler's GCP compute service (Apache-2.0).
 """
 
 import logging
@@ -69,6 +53,7 @@ def subnet_mode(network: dict) -> str:
 
     A presence test, not a boolean read: a legacy network has no
     `autoCreateSubnetworks` field at all, so absent and `False` differ.
+    GAPIC `to_dict()` omits unset optional fields, so that distinction survives.
     """
     for key in ("autoCreateSubnetworks", "auto_create_subnetworks"):
         if key in network:

@@ -2,39 +2,16 @@
 """
 GCP Cloud KMS Key Configuration
 
-Every key ring and crypto key in one project, across every KMS location: the
-key's purpose, protection level, rotation schedule, primary version state, the
-grace period before a destroyed version is really gone, and who holds IAM on the
-key and on its ring.
+Every key ring and crypto key in one project, across every KMS location: purpose,
+protection level, rotation schedule, primary version state, the grace period
+before a destroyed version is really gone, and who holds IAM on the key and on its
+ring. The data-at-rest evidence sets report which resources use a customer-managed
+key; this reports whether the key itself is managed properly — `allUsers` on a key
+or ring being the critical one, since it makes the CMEK on every resource
+referencing that key decorative. No key material is read: cryptoKeys.list and
+getIamPolicy return metadata and policy only.
 
-This is the key-management counterpart to the data-at-rest evidence sets. Those
-report which resources use a customer-managed key; this reports whether the key
-itself is managed properly — `allUsers` on a key or ring being the critical one,
-since it makes the CMEK on every resource referencing that key decorative.
-
-No key material is read. cryptoKeys.list and getIamPolicy return metadata and
-policy only; no decrypt or export call is made.
-
-Ported from Prowler's GCP KMS service (prowler/providers/gcp/services/kms/
-kms_service.py, Apache-2.0), which walks projects.locations.list → keyRings.list
-→ cryptoKeys.list → cryptoKeys.getIamPolicy.
-
-Departures from the Prowler original:
-- **Key ring IAM is read as well as key IAM.** A binding on the RING inherits to
-  every key in it, so a public key ring is a public key the per-key policy never
-  mentions.
-- **Rotation is reported against what the key supports.** Only ENCRYPT_DECRYPT
-  keys can carry a rotation period; asymmetric signing and MAC keys cannot.
-  Prowler's 90-day check fails them all anyway, so compliance is counted over the
-  eligible keys and the count is stated.
-- **Purpose, protection level, primary version and destroy window are
-  collected.** Prowler's checks need only rotation and members, but a ring at
-  protection level SOFTWARE is a materially different control from one in HSM
-  hardware, and neither is visible from the rotation fields.
-- **Key versions are not enumerated.** The `primary` version and
-  `version_template` already in the cryptoKeys.list response answer the state and
-  algorithm questions; listing every version of every key would multiply the call
-  count without adding a control fact.
+Ported from Prowler's GCP KMS service (Apache-2.0).
 """
 
 import logging
@@ -282,6 +259,7 @@ def summarize(
         state = key["primary_version_state"] or "NONE"
         states[state] = states.get(state, 0) + 1
 
+    # Compliance denominator: only ENCRYPT_DECRYPT keys can carry a rotation period.
     eligible = [k for k in keys if k["rotation_supported"]]
     compliant = [k for k in eligible if k["meets_rotation_interval"]]
     rotation_days = [
@@ -416,6 +394,7 @@ def collect_key_rings(
                     for k in client.list_crypto_keys(parent=ring_name)
                 ]
 
+            # A RING binding inherits to every key in it — a public ring is a public key.
             def _ring_policy(ring_name=ring_name):
                 return policy_bindings(client.get_iam_policy(request={"resource": ring_name}))
 

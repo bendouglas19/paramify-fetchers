@@ -3,34 +3,12 @@
 GCP API Keys Inventory
 
 Every API key in one project: creation and last-update time, age against the
-90-day rotation interval, and both restriction axes unpacked — which API
-services the key may call, and which referrers, IP ranges, Android packages or
-iOS bundle ids may present it. An API key is a bearer credential with no
-identity behind it and no expiry, so the only controls are not having one and
-restricting the ones that exist.
+90-day rotation interval, and both restriction axes — which API services the key
+may call, and which referrers, IP ranges, Android packages or iOS bundle ids may
+present it. No key string is ever read: key material comes only from the
+separate GetKeyString method, which this fetcher never calls.
 
-No key string is ever read. The v2 API returns key material only from the
-separate GetKeyString method, which this fetcher never calls, and every field is
-projected by name, so a future API that returned `keyString` from `list` still
-would not reach the evidence. `summary.key_material_collected` records that.
-
-Ported from Prowler's GCP API Keys service (prowler/providers/gcp/services/
-apikeys/apikeys_service.py, Apache-2.0).
-
-Departures from the Prowler original:
-- **The restrictions dict is unpacked, not stored raw.** Prowler keeps it
-  verbatim and asks one question of it. Both axes are projected and counted
-  separately, because an API-target restriction and a client restriction defend
-  against different things.
-- **`cloudapis.googleapis.com` is not a restriction.** The wildcard target reads
-  as "restricted" in the console while granting every Cloud API; it is counted
-  as unrestricted, as Prowler does.
-- **`updateTime` is collected alongside `createTime`.** Prowler measures age from
-  creation only, but a key whose restrictions were tightened last week is a
-  different artifact from one untouched since 2019.
-- **Both spellings of the display name are kept.** Prowler stores displayName as
-  `name`, colliding with the resource name; `display_name`, `uid` and `name` are
-  distinct fields here.
+Ported from Prowler's GCP API Keys service (Apache-2.0).
 """
 
 import logging

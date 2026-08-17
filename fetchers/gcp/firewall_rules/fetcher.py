@@ -4,27 +4,12 @@ GCP VPC Firewall Rules
 
 Every VPC firewall rule in one project with the fields that decide network
 exposure: direction, allowed and denied protocol/port ranges, source and
-destination ranges, the target tags and service accounts the rule narrows to,
-priority, disabled state and rule logging. This is the evidence for "is SSH, RDP
-or anything else open to 0.0.0.0/0".
+destination ranges, target tags and service accounts, priority, disabled state
+and rule logging — the evidence for "is SSH, RDP or anything else open to
+0.0.0.0/0". Only `allowed` rules can expose a port, so the exposure fields
+derive from those alone; `denied` entries are reported as segmentation context.
 
-Only `allowed` rules can expose a port, so the exposure fields derive from those
-alone; `denied` entries are still reported, being part of the segmentation story.
-
-Ported from Prowler's GCP compute service (prowler/providers/gcp/services/
-compute/compute_service.py, Apache-2.0) and its two firewall checks. The
-port-overlap algorithm is Prowler's, generalized from its two hardcoded ports to
-a named table (SENSITIVE_PORTS).
-
-Departures from the Prowler original:
-- **`disabled` is honored.** Prowler's checks ignore it, so a switched-off
-  `default-allow-ssh` still reads as SSH open to the internet. A disabled rule is
-  reported in full but excluded from the exposure counts, with `enforced: false`
-  saying why.
-- **IPv6 counts as the internet.** Prowler matches only `0.0.0.0/0`; `::/0` is
-  the same exposure.
-- **No verdict, just the facts.** The record carries the observations and the raw
-  protocol/port lists beside them; the compliance judgment is a validator's.
+Ported from Prowler's GCP compute service (Apache-2.0).
 """
 
 import logging

@@ -3,28 +3,14 @@
 KSI-MLA-01 / KSI-CMT-01: GCP Cloud Logging Configuration
 
 The GCP analogue of the AWS cloudtrail_configuration evidence set. For one
-project: every log sink (destination, filter, whether it exports everything,
-whether it is disabled), every log bucket (retention days, locked, CMEK,
-lifecycle state), the project-level log-router CMEK and storage settings, and
-the log-based metrics paired with the alert policies that fire on them — the GCP
-shape of a metric filter with an alarm on it.
+project: every log sink defined on the project or inherited from its folders and
+organization (destination, filter, whether it exports everything, whether it is
+disabled), every log bucket (retention days, locked, CMEK, lifecycle state), the
+project-level log-router CMEK and storage settings, and the log-based metrics
+paired with the alert policies that fire on them — the GCP shape of a metric
+filter with an alarm on it.
 
-Ported from Prowler's GCP logging and monitoring services (prowler/providers/
-gcp/services/{logging,monitoring}, Apache-2.0). The bucket, retention, locked
-and CMEK fields come from `buckets.list`, which its checks do not need.
-
-Departures from the Prowler original:
-- **Ancestor sinks are resolved, not assumed.** Prowler collects org-level sinks
-  for the scanned project's organization. Here the ancestry is walked (Resource
-  Manager v3) and sinks listed at each ancestor, so a project nested under
-  folders is covered. Those reads sit outside the project, so a project-scoped
-  role legitimately 403s: they are tolerated and recorded in
-  metadata.skipped_calls rather than failing the collection.
-- **No verdict on filter coverage.** Prowler decides whether a non-trivial filter
-  *provably* exports the whole Admin Activity stream because it has to flip a CIS
-  check. The filter is reported verbatim alongside two plain observations
-  (`exports_all_logs`, `filters_on_audit_logs`), leaving the judgment to a
-  validator.
+Ported from Prowler's GCP logging and monitoring services (Apache-2.0).
 """
 
 import logging

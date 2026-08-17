@@ -4,28 +4,14 @@ GCP Load Balancer TLS Configuration
 
 Transport-encryption posture of every internet-facing HTTPS/SSL load balancer
 front end in one project: each target HTTPS proxy and target SSL proxy, the SSL
-policy attached to it, and each policy's minimum TLS version, profile and
-resolved cipher list. Each proxy carries its *effective* minimum version and
-profile, because a proxy with no SSL policy silently runs Google's permissive
-default — TLS 1.0, COMPATIBLE — and that is the finding this evidence exists to
-surface.
+policy attached to it, and each policy's minimum TLS version, profile and resolved
+cipher list. A proxy with no SSL policy silently runs GCP's permissive default of
+TLS 1.0 / COMPATIBLE, so every proxy carries an effective minimum version and
+profile that names that default rather than leaving a null — the finding this
+evidence exists to surface.
 
-**NOT ported from Prowler.** Its GCP provider has no SSL policy or target proxy
-coverage: compute_service.py collects url maps and backend services but never
-reads `sslPolicies`, `targetHttpsProxies` or `targetSslProxies`. The field list
-comes from the Compute Engine v1 resources directly.
-
-Two conventions, since there is no upstream to defer to:
-- **The default policy is named, not left null.** When `sslPolicy` is absent, GCP
-  applies TLS 1.0 / COMPATIBLE. The record says so via `uses_default_ssl_policy`
-  plus the effective fields, so a reader never has to know the GCP default to
-  interpret the evidence.
-- **`weak_tls` is one derived flag with a stated rule**: minimum TLS below 1.2,
-  or the COMPATIBLE profile, which re-admits weak cipher suites regardless of the
-  version floor. Everything it derives from is reported alongside it.
-
-Regional and global resources are both collected: the two `aggregatedList` calls
-cover global plus every region, and `targetSslProxies` is global-only.
+NOT ported from Prowler: its GCP provider reads no SSL policies or target proxies,
+so the field list comes from the Compute Engine v1 resources directly.
 """
 
 import logging

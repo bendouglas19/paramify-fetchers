@@ -7,11 +7,6 @@ rest uses a customer-managed key (CMEK) or the Google-managed key, plus backup
 configuration. Cloud SQL is always encrypted at rest by default, so
 "encrypted: true" can never fail — the fact that varies is CMEK vs Google-managed
 and which KMS key.
-
-Uses the official Google API Python client (discovery: sqladmin v1beta4); there
-is no stable dedicated GAPIC client for Cloud SQL Admin. instances.list already
-returns full instance resources (REST/camelCase dicts), which the pure transform
-below consumes directly.
 """
 
 import logging
@@ -87,6 +82,7 @@ def summarize(instances: list[dict]) -> dict:
 # --- collection ---
 
 def collect_instances(project, creds, collector: Collector) -> list[dict]:
+    # Discovery client: Cloud SQL Admin has no stable dedicated GAPIC client.
     from googleapiclient.discovery import build
 
     def _list():

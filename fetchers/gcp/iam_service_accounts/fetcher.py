@@ -3,29 +3,14 @@
 KSI-IAM-03 / KSI-IAM-04 / KSI-SVC-06: GCP IAM Service Accounts & Keys
 
 For each service account in one project: its key inventory split by key type, the
-project-level roles it holds, and who can impersonate it.
+project-level roles it holds, and who can impersonate it. The finding it exists to
+surface is the user-managed key that never rotates — a downloaded private key with
+a ~10-year validity, where a system-managed key is rotated by Google. Key material
+is never copied (`list_service_account_keys` can carry public_key_data), and human
+members are counted rather than enumerated, so this file does not quietly become a
+user inventory.
 
-The finding this exists to surface is the **user-managed key that never rotates**.
-A system-managed key is created, rotated and destroyed by Google; a user-managed
-key is a downloaded private key with a ~10-year validity living wherever someone
-put it. Every key carries its type, origin, age and remaining validity, and the
-summary counts keys past the 90-day CIS rotation age.
-
-Key material is never copied: `list_service_account_keys` can carry
-public_key_data, and only the key's identity and validity window are projected.
-
-Ported from Prowler's GCP IAM service (prowler/providers/gcp/services/iam/
-iam_service.py, Apache-2.0); the privilege half comes from the checks pairing it
-with Cloud Resource Manager bindings.
-
-Departures from the Prowler original:
-- **SA-level IAM policy is read per account.** Prowler infers impersonation from
-  project-level bindings only, but the binding that grants "act as this one
-  service account" lives on the service account resource.
-- **Human members are counted, not enumerated.** A project binding lists its
-  serviceAccount: members — the subject of this evidence set — and counts
-  everything else. A user inventory is a different evidence set, and this file
-  should not quietly become one.
+Ported from Prowler's GCP IAM service (Apache-2.0).
 """
 
 import logging
@@ -270,6 +255,7 @@ def collect_service_accounts(
                 for k in response.keys
             ]
 
+        # The "act as this service account" binding lives on the SA, not the project policy.
         def _policy(resource=resource):
             return policy_bindings(client.get_iam_policy(resource=resource))
 

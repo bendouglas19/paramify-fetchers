@@ -2,31 +2,14 @@
 """
 GCP Cloud SQL Network & Authentication Configuration
 
-Boundary posture for each Cloud SQL instance in one project: whether a public IP
-exists at all, which authorized networks reach it (0.0.0.0/0 being the finding),
-whether SSL/TLS is required and at what minimum version, how private
-connectivity is wired, and the per-engine database flags that decide connection
-logging and cross-database authentication.
-
+Boundary posture for each Cloud SQL instance in one project: public-IP presence,
+the authorized networks that reach it (0.0.0.0/0 being the finding), SSL/TLS
+enforcement and minimum version, private connectivity, and the per-engine
+database flags that decide connection logging and cross-database authentication.
 Instance IP *addresses* are deliberately not copied — the posture fact is whether
 a public address exists, not what it is.
 
-Ported from Prowler's GCP Cloud SQL service (prowler/providers/gcp/services/
-cloudsql/cloudsql_service.py, Apache-2.0). Siblings
-gcp_cloud_sql_backup_configuration and gcp_cloud_sql_encryption_status project
-different slices of the same `instances.list` response.
-
-Departures from the Prowler original:
-- **SSL enforcement reads `requireSsl` when `sslMode` is unset.** Prowler
-  defaults an absent sslMode to ALLOW_UNENCRYPTED_AND_ENCRYPTED, reporting an
-  instance that uses only the legacy toggle as not requiring SSL. Both raw fields
-  are in the evidence so the reader can see which one answered.
-- **`private_ip_only` means "private address, no public one".** Prowler's check
-  fails on any address whose type is not PRIVATE, which includes the OUTGOING
-  address every instance has.
-- **Database flags are reported, not judged.** Every flag the instance sets is
-  reported, plus the engine-relevant security flags with their value or None,
-  leaving the compliance judgment out of the collector.
+Ported from Prowler's GCP Cloud SQL service (Apache-2.0).
 """
 
 import logging
@@ -125,8 +108,9 @@ def ssl_enforced(ssl_mode, require_ssl) -> bool:
     """Whether the instance refuses unencrypted connections.
 
     SSL_MODE_UNSPECIFIED, or no sslMode at all on an instance never updated since the
-    field was added, defers to the legacy requireSsl boolean — the module docstring
-    has why that differs from Prowler.
+    field was added, defers to the legacy requireSsl boolean; Prowler instead defaults
+    an absent sslMode to ALLOW_UNENCRYPTED_AND_ENCRYPTED and so reports such an
+    instance as not requiring SSL.
     """
     mode = str(ssl_mode or "").upper()
     if mode in _SSL_ENFORCING_MODES:

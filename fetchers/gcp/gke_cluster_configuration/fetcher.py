@@ -4,25 +4,14 @@ KSI-CNA-02 / KSI-CNA-07 / KSI-IAM-04 / KSI-SVC-07: GKE Cluster Configuration
 
 Every GKE cluster in one project with the posture that separates a hardened
 cluster from a default one: private nodes and control-plane endpoint,
-master-authorized networks, network policy, legacy ABAC (the one thing that
-bypasses RBAC), Workload Identity, shielded nodes, Binary Authorization,
-control-plane logging and monitoring, etcd secrets encryption with a CMEK,
-release channel, and per node pool auto-upgrade, auto-repair, boot-disk CMEK and
-service account.
+master-authorized networks, network policy, legacy ABAC, Workload Identity,
+shielded nodes, Binary Authorization, control-plane logging and monitoring, etcd
+secrets encryption, release channel, and per node pool auto-upgrade, auto-repair,
+boot-disk CMEK and service account. `master_auth` is read field by field on
+purpose: that block also carries the control plane's client certificate and
+private key, which must never land in evidence.
 
-`master_auth` is read field by field on purpose: that block also carries the
-control plane's client certificate and private key, which must never land in
-evidence.
-
-Ported from Prowler's GCP GKE service (prowler/providers/gcp/services/gke/
-gke_service.py, Apache-2.0). Every field above comes from the same
-`clusters.list` resource its one check already reads — a wider projection, not
-extra calls.
-
-Departures from the Prowler original:
-- **No per-location fanout.** Prowler lists locations then clusters in each;
-  `parent=projects/<id>/locations/-` returns every zonal and regional cluster in
-  one call.
+Ported from Prowler's GCP GKE service (Apache-2.0).
 """
 
 import logging

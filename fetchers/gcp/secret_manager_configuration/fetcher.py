@@ -6,25 +6,10 @@ For each secret in one project: its replication policy (automatic vs
 user-managed, and which locations), whether the replicas are wrapped with a CMEK,
 whether a rotation schedule exists and when it next fires, whether the secret
 expires, its labels, who can read it, and how many versions it has in each state.
+No secret payload ever enters this evidence — AccessSecretVersion, the only call
+that returns a value, is never made. Rotation is reported, not scored.
 
-**No secret payload ever enters this evidence.** The fetcher calls ListSecrets,
-ListSecretVersions and GetIamPolicy — never AccessSecretVersion, the only call
-that returns a value. Version records carry state and timestamps, not data, and
-no checksum field is copied either.
-
-Ported from Prowler's GCP Secret Manager service (prowler/providers/gcp/services/
-secretmanager/secretmanager_service.py, Apache-2.0) and its two checks. The same
-ListSecrets response also carries the replication policy, per-replica CMEK,
-expiry and labels, and version state is one further list call — which is what
-turns "rotation is configured" into evidence that rotation actually happened.
-
-Departures from the Prowler original:
-- **Rotation is reported, not scored.** Prowler FAILs a period longer than a
-  configurable maximum. The period, its length in days, the next rotation time
-  and whether it has passed all go into the evidence; the summary counts against
-  the same 90-day reference and the judgment stays out of the collector.
-- **IAM members are summarized like the IAM fetcher's bindings.** Public
-  principals and service accounts are named; people and groups are counted.
+Ported from Prowler's GCP Secret Manager service (Apache-2.0).
 """
 
 import logging

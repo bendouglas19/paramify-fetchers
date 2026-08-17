@@ -3,24 +3,15 @@
 GCP IAM Custom Role Definitions
 
 Every custom role defined for one project — and, when the organization is
-readable, the custom roles above it that can be bound inside it. Per role: id,
-launch stage, deleted state, and the full permission list, classified so the
+readable, the custom roles above it that can be bound inside it — with its id,
+launch stage, deleted state and full permission list, classified so the
 permissions that let a holder escalate out of the role are visible without
-reading 200 permission strings by eye.
+reading 200 permission strings by eye. A predefined role's contents are Google's
+problem; a custom role's are the customer's, which makes the definition itself
+the evidence.
 
-A predefined role's contents are Google's problem; a custom role's are the
-customer's, which makes this the only IAM surface where the definition itself is
-the evidence. The escalation classes reported per role are `set_iam_policy`,
-`act_as_service_account`, `role_management`, `service_account_key_creation`, and
-`deployment_pivot` — create/update on a surface that runs code as an attached
-identity, which is dangerous only paired with actAs, so the pairing is reported
-rather than each half alone.
-
-**Prowler is not the source here.** Its GCP provider has no custom-role service
-and no custom-role check; its role-related checks read project BINDINGS from
-cloudresourcemanager, never role DEFINITIONS. Everything below the role's id and
-title is an extension beyond Prowler, and the escalation classification is this
-fetcher's own, modelled on the well-known GCP privilege-escalation paths.
+Not a Prowler port: its GCP provider has no custom-role check, and the
+escalation classification here is this fetcher's own.
 """
 
 import logging

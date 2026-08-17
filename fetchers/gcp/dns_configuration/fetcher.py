@@ -2,33 +2,13 @@
 """
 GCP Cloud DNS Configuration
 
-Every Cloud DNS managed zone in one project: whether DNSSEC is on, which
-algorithms sign the keys and the zone (RSASHA1 in either position being the
-finding), whether the zone is public or private, and whether query logging is
-enabled — plus the project's DNS policies, where logging and inbound forwarding
-are configured network-wide.
+Every Cloud DNS managed zone in one project: DNSSEC state and signing algorithms
+(RSASHA1 in either position being the finding), public or private visibility and
+query logging, plus the project's DNS policies. Visibility is collected because
+DNSSEC does not apply to a private zone at all, so the summary reports DNSSEC
+coverage over public zones only.
 
-Visibility is collected because it changes what the other facts mean: DNSSEC does
-not apply to a private zone at all, so a private zone with DNSSEC off is not the
-same finding as a public one. Prowler's check does not distinguish them, which is
-why the summary reports DNSSEC coverage over public zones.
-
-Ported from Prowler's GCP DNS service (prowler/providers/gcp/services/dns/
-dns_service.py, Apache-2.0).
-
-Departures from the Prowler original:
-- **Discovery client, deliberately.** No GAPIC client exposes dnssecConfig — the
-  handwritten google-cloud-dns library predates DNSSEC — so this uses
-  googleapiclient.discovery (dns v1), the same exception the Cloud SQL fetchers
-  make.
-- **The DNSSEC state is reported, not flattened to a boolean.** Prowler collapses
-  it to `state == "on"`, losing "transfer": a zone mid-migration between DNSSEC
-  providers, which is neither on nor simply off.
-- **Zone visibility, logging and the private/forwarding/peering topology are
-  collected.** Prowler's zone model carries none of them.
-- **Zone-level logging is separated from policy-level logging.** Prowler reads
-  `enableLogging` off DNS policies only, but a managed zone's own
-  cloudLoggingConfig is what governs queries against that zone.
+Ported from Prowler's GCP DNS service (Apache-2.0).
 """
 
 import logging
@@ -95,7 +75,7 @@ def zone_record(zone: dict) -> dict:
     guessing "private" for an absent value would understate the exposure.
     """
     specs = [key_spec_record(s) for s in (dig_any(zone, "dnssec_config", "default_key_specs") or [])]
-    # "on" | "off" | "transfer" — reported, not flattened (see the departures above).
+    # "on" | "off" | "transfer" — kept as a state, not flattened: "transfer" is real.
     state = (dig_any(zone, "dnssec_config", "state") or "").lower() or None
     visibility = (dig_any(zone, "visibility") or _PUBLIC_VISIBILITY).lower()
 
@@ -214,6 +194,7 @@ def summarize(zones: list[dict], policies: list[dict], api_readable: bool = True
 # --- collection ---
 
 def _service(creds):
+    # Discovery, not GAPIC: no GAPIC client exposes dnssecConfig. Do not "modernise".
     from googleapiclient.discovery import build
 
     return build("dns", "v1", credentials=creds, cache_discovery=False)

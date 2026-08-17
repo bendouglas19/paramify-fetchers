@@ -7,25 +7,7 @@ project's IAM policy with its role and members, rolled up a second time per
 principal so the policy can be read either way, plus whether Cloud Audit Logging
 is configured and who is exempted from it.
 
-Ported from Prowler's GCP Cloud Resource Manager service (prowler/providers/gcp/
-services/cloudresourcemanager/cloudresourcemanager_service.py, Apache-2.0) and
-the checks that consume its bindings.
-
-Departures from the Prowler original:
-- **Policy version 3 is requested explicitly.** Prowler takes the default
-  (version 1), which does not return condition expressions. A binding's condition
-  is part of what it grants.
-- **Members are enumerated, not counted.** Deliberately the opposite of the
-  sibling gcp_iam_service_accounts, which counts humans so it does not quietly
-  become a user inventory. Here the access inventory IS the evidence set, and an
-  IAM policy contains no credentials.
-- **Separation of duties is reported as data, not a verdict.** Prowler's two SoD
-  checks collapse to PASS/FAIL. The per-principal rollup carries every role a
-  member holds, so any SoD pair is answerable by a validator without this fetcher
-  hard-coding which pairs matter.
-- **Audit configs carry their exempted members.** An exempted member is an
-  identity whose access is deliberately not logged — the part of an audit config
-  a reviewer needs to see.
+Ported from Prowler's GCP Cloud Resource Manager service (Apache-2.0).
 """
 
 import logging

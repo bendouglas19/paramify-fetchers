@@ -8,24 +8,7 @@ the location. BigQuery is always encrypted at rest, so "encrypted: true" can
 never fail — what varies is CMEK vs Google-managed, who is on the ACL, and where
 the data lives.
 
-Ported from Prowler's GCP BigQuery service (prowler/providers/gcp/services/
-bigquery/bigquery_service.py, Apache-2.0) and its dataset checks. The
-`datasets.get` response Prowler already reads carries the key name, the
-individual ACL entries and the expirations, which is why this projection is
-wider than its two booleans.
-
-Departures from the Prowler original:
-- **Public access is classified per ACL entry, not grepped.** A substring match
-  on the stringified ACL also fires on a dataset owned by
-  `allusers-admin@example.com`. Each entry's principal is read from its own field
-  and compared exactly.
-- **Human identities are counted, not enumerated.** Entries naming a person or
-  group carry their role and a count, not the address. Public, domain-wide,
-  special-group and authorized-view entries ARE named — those are posture facts,
-  not personal identities.
-- **Table-level CMEK is out of scope.** Prowler's bigquery_table_cmk_encryption
-  does a tables.get per table. Dataset default encryption is the control that
-  governs new tables; a per-table inventory belongs in its own evidence set.
+Ported from Prowler's GCP BigQuery service (Apache-2.0).
 """
 
 import logging
@@ -82,6 +65,7 @@ _RESOURCE_KEYS = frozenset({"view", "routine", "dataset"})
 def is_public_principal(principal) -> bool:
     """Exact match against allUsers / allAuthenticatedUsers.
 
+    Exact, per entry: a substring grep of the ACL also fires on `allusers-admin@corp.com`.
     Tolerates the `iamMember` spelling, where the principal arrives bare or prefixed.
     """
     value = str(principal or "").strip().lower()
@@ -108,7 +92,7 @@ def resource_path(ref) -> str | None:
 def access_entry_record(entry: dict) -> dict:
     """One dataset ACL entry: its role, principal type, and principal when nameable.
 
-    `principal` is None for a person or group entry — see the module docstring.
+    `principal` is None for a person or group entry: identities are counted, not named.
     """
     principal_type = next((k for k in _PRINCIPAL_KEYS if dig_any(entry, k) is not None), None)
     raw = dig_any(entry, principal_type) if principal_type else None
