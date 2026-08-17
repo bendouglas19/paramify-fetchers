@@ -62,7 +62,7 @@ rest by default** with Google-managed keys. A validator asking "is it encrypted:
 true?" can never fail — worthless evidence. These fetchers instead capture what
 actually varies: **CMEK vs Google-managed** (`kms_key_name` present or not),
 **which key**, **rotation**, **location**, and **protection level**. Write
-validators against those fields — see [`DRAFT_VALIDATORS.md`](DRAFT_VALIDATORS.md).
+validators against those fields, not against `encrypted: true`.
 
 The same rule shapes the posture fetchers: they report the fields that differ
 between a hardened and a default configuration (legacy ABAC on/off, a locked log
@@ -275,5 +275,4 @@ into one run if you prefer:
   absent entirely when nothing was skipped.
 - `environment` lives in `payload.metadata.environment`. The runner-built
   envelope schema has no `environment` field, so it is carried in the payload
-  (alongside `project`) rather than the envelope wrapper — see the note in
-  `DRAFT_NARRATIVES.md` / the handoff summary.
+  alongside `project` rather than in the envelope wrapper.
