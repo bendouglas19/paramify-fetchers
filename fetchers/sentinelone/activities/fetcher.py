@@ -21,6 +21,18 @@ from dotenv import load_dotenv
 logger = logging.getLogger("sentinelone_activities")
 
 
+def report_failure(reason: str, code: str | None = None) -> None:
+    """Report why this run failed; the runner puts it in the envelope's metadata.error.
+
+    Without it the runner falls back to the tail of stderr — which on the way out
+    is the "Evidence saved" line. See docs/fetcher_contract.md § Output.
+    """
+    path = os.environ.get("FETCHER_STATUS_FILE")
+    if not path:
+        return
+    Path(path).write_text(json.dumps({"error": reason} | ({"code": code} if code else {})))
+
+
 FEDRAMP_ACTIVITY_TYPE_IDS = [
     5125, 5232, 4112, 7803, 104, 111, 5040, 5041, 5042,
     7700, 7800, 7853, 7881, 70, 77, 5044, 3750, 3752,
@@ -133,6 +145,7 @@ def main() -> int:
         api_token = get_env("SENTINELONE_API_TOKEN")
     except RuntimeError as e:
         logger.error("%s", e)
+        report_failure(str(e), "bad_config")
         return 1
 
     result = get_activities(api_url, api_token)
@@ -144,9 +157,20 @@ def main() -> int:
     logger.info("Evidence saved to %s", output_path)
 
     if result.get("api_failures"):
-        logger.error("Encountered %d API failures during collection", len(result["api_failures"]))
+        failures = result["api_failures"]
+        logger.error("Encountered %d API failures during collection", len(failures))
+        report_failure(f"{len(failures)} API failures during collection", "partial_failure")
         return 1
-    return 0 if result.get("status") in {"success", "partial_or_empty"} else 1
+    # The api_failures branch above only fires when the paginator recorded one.
+    # An exception raised anywhere else leaves it empty, so this path needs its
+    # own report — the runner reads the TAIL of stderr into metadata.error, and
+    # without this the last line is the "saved" INFO message.
+    if result.get("status") not in {"success", "partial_or_empty"}:
+        reason = result.get("message", "unknown error")
+        logger.error("collection failed: %s", reason)
+        report_failure(reason)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

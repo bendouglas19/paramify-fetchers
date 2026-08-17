@@ -1,0 +1,54 @@
+name: azure_function_app_configuration
+version: 0.1.0
+description: >
+  For each function app in the subscription, reports network exposure (public
+  network access, VNet integration), transport posture (HTTPS-only, FTP/FTPS state,
+  minimum TLS version, HTTP/2), the declared runtime, the managed identity, whether
+  function access keys are configured, and which application settings exist. Access
+  keys are reported as presence plus key names, and application settings as names
+  only — no key material and no application-setting value is ever written to the
+  evidence. Needs two permissions beyond Reader (see instructions); an app whose
+  privileged calls are refused is reported with status not_authorized rather than
+  failing the run.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_function_app_configuration.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-FUNCAPP-CONFIG
+  name: Azure Function App Configuration
+  instructions: >
+    Script: fetcher.py. Azure SDK calls: resource.providers.get("Microsoft.Web"), then
+    azure-mgmt-web WebSiteManagementClient web_apps.list(), get_configuration(),
+    list_host_keys() and list_application_settings() per function app. The last two are
+    POST /action calls needing Microsoft.Web/sites/host/listkeys/action and
+    Microsoft.Web/sites/config/list/Action beyond Reader; a refusal is reported per app as
+    not_authorized. Key and application-setting values are never written.

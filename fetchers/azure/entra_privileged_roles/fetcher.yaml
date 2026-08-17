@@ -1,0 +1,61 @@
+name: azure_entra_privileged_roles
+version: 0.1.0
+description: >
+  Every activated Microsoft Entra ID directory role and the principals holding it,
+  with the Global Administrator count broken out and each role flagged for whether
+  it grants tenant-wide administrative power. Members are reported with their
+  principal kind, so a role held by a group or a service principal is
+  distinguishable from one held by a user, and both raw assignment counts and
+  distinct-principal counts are given.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_entra_privileged_roles.json
+  aggregation: per_target
+
+target_schema:
+  # Microsoft Graph data is TENANT-scoped, so the fanout unit here is the tenant,
+  # not the subscription: one target per Entra tenant. Two targets differing only
+  # by subscription_id would collect byte-identical evidence.
+  tenant_id:
+    type: string
+    required: false
+    env: AZURE_TENANT_ID
+    description: >
+      Entra tenant id to collect from, and the discriminator for this fetcher's
+      output filename. Optional — omit to use whichever tenant the ambient
+      credential authenticates into, in which case the tenant is read back from
+      Microsoft Graph's organization endpoint.
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id. Optional and NOT used to scope collection — Graph data
+      is tenant-wide. Set it only to correlate this tenant's evidence with the
+      subscription-scoped Azure evidence from the same manifest; it is recorded in
+      the payload metadata and nowhere else.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-tenant runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-ENTRA-PRIV-ROLES
+  name: Microsoft Entra ID Privileged Directory Roles
+  instructions: >
+    Script: fetcher.py. Microsoft Graph calls: GET /directoryRoles; GET
+    /directoryRoles/{id}/members per role; GET /organization. Both collections paged
+    via @odata.nextLink.

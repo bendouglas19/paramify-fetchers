@@ -36,8 +36,18 @@ def build_metadata(result: InvocationResult, fetcher: Fetcher, run_id: str) -> d
         "status": "success" if result.exit_code == 0 else "failed",
         "exit_code": result.exit_code,
     }
-    if result.exit_code != 0 and result.stderr:
-        meta["error"] = result.stderr[-_ERROR_TAIL_CHARS:]
+    if result.exit_code != 0:
+        # What the fetcher reported via $FETCHER_STATUS_FILE wins; the stderr tail
+        # is the fallback for fetchers that don't use the channel. The tail is a
+        # heuristic — it assumes the last thing logged is why the run failed, which
+        # is false for any fetcher whose final log line is an INFO message — so it
+        # is the second choice, not the first. The payload is never consulted: it
+        # is fetcher-shaped and unredacted. See docs/fetcher_contract.md.
+        error = result.error or (result.stderr[-_ERROR_TAIL_CHARS:] if result.stderr else None)
+        if error:
+            meta["error"] = error
+        if result.error_code:
+            meta["error_code"] = result.error_code
     if fetcher.evidence_set:
         es = fetcher.evidence_set
         es_meta = {"reference_id": es.reference_id, "name": es.name}

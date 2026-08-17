@@ -51,6 +51,7 @@ Every fetcher ships a `fetcher.yaml` in its directory. The schema is enforced; s
 The runner exec's the fetcher's entry script with a tightly controlled environment. The fetcher receives **resolved values**, not env var names — it doesn't need to know whether the runner read the secret from a `.env` file, AWS Secrets Manager, K8s, Vault, or anywhere else.
 
 - **`EVIDENCE_DIR`** — output directory the fetcher writes to
+- **`FETCHER_STATUS_FILE`** — path the fetcher reports its failure reason to (see [Output](#output)). Deliberately outside `EVIDENCE_DIR`, so it is never collected as evidence; it lives in a per-invocation temp dir that goes away with the invocation
 - **Declared secrets** — every entry from `secrets[]` resolved and set on the env var named in `secrets[].env`
 - **Target fields (fanout only)** — each `target_schema` field with an `env` mapping set to the target's value
 - **A minimal inherited env** — `PATH`, `HOME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `USER`, `TZ`, `PYTHONUNBUFFERED=1`
@@ -67,6 +68,42 @@ The runner does NOT pass the customer's full environment through. If your fetche
   - `124` = reserved: the runner killed the invocation for exceeding its timeout (don't return this yourself)
 
 Detection of "did collection fail" is fetcher-defined — see [`porting_playbook.md`](porting_playbook.md) § "Exit code convention" for the patterns currently in use.
+
+- **Failure reason:** when you exit non-zero, write why to `$FETCHER_STATUS_FILE`:
+
+  ```json
+  { "error": "GitLab API read timeout after 30s", "code": "target_unreachable" }
+  ```
+
+  `error` is a one-line human-readable reason and is the only required field.
+  `code` is an optional machine-readable category — `auth_failed`,
+  `not_authorized`, `target_unreachable`, `rate_limited`, `bad_config`,
+  `partial_failure`, `internal_error`. Prefer a `code` here over inventing an
+  exit code: exit codes are a scarce space shared with the shell and signals.
+  Had more than one thing fail, summarize it into `error` yourself; a `failures`
+  array is reserved for the per-item ledger but is not read yet.
+
+  The runner masks any injected secret out of what you wrote, then puts it in the
+  envelope's `metadata.error` (and `metadata.error_code`) — the only fields
+  guaranteed present across every fetcher, and what Paramify surfaces to whoever
+  is triaging a failed collection.
+
+  **This is not optional-with-no-consequence.** If you write nothing, the runner
+  falls back to the tail of your stderr, which is a heuristic that assumes the
+  last thing you logged is why you failed. Log an INFO line on your way out — as
+  a "wrote the evidence file" message naturally does — and that success message
+  becomes the failure reason an operator reads.
+
+  A malformed, empty, or absent file is never itself an error; the runner falls
+  back and the run is unaffected.
+
+- **The runner never reads inside your `payload`.** Recording failure state there
+  is fine and often useful as evidence content — a reader of the file should be
+  able to see the collection was incomplete — but it is not a signal the
+  framework acts on, so your payload can be any shape the source data wants.
+  **Exit code is the only failure signal**, and `metadata.status` derives from it
+  alone. Consulting your own payload to decide what to return is an
+  implementation detail, not a second channel.
 
 ### Behavior
 
@@ -132,9 +169,11 @@ Every `manifest` subcommand also accepts `--json`, emitting a stable `{ok, path,
 These are accepted violations during the porting period. Each is tracked, scoped, and time-limited:
 
 - **Fetchers may read env directly.** v0.x entry scripts call `load_dotenv()` and use `os.getenv()` / shell env access rather than receiving a typed secrets object. The framework's secret resolver replaces this once it takes over per-fetcher invocation. The runner already sets the right env vars for the child; this clause is about the entry script reading them rather than receiving them as arguments.
-- **Fetchers write a raw evidence dict; the runner wraps it.** A fetcher emits its plain payload; the runner wraps each output file in the standard envelope `{schema_version, metadata, payload}` after the invocation. `metadata` carries `fetcher_name`/`version`/`category`/`run_id`/`target`/`collected_at`/`status`/`exit_code`, the fetcher's `evidence_set` when present, and an `error` on failed invocations. The per-run `_run_metadata.json` index is not enveloped. Fetchers don't build the envelope themselves in v0.x. See [`envelope_design.md`](envelope_design.md).
+- **Fetchers write a raw evidence dict; the runner wraps it.** A fetcher emits its plain payload; the runner wraps each output file in the standard envelope `{schema_version, metadata, payload}` after the invocation. `metadata` carries `fetcher_name`/`version`/`category`/`run_id`/`target`/`collected_at`/`status`/`exit_code`, the fetcher's `evidence_set` when present, and `error`/`error_code` on failed invocations. The per-run `_run_metadata.json` index is not enveloped. Fetchers don't build the envelope themselves in v0.x. See [`envelope_design.md`](envelope_design.md).
 - **CLI flags** like Okta's `--skip-check` aren't declarable in the current schema. Treat as interim plumbing; they become `config_schema` entries when the runner is invoking fetchers.
-- **Structured exit codes** are not categorized — only `0` vs. non-zero. Future contract work distinguishes auth-failure, target-unreachable, partial-success, internal.
+- **Structured exit codes** are not categorized — only `0` vs. non-zero. The failure *category* lives in the `code` field of `$FETCHER_STATUS_FILE` instead, so the exit-code space stays uncarved.
+
+- **`$FETCHER_STATUS_FILE` is only read on a non-zero exit.** A fetcher may write it and still exit 0 (collected fine, one optional call degraded); the runner keeps that report on the invocation but does not surface it, since a successful envelope carrying an `error` would be its own kind of misleading. Giving that case a home — the "succeeded but could not measure X" signal that currently reaches nobody, per the KnowBe4 config-resolution work — is the next step for this channel.
 - **`output.path` semantics** for per-target fanout (relative filename vs. base name vs. template) aren't pinned by the schema. v0.x convention: the fetcher derives its own per-target filename from the target identifier.
 
 ---

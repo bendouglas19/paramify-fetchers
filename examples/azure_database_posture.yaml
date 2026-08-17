@@ -1,0 +1,72 @@
+# Azure managed-database evidence — the encryption, authentication, network and
+# audit posture of every PaaS database engine in a subscription: Azure SQL
+# (transparent data encryption and its key source, then the server's network / auth /
+# audit configuration), PostgreSQL and MySQL flexible servers, and Cosmos DB.
+#
+# Auth is azure-identity's DefaultAzureCredential — there is no secret to set.
+#   - Local:      az login          (cached CLI token under $HOME)
+#   - In-cluster: AKS workload identity (AZURE_TENANT_ID + AZURE_CLIENT_ID +
+#                 AZURE_FEDERATED_TOKEN_FILE; no stored secret)
+#   - Azure VM / App Service: managed identity via IMDS (nothing to wire)
+# See fetchers/_categories/azure.yaml for the full resolution order.
+#
+# Read-only access needed: the built-in **Reader** role on each subscription in
+# `targets`. Nothing here writes, and no fetcher connects to a database — only the
+# ARM control plane is read, so no database credential, firewall exception or private
+# endpoint is required.
+#
+# An engine you do not use costs one API call and reports
+# `provider_registration_status: not_registered` — valid evidence that the service is
+# not in use, rather than an empty result a reader could mistake for full coverage.
+# So it is safe (and useful) to run all five even in a SQL-only or Cosmos-only estate.
+#
+# Fanout is per SUBSCRIPTION. Each fetcher lists one target per subscription;
+# `environment` labels that subscription's evidence (prod / preprod) and is written
+# into the payload metadata. Omitting `subscription_id` falls back to the first
+# enabled subscription the ambient credential can see ("collect where deployed") —
+# here it is named explicitly so the run is reproducible and multi-subscription ready.
+#
+# Replace the subscription id below with your own.
+run:
+  output_dir: ./evidence
+
+  platforms:
+    azure:
+      # Optional: let the ambient credential-chain selectors through the runner's
+      # env whitelist. They only take effect if actually set, and none is a secret
+      # on the workload-identity / managed-identity paths. The category file
+      # already declares this set; repeating it here documents the run's auth path.
+      auth:
+        passthrough_env:
+          - AZURE_TENANT_ID
+          - AZURE_CLIENT_ID
+          - AZURE_FEDERATED_TOKEN_FILE
+
+  fetchers:
+    # Azure SQL, split in two: what protects the data at rest, and what stands in
+    # front of it. They read the same servers but answer different questions, so they
+    # are separate evidence sets.
+    - use: azure_sql_encryption_status
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod
+
+    - use: azure_sql_server_configuration
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod
+
+    - use: azure_postgresql_configuration
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod
+
+    - use: azure_mysql_configuration
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod
+
+    - use: azure_cosmosdb_configuration
+      targets:
+        - subscription_id: 00000000-0000-0000-0000-000000000000
+          environment: preprod

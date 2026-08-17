@@ -1,0 +1,345 @@
+"""Every fetcher must say WHY it failed — the guard against issue #24 returning.
+
+The bug: a fetcher caught its exception into the payload, logged an unconditional
+"Evidence saved to ..." at INFO, then exited non-zero. The runner takes the tail
+of stderr as the envelope's ``metadata.error``, so the only thing on stderr at
+exit was that INFO line — and a *failed* collection reported a success message as
+its failure reason. Paramify shows that field to whoever is triaging, so it
+pointed them away from the real problem.
+
+That was never one fetcher's mistake. It was the contract not saying where a
+failure reason goes, so 16 fetchers independently invented the same wrong answer.
+The contract says it now (docs/fetcher_contract.md § Output), and this file is
+what keeps it true — an unenforced rule is a suggestion, and the next fetcher
+someone writes has no memory of this.
+
+Two layers:
+
+  1. A STATIC scan of every shipped fetcher: no non-zero exit path may be silent.
+     Fast, no network, no credentials — so it can gate every commit.
+  2. A RUNTIME check that drives a real shipped fetcher to a real failure and
+     asserts the envelope carries the actual cause.
+
+The static scan is a heuristic over source, so it is itself tested: see
+``test_the_checker_actually_detects_the_bug`` — a conformance check that cannot
+fail is worse than none, because it reads as coverage.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+FETCHERS = REPO_ROOT / "fetchers"
+
+# Calls that count as "told someone why this failed": an error-level log, a
+# write to $FETCHER_STATUS_FILE via the documented helper, or a direct write to
+# stderr. INFO/WARN deliberately do not count — the tail heuristic can't tell
+# them apart from a success message, which is the whole bug.
+_PY_REPORT_ATTRS = ("error", "exception", "critical")
+_PY_REPORT_NAMES = ("report_failure", "die", "fail")
+_SH_REPORT = re.compile(r">&2|log_error|report_failure|FETCHER_STATUS_FILE")
+
+# Justified exceptions. Keep this list SHORT and cite the line that does the
+# reporting — a growing allowlist means the rule isn't working.
+_ALLOWED = {
+    # checkov_clone_repo logs the failure itself before returning non-zero
+    # (fetchers/checkov/_shared/clone.sh:52), so the caller's bare `exit 1` is
+    # already covered. The scanner can't see across files.
+    ("checkov/kubernetes/fetcher.sh", 77),
+    ("checkov/terraform/fetcher.sh", 82),
+}
+
+
+# --------------------------------------------------------------------------- #
+# The checker
+# --------------------------------------------------------------------------- #
+
+def _is_report_call(call: ast.Call) -> bool:
+    f = call.func
+    if isinstance(f, ast.Attribute) and f.attr in _PY_REPORT_ATTRS:
+        return True
+    if isinstance(f, ast.Name) and f.id in _PY_REPORT_NAMES:
+        return True
+    if isinstance(f, ast.Name) and f.id == "print":
+        return any(kw.arg == "file" and "stderr" in ast.dump(kw.value) for kw in call.keywords)
+    return False
+
+
+def _py_reports(stmt: ast.AST) -> bool:
+    """Is this statement *itself* a report of why the run failed?
+
+    Deliberately NOT a subtree walk. An error log nested inside a conditional
+    only fires on that condition, so crediting it for a later unconditional exit
+    hides exactly the shape sentinelone had:
+
+        if result.get("api_failures"):      # empty when the exception came from
+            logger.error(...)               # outside the paginator
+            return 1
+        return 0 if status in {...} else 1  # ...so this exits 1 having logged
+                                            #    nothing but the INFO line
+    """
+    return isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call) \
+        and _is_report_call(stmt.value)
+
+
+def _nonzero_int(node) -> bool:
+    """A literal non-zero int. Excludes bools: `return True` is a helper's
+    answer, not an exit code, and bool is an int subclass in Python."""
+    return (isinstance(node, ast.Constant) and isinstance(node.value, int)
+            and not isinstance(node.value, bool) and node.value != 0)
+
+
+def _returns_nonzero(node) -> bool:
+    """A return that can hand back a non-zero exit code.
+
+    Covers the ternary the bug wore: `return 0 if status == "success" else 1`.
+    That is an IfExp, not a Constant, so a checker that only matched literals
+    would have missed all 16 original offenders.
+    """
+    if _nonzero_int(node):
+        return True
+    if isinstance(node, ast.IfExp):
+        return _nonzero_int(node.body) or _nonzero_int(node.orelse)
+    return False
+
+
+def _entry_function(tree: ast.Module) -> str:
+    """The function whose return value becomes the process exit code.
+
+    `sys.exit(main())` at module level makes `main`'s returns exit codes. A bare
+    `return 1` anywhere else is just a value — scanning those produced false
+    positives on helpers like `return True` / `return "aws"`.
+    """
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "exit":
+            if n.args and isinstance(n.args[0], ast.Call) and isinstance(n.args[0].func, ast.Name):
+                return n.args[0].func.id
+    return "main"
+
+
+def silent_python_exits(source: str) -> list[int]:
+    """Line numbers of non-zero exits with no failure reason reported first."""
+    tree = ast.parse(source)
+    entry = _entry_function(tree)
+    bad: list[int] = []
+
+    def is_exit(stmt, in_entry: bool) -> bool:
+        if in_entry and isinstance(stmt, ast.Return) and _returns_nonzero(stmt.value):
+            return True
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            f = stmt.value.func
+            if isinstance(f, ast.Attribute) and f.attr == "exit":
+                return bool(stmt.value.args) and _nonzero_int(stmt.value.args[0])
+        return False
+
+    def scan(body, in_entry: bool, reported: bool) -> None:
+        for i, stmt in enumerate(body):
+            if is_exit(stmt, in_entry) and not (reported or any(_py_reports(s) for s in body[:i + 1])):
+                bad.append(stmt.lineno)
+            # A report before this branch covers exits inside it.
+            outer = reported or any(_py_reports(s) for s in body[:i])
+            for field in ("body", "orelse", "finalbody"):
+                sub = getattr(stmt, field, None)
+                if isinstance(sub, list):
+                    scan(sub, in_entry, outer)
+            for handler in getattr(stmt, "handlers", []):
+                scan(handler.body, in_entry, outer)
+
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scan(node.body, node.name == entry, False)
+        else:
+            scan([node], False, False)
+    return bad
+
+
+def silent_bash_exits(source: str) -> list[int]:
+    """Same, for bash. Comments are stripped first — an `exit 1` mentioned in a
+    prose comment is not an exit path (that produced two false positives)."""
+    lines = [re.sub(r"(^|\s)#.*$", "", ln) for ln in source.splitlines()]
+    bad: list[int] = []
+    for i, line in enumerate(lines):
+        if re.search(r"\bexit\s+[1-9]", line):
+            window = "\n".join(lines[max(0, i - 6):i + 1])
+            if not _SH_REPORT.search(window):
+                bad.append(i + 1)
+    return bad
+
+
+# --------------------------------------------------------------------------- #
+# The checker is itself tested — it must be able to FAIL
+# --------------------------------------------------------------------------- #
+
+_THE_BUG = '''\
+import logging, sys
+logger = logging.getLogger("x")
+
+def main() -> int:
+    result = collect()
+    logger.info("Evidence saved to %s", "out.json")
+    return 0 if result.get("status") == "success" else 1
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+_THE_FIX = '''\
+import logging, sys
+logger = logging.getLogger("x")
+
+def main() -> int:
+    result = collect()
+    logger.info("Evidence saved to %s", "out.json")
+    if result.get("status") != "success":
+        logger.error("collection failed: %s", result["message"])
+        return 1
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+
+def test_the_checker_actually_detects_the_bug():
+    """Issue #24's exact shape must be flagged, or this whole file is theater."""
+    assert silent_python_exits(_THE_BUG), "the checker missed the bug it exists to catch"
+
+
+def test_the_checker_accepts_the_fix():
+    assert silent_python_exits(_THE_FIX) == []
+
+
+def test_checker_ignores_helper_return_values():
+    """`return True` / `return "aws"` in a helper is an answer, not an exit code."""
+    src = 'import sys\ndef looks_like_aws(h):\n    return True\ndef main():\n    return 0\n'
+    assert silent_python_exits(src) == []
+
+
+def test_checker_catches_bare_sys_exit_too():
+    assert silent_python_exits("import sys\nsys.exit(1)\n") == [2]
+
+
+def test_bash_checker_detects_and_accepts():
+    assert silent_bash_exits('if [ -z "$TOKEN" ]; then\n    exit 1\nfi\n')
+    assert silent_bash_exits('if [ -z "$TOKEN" ]; then\n    log_error "no token"\n    exit 1\nfi\n') == []
+
+
+def test_bash_checker_ignores_exit_mentioned_in_a_comment():
+    assert silent_bash_exits("# only a real failure gets logged (exit 1)\nfoo\n") == []
+
+
+# --------------------------------------------------------------------------- #
+# The scan over every shipped fetcher
+# --------------------------------------------------------------------------- #
+
+def _fetchers(suffix: str):
+    return sorted(FETCHERS.glob(f"*/*/fetcher.{suffix}"))
+
+
+@pytest.mark.parametrize("path", _fetchers("py"), ids=lambda p: f"{p.parent.parent.name}/{p.parent.name}")
+def test_python_fetcher_reports_why_it_failed(path):
+    silent = [ln for ln in silent_python_exits(path.read_text())
+              if (str(path.relative_to(FETCHERS)), ln) not in _ALLOWED]
+    assert not silent, (
+        f"{path.relative_to(REPO_ROOT)} exits non-zero at line(s) {silent} without "
+        "logging why.\n\nThe runner falls back to the TAIL of stderr for "
+        "metadata.error, so if your last log line is an INFO message, that is what "
+        "an operator sees as the failure reason (issue #24). Log the reason at "
+        "error level AFTER any 'Evidence saved' line, and write it to "
+        "$FETCHER_STATUS_FILE. See docs/porting_playbook.md § 'Say why you failed'."
+    )
+
+
+@pytest.mark.parametrize("path", _fetchers("sh"), ids=lambda p: f"{p.parent.parent.name}/{p.parent.name}")
+def test_bash_fetcher_reports_why_it_failed(path):
+    silent = [ln for ln in silent_bash_exits(path.read_text())
+              if (str(path.relative_to(FETCHERS)), ln) not in _ALLOWED]
+    assert not silent, (
+        f"{path.relative_to(REPO_ROOT)} exits non-zero at line(s) {silent} without "
+        "writing to stderr. Use the log_error helper and report_failure — see "
+        "docs/porting_playbook.md § 'Say why you failed'."
+    )
+
+
+def test_the_scan_actually_covered_the_fetcher_tree():
+    """A glob that silently matches nothing would make every test above vacuous."""
+    assert len(_fetchers("py")) >= 30
+    assert len(_fetchers("sh")) >= 80
+
+
+# --------------------------------------------------------------------------- #
+# Runtime: a REAL shipped fetcher, driven to a real failure, end to end
+# --------------------------------------------------------------------------- #
+
+def test_real_fetcher_failure_reports_the_real_cause(tmp_path):
+    """The whole chain on the fetcher from the bug report.
+
+    Static analysis proves a reason gets logged; only this proves the reason
+    survives the runner into `metadata.error` — the field Paramify shows the
+    person triaging. Points at an RFC 2606 `.invalid` host, so it fails on DNS
+    without contacting anything.
+    """
+    pytest.importorskip("requests")
+    pytest.importorskip("dotenv")
+
+    import os
+
+    from framework.config_loader import discover_fetchers
+    from framework.contract import ManifestEntry, TargetInstance
+    from framework.envelope import wrap_outputs
+    from framework.runner.executor import run_entry
+
+    fetcher = discover_fetchers(REPO_ROOT)["gitlab_merge_request_summary"]
+    entry = ManifestEntry(
+        use=fetcher.name,
+        targets=[TargetInstance(
+            values={"project_id": "paramify/trust-center", "url": "https://gitlab.invalid"},
+            # api_token is per_target: true, so it resolves from the target
+            secrets={"api_token": "${env:PYTEST_FAKE_GITLAB_TOKEN}"},
+        )],
+    )
+
+    os.environ["PYTEST_FAKE_GITLAB_TOKEN"] = "not-a-real-token"
+    try:
+        run_dir = tmp_path / "run"
+        result = run_entry(fetcher, entry, run_dir)[0]
+    finally:
+        os.environ.pop("PYTEST_FAKE_GITLAB_TOKEN", None)
+
+    assert result.exit_code != 0, "an unreachable host must fail the collection"
+
+    wrap_outputs(result, fetcher, "test-run", run_dir)
+    envelopes = [json.loads(p.read_text()) for p in run_dir.glob("*.json")]
+    assert envelopes, "the fetcher wrote no evidence file to envelope"
+    meta = envelopes[0]["metadata"]
+
+    assert meta["status"] == "failed"
+
+    # The regression itself: this field used to read "Evidence saved to ...".
+    assert "Evidence saved" not in meta["error"], (
+        "metadata.error is reporting a success message — issue #24 is back"
+    )
+    assert "gitlab.invalid" in meta["error"] or "resolve" in meta["error"].lower(), \
+        f"expected the connection failure, got: {meta['error']!r}"
+
+    # This fetcher reports through $FETCHER_STATUS_FILE, so the field is the bare
+    # reason — not a slice of the log. If this starts failing, the fetcher has
+    # fallen back to the stderr tail and the reason is buried in log lines again.
+    assert not re.match(r"^\d{4}-\d{2}-\d{2} ", meta["error"]), \
+        f"metadata.error looks like a log tail, not a reported reason: {meta['error'][:120]!r}"
+    assert meta["error"].count("\n") == 0, "expected a single-line reason"
+
+
+def test_allowlist_entries_still_exist():
+    """A stale allowlist entry hides a real regression at that path."""
+    for rel, line in _ALLOWED:
+        path = FETCHERS / rel
+        assert path.exists(), f"allowlisted {rel} no longer exists — drop the entry"
+        assert line <= len(path.read_text().splitlines()), \
+            f"allowlisted {rel}:{line} is past end of file — the code moved, re-verify it"

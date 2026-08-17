@@ -1,0 +1,52 @@
+name: azure_key_vault_configuration
+version: 0.1.0
+description: >
+  Every key vault in the subscription with the configuration that governs access to
+  the keys and secrets it holds: which authorization model is in force
+  (enable_rbac_authorization — Azure RBAC or the legacy vault access policies, with
+  the access policy entries and their permission verbs alongside it), whether the
+  vault is recoverable (soft delete plus purge protection, and the soft-delete
+  retention window), how it is exposed to the network (public network access, the
+  network ACL default action with its IP and virtual-network rules, private endpoint
+  connections), the SKU, and which platform integrations may read it (deployment,
+  disk encryption, template deployment). Management plane only — no key material or
+  secret value is read.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_key_vault_configuration.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-KEYVAULT-CFG
+  name: Azure Key Vault Configuration
+  instructions: >
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-keyvault KeyVaultManagementClient):
+    vaults.list_by_subscription(). Management plane only. Maps to KSI-SVC-04,
+    KSI-SVC-06, KSI-IAM-04, KSI-RPL-03.

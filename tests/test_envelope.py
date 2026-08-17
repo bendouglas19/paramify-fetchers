@@ -84,6 +84,63 @@ def test_success_has_no_error_field(tmp_path):
     assert "error" not in env["metadata"]   # error only attached on failure
 
 
+# --------------------------------------------------------------------------- #
+# What the fetcher reported via $FETCHER_STATUS_FILE beats the stderr tail
+# --------------------------------------------------------------------------- #
+
+def test_reported_error_wins_over_the_stderr_tail(tmp_path):
+    """The bug in #24: stderr's last line was an INFO success message.
+
+    The tail heuristic faithfully captured "Evidence saved to ..." as the failure
+    reason. A fetcher that reports through the channel is believed instead.
+    """
+    env = _wrap_one(tmp_path, {"k": 1}, result=make_result(
+        exit_code=1,
+        stderr="2026-01-01 INFO f Evidence saved to /tmp/ev.json\n",
+        error="GitLab API read timeout after 30s",
+    ))
+    assert env["metadata"]["error"] == "GitLab API read timeout after 30s"
+    assert "Evidence saved" not in env["metadata"]["error"]
+    assert not list(_VALIDATOR.iter_errors(env))
+
+
+def test_reported_error_code_lands_in_metadata(tmp_path):
+    env = _wrap_one(tmp_path, {"k": 1}, result=make_result(
+        exit_code=1, stderr="", error="host unreachable", error_code="target_unreachable"))
+    assert env["metadata"]["error_code"] == "target_unreachable"
+    assert not list(_VALIDATOR.iter_errors(env))
+
+
+def test_no_error_code_leaves_the_field_absent(tmp_path):
+    """Absent, not empty-string — consumers test presence."""
+    env = _wrap_one(tmp_path, {"k": 1}, result=make_result(exit_code=1, error="boom"))
+    assert "error_code" not in env["metadata"]
+
+
+def test_falls_back_to_stderr_when_nothing_was_reported(tmp_path):
+    """A fetcher that never writes the status file keeps the old behavior.
+
+    This is what makes the channel additive: nothing has to migrate.
+    """
+    env = _wrap_one(tmp_path, {"k": 1},
+                    result=make_result(exit_code=1, stderr="boom\nthe real reason"))
+    assert env["metadata"]["error"].endswith("the real reason")
+
+
+def test_reported_error_is_ignored_on_success(tmp_path):
+    """Gated on exit code, not on whether a report exists.
+
+    A fetcher may write the file and still exit 0 (collected fine, one optional
+    call degraded). Surfacing that as metadata.error would recreate #24 inverted
+    — a successful run reporting a failure.
+    """
+    env = _wrap_one(tmp_path, {"k": 1}, result=make_result(
+        exit_code=0, error="a group name did not resolve", error_code="partial_failure"))
+    assert env["metadata"]["status"] == "success"
+    assert "error" not in env["metadata"]
+    assert "error_code" not in env["metadata"]
+
+
 def test_already_enveloped_file_is_not_double_wrapped(tmp_path):
     pre = {"schema_version": "1.0", "metadata": {"run_id": "r"}, "payload": {"already": True}}
     out = _wrap_one(tmp_path, pre)

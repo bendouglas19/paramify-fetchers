@@ -30,3 +30,32 @@ condition = "AND"
 paths = ['''validators/.*\.ya?ml$''']
 regexes = ['''^key:\s+[a-z0-9_]+\s*$''']
 regexTarget = "line"
+
+# --- False positive: Microsoft first-party application ID -------------------- #
+# `797f4846-ba00-4fd7-ba43-dac1f8f63013` is Microsoft's PUBLISHED application id
+# for the "Windows Azure Service Management API". It is the same value in every
+# Entra tenant on earth — Microsoft documents it, and naming it is the supported
+# way to scope a Conditional Access policy to the ARM control plane. The Azure
+# Conditional Access fetcher needs the literal to answer "is MFA required for
+# Azure management?"; upstream Prowler carries the same constant in
+# prowler/providers/azure/config.py.
+#
+# generic-api-key fires because the constant's name ends in `_API` and a UUID
+# clears the rule's entropy threshold — name-plus-entropy, not an actual leak.
+#
+# Scoped with condition = "AND" and the exact known-public GUID in the regex, so
+# assigning any OTHER value to this constant is still reported.
+#
+# The `(?m)` is required, not stylistic. For this finding gitleaks hands the
+# allowlist a `line` that is not exactly one line, so a bare `^`-anchored regex
+# never matches and the entry silently does nothing. Verified against gitleaks
+# 8.30.1 (the version ci.yml installs): every `^...`/`^...$`/`^...\s*$` form
+# fails, `(?m)^...\s*$` suppresses. If you add an entry here, prove it works —
+# a broken allowlist looks identical to a passing scan until the leak is real.
+[[allowlists]]
+description = "Microsoft-published Windows Azure Service Management API app id is a public constant"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''fetchers/azure/entra_conditional_access_policies/fetcher\.py$''']
+regexes = ['''(?m)^WINDOWS_AZURE_SERVICE_MANAGEMENT_API = "797f4846-ba00-4fd7-ba43-dac1f8f63013"\s*$''']
+regexTarget = "line"

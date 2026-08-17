@@ -1,0 +1,49 @@
+name: azure_databricks_workspace_configuration
+version: 0.1.0
+description: >
+  For each Azure Databricks workspace in the subscription, reports the network
+  isolation and encryption posture: whether the control plane allows public network
+  access, whether secure cluster connectivity (no public IP) is enabled, whether the
+  workspace is injected into a customer-managed VNet, whether managed-disk encryption
+  uses a customer-managed key from Key Vault (with the key name, version, vault URI
+  and rotation flag), and the workspace SKU — the tier gates the isolation features.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_databricks_workspace_configuration.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-DBRICKS-CONFIG
+  name: Azure Databricks Workspace Configuration
+  instructions: >
+    Script: fetcher.py. Azure SDK calls: resource.providers.get("Microsoft.Databricks"),
+    then azure-mgmt-databricks AzureDatabricksManagementClient
+    workspaces.list_by_subscription(). Reader is sufficient — both are GETs, and no
+    Databricks workspace-API call is made.

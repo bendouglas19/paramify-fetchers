@@ -171,3 +171,52 @@ def test_passthrough_credential_redacted_but_selector_preserved(tmp_path, monkey
     assert "ambient-cred-value-123456" not in result.stderr   # credential masked
     assert "***REDACTED***" in result.stderr
     assert "us-west-2-and-then-some" in result.stderr          # selector preserved (evidence content)
+
+
+# --------------------------------------------------------------------------- #
+# The status-file channel is fetcher-authored text, so it gets masked too
+# --------------------------------------------------------------------------- #
+
+_LEAKY_STATUS_FETCHER = """\
+import json, os, sys
+tok = os.environ["API_TOKEN"]
+# A real exception message often carries the credential — e.g. the failing URL.
+with open(os.environ["FETCHER_STATUS_FILE"], "w") as f:
+    json.dump({"error": "401 from https://api.example.com/v1?token=%s" % tok,
+               "code": "auth_failed"}, f)
+sys.exit(1)
+"""
+
+
+def test_secret_in_the_status_file_is_redacted(tmp_path, monkeypatch):
+    """Why the runner reads the status file in the executor and not the envelope.
+
+    metadata.error used to be guaranteed clean because it could only ever be a
+    slice of already-masked stderr. Sourcing it from a file the FETCHER wrote
+    would have quietly dropped that guarantee — evidence payloads are never
+    masked, since the runner only diffs filenames and never reads their content.
+    Reading it where the injected values are still in scope is what keeps the
+    guarantee intact.
+    """
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text(_LEAKY_STATUS_FETCHER)
+
+    monkeypatch.setenv("SRC_TOKEN", _SECRET)
+    fetcher = make_fetcher(fdir, secrets=[Secret(name="api_token", env="API_TOKEN")],
+                           evidence_set=EvidenceSet(reference_id="EVD-1", name="Set"))
+    entry = ManifestEntry(use="t_fetcher", secrets={"api_token": "${env:SRC_TOKEN}"})
+
+    result = run_entry(fetcher, entry, tmp_path / "out")[0]
+
+    assert result.exit_code == 1
+    assert result.error is not None, "the fetcher did report a reason"
+    assert _SECRET not in result.error
+    assert "***REDACTED***" in result.error
+    assert result.error_code == "auth_failed"
+
+    # And it stays masked in the envelope field the uploader ships to Paramify.
+    meta = build_metadata(result, fetcher, run_id="2026-01-01T00-00-00Z")
+    assert _SECRET not in meta["error"]
+    assert "***REDACTED***" in meta["error"]
+    assert meta["error_code"] == "auth_failed"

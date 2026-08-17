@@ -1,18 +1,39 @@
 description: >
-  Azure evidence fetchers (bash, az CLI + jq). Each fetcher authenticates with
-  the standard Azure credential chain via the az CLI and is scoped to a single
-  subscription via AZURE_SUBSCRIPTION_ID.
+  Azure evidence fetchers (python, official azure-mgmt-* SDKs). Each fetcher
+  authenticates with azure-identity's DefaultAzureCredential — there is no
+  handed-over secret. A manifest target scopes a run to a specific subscription
+  (multi-subscription fanout); when a target omits `subscription_id` (or a
+  fetcher entry has no targets[] at all) the fetcher falls back to the first
+  enabled subscription the ambient credential can see ("collect where deployed").
 
-# Azure credentials follow the standard az CLI / DefaultAzureCredential chain
-# (cached `az login` session, service principal env vars, workload-identity
-# federation, IMDS managed identity). The runner strips ambient env by default;
-# for cloud-identity auth (e.g. AKS workload identity, managed identity) the
-# customer opts specific vars back in per run under manifest
-# platforms.azure.auth.passthrough_env. Listed here are the common
-# service-principal / workload-identity / managed-identity vars; they only take
-# effect when actually set in the runner's environment, so listing them is safe.
-# Workload identity (AZURE_FEDERATED_TOKEN_FILE) and managed identity need no
-# stored secret and are the recommended paths.
+# Why the SDKs and not the az CLI: the fetchers are python, and the azure-mgmt-*
+# clients are the same ones Prowler reads, so field projections port verbatim and
+# pagination is handled by the SDK's ItemPaged. There is no `az` dependency and no
+# shelling out — the runner only needs the pip deps.
+#
+# DefaultAzureCredential resolution order (azure.identity), and how each path is
+# fed through the runner's env whitelist:
+#   1. Environment service principal — AZURE_TENANT_ID + AZURE_CLIENT_ID +
+#      AZURE_CLIENT_SECRET. A stored secret, so the least-preferred path; it is
+#      listed below so a customer who already keeps an SP in their own secret
+#      store can opt it in per run without the fetcher declaring a secret.
+#   2. Workload identity federation — AZURE_TENANT_ID + AZURE_CLIENT_ID +
+#      AZURE_FEDERATED_TOKEN_FILE (AKS workload identity). No stored secret;
+#      recommended in-cluster.
+#   3. Managed identity via IMDS — MSI_ENDPOINT / IDENTITY_ENDPOINT /
+#      IDENTITY_HEADER (App Service, Container Apps, VM). No stored secret;
+#      recommended on Azure compute.
+#   4. Azure CLI / Azure Developer CLI / Azure PowerShell cached login — reads
+#      the token cache under $HOME, which the runner already inherits. This is
+#      the local dev-loop path (`az login`) and needs no env var at all.
+#
+# AZURE_AUTHORITY_HOST selects a sovereign cloud's AAD endpoint (Azure Government,
+# China). AZURE_SUBSCRIPTION_ID is the ambient default subscription — it is also a
+# per-fetcher target field, so a target's value overrides whatever is ambient.
+#
+# The runner strips ambient env by default; these opt the credential chain back
+# in. They only take effect when actually set in the runner's environment, so
+# listing them is safe.
 auth:
   passthrough_env:
     - AZURE_TENANT_ID

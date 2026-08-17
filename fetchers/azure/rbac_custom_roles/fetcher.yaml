@@ -1,0 +1,52 @@
+name: azure_rbac_custom_roles
+version: 0.1.0
+description: >
+  Every custom Azure RBAC role definition in the subscription with its assignable
+  scopes and its full permission set — control-plane actions and notActions, data-plane
+  dataActions and notDataActions — flagged for wildcard breadth and for the permissions
+  that let a holder escalate its own privileges (writing role assignments, rewriting
+  role definitions, writing deny assignments). Wildcards are matched with Azure's own
+  semantics, where `*` spans `/`, and notActions is subtracted, so a role granting `*`
+  minus the authorization writes is reported as Contributor-equivalent rather than as
+  an Owner.
+category: azure
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_rbac_custom_roles.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+evidence_set:
+  reference_id: EVD-AZURE-RBAC-CUSTOM-ROLES
+  name: Azure RBAC Custom Role Definitions
+  instructions: >
+    Script: fetcher.py. Azure SDK calls (azure-mgmt-authorization
+    AuthorizationManagementClient):
+    role_definitions.list(scope="/subscriptions/{id}"), reading assignableScopes and
+    permissions[{actions, notActions, dataActions, notDataActions}]; and
+    resource.providers.get for Microsoft.Authorization.

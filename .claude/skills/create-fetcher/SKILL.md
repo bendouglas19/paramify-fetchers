@@ -121,7 +121,19 @@ single confirmation before building.
    collection failures": track collection failures, exit non-zero if any
    occurred (Python: an `api_failures` list; bash: a temp-file counter).
 
-6. If bash: `chmod +x fetchers/<category>/<short_name>/fetcher.sh`.
+6. **Report the reason on the failure path** — two lines, both required, per
+   `docs/porting_playbook.md` §"Say why you failed":
+   - log it at error level, **after** the "Evidence saved" line (the runner's
+     fallback takes the *tail* of stderr, so an INFO line logged last wins);
+   - write `{"error": "…", "code": "…"}` to `$FETCHER_STATUS_FILE`, which is what
+     lands in the envelope's `metadata.error` and what Paramify shows the person
+     triaging the failure.
+
+   Skipping this is how a failed run ends up reporting "Evidence saved to …" as
+   its error (issue #24). Do NOT rely on putting the error in the payload — the
+   runner never reads inside it.
+
+7. If bash: `chmod +x fetchers/<category>/<short_name>/fetcher.sh`.
 
 ---
 
