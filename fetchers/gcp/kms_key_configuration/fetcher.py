@@ -397,11 +397,21 @@ def collect_locations(project, creds, collector: Collector) -> tuple[list[str], 
     """
     def _list():
         client = _client(creds)
-        # The GAPIC pager iterates every page; no manual page-token loop.
-        return sorted(
-            loc.location_id or basename(loc.name)
-            for loc in client.list_locations(request={"name": f"projects/{project}"})
-        )
+        # list_locations comes from the generic Locations mixin rather than the
+        # KMS surface, so unlike every other call here it returns a bare
+        # ListLocationsResponse instead of a pager — iterating the response
+        # itself raises TypeError, and the page token has to be walked by hand.
+        found, token = [], ""
+        while True:
+            response = client.list_locations(
+                request={"name": f"projects/{project}", "page_token": token}
+            )
+            found.extend(
+                loc.location_id or basename(loc.name) for loc in response.locations
+            )
+            token = response.next_page_token
+            if not token:
+                return sorted(found)
 
     locations = collector.guard(
         "cloudkms.projects.locations.list", _list, default=None, tolerate=service_disabled
