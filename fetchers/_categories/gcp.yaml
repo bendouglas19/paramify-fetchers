@@ -21,6 +21,25 @@ description: >
 # The runner strips ambient env by default; these non-sensitive selectors opt the
 # ADC path back in. They only take effect when actually set in the runner's
 # environment, so listing them is safe. None are secrets.
+# No external CLI at run time — `gcloud` is only a local dev-loop convenience for
+# minting ADC. What must be installed is the client libraries. Distribution names,
+# which differ from import names (google-cloud-secret-manager imports as
+# google.cloud.secretmanager).
+requires:
+  python_packages:
+    - google-api-python-client
+    - google-cloud-api-keys
+    - google-cloud-bigquery
+    - google-cloud-compute
+    - google-cloud-container
+    - google-cloud-iam
+    - google-cloud-kms
+    - google-cloud-logging
+    - google-cloud-monitoring
+    - google-cloud-resource-manager
+    - google-cloud-secret-manager
+    - google-cloud-storage
+
 auth:
   passthrough_env:
     # Relocates the gcloud config dir (and thus the ADC file) — non-sensitive path.

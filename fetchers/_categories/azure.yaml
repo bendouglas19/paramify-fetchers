@@ -67,6 +67,37 @@ secrets:
       Provide with tenant_id and client_id, or omit all three to use an ambient
       identity instead.
 
+# No external CLI — these are python fetchers on the SDKs, so what has to be
+# installed is pip distributions. Doctor checks each against the pin in
+# requirements.txt, which is the single source of truth for versions; the pins
+# matter because a wrong major here returns wrong or empty evidence rather than
+# erroring (see the six documented breaks in requirements.txt).
+requires:
+  python_packages:
+    - azure-identity
+    - azure-keyvault-keys
+    - azure-mgmt-authorization
+    - azure-mgmt-compute
+    - azure-mgmt-containerregistry
+    - azure-mgmt-containerservice
+    - azure-mgmt-cosmosdb
+    - azure-mgmt-databricks
+    - azure-mgmt-keyvault
+    - azure-mgmt-monitor
+    - azure-mgmt-network
+    - azure-mgmt-postgresqlflexibleservers
+    - azure-mgmt-rdbms
+    - azure-mgmt-recoveryservices
+    - azure-mgmt-recoveryservicesbackup
+    - azure-mgmt-resource
+    - azure-mgmt-resource-policy
+    - azure-mgmt-security
+    - azure-mgmt-sql
+    - azure-mgmt-storage
+    - azure-mgmt-subscription
+    - azure-mgmt-web
+    - msgraph-sdk
+
 auth:
   passthrough_env:
     - AZURE_TENANT_ID

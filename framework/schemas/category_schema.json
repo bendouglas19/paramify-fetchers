@@ -34,6 +34,22 @@
         }
       }
     },
+    "requires": {
+      "type": "object",
+      "description": "What must be installed for this category's fetchers to run. `paramify doctor` checks these, and only for the categories a manifest actually uses.",
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "External binaries the fetchers shell out to, checked against PATH."
+        },
+        "python_packages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Distribution names the fetchers import (not import names — e.g. google-cloud-secret-manager, imported as google.cloud.secretmanager). Version pins are read from requirements.txt, which stays the single source of truth."
+        }
+      }
+    },
     "auth": {
       "type": "object",
       "properties": {

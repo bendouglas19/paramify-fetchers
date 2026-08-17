@@ -3,6 +3,9 @@ python-dotenv
 requests
 pyyaml
 jsonschema
+# `paramify doctor` compares installed distribution versions against the pins in
+# this file. Arrives transitively via several deps; declared because we import it.
+packaging
 
 # Unified CLI (`paramify` / framework.cli) — the single command surface that
 # steers every front-end (headless commands + `paramify tui`).

@@ -21,6 +21,7 @@ dependencies = [
     "pyyaml",
     "jsonschema",
     "typer>=0.12",
+    "packaging",
 ]
 
 [project.optional-dependencies]

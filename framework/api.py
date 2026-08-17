@@ -24,11 +24,16 @@ import re
 import shutil
 import sys
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 import yaml
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.utils import canonicalize_name
 
 from framework.config_loader import discover_fetchers, discover_platforms
 from framework.contract import ConfigField, Secret, TargetField, effective_secrets
@@ -242,28 +247,80 @@ def ksi_coverage(root: Path) -> dict:
 # Doctor — preflight environment check
 # --------------------------------------------------------------------------- #
 
-# External CLIs a category's fetchers shell out to. Categories not listed here
-# are pure-Python/HTTP fetchers that need no external tool. (AWS fetcher.sh files
-# declare "Required tools: aws, jq"; k8s uses kubectl; checkov clones + scans.)
-CATEGORY_TOOLS = {
-    "aws": ["aws", "jq"],
-    "k8s": ["kubectl"],
-    "checkov": ["checkov", "git"],
-}
-
 _ENV_REF = re.compile(r"\$\{env:([^}]+)\}")
+
+
+def _requirement_pins(root: Path) -> Dict[str, str]:
+    """Map distribution name -> version specifier, from the top-level requirements.txt.
+
+    requirements.txt stays the single source of truth for versions; a category
+    file names only which distributions are its own. Unparseable or unpinned
+    lines are skipped rather than raising — doctor degrades to a presence check
+    rather than failing over a requirements-file quirk.
+    """
+    pins: Dict[str, str] = {}
+    req = root / "requirements.txt"
+    if not req.exists():
+        return pins
+    for line in req.read_text().splitlines():
+        line = line.split("#")[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        try:
+            parsed = Requirement(line)
+        except Exception:
+            continue
+        pins[canonicalize_name(parsed.name)] = str(parsed.specifier)
+    return pins
+
+
+def _check_python_packages(names: List[str], pins: Dict[str, str]) -> List[dict]:
+    """Resolve each distribution to its installed version and check it against the pin.
+
+    Three outcomes worth distinguishing, because they need different fixes:
+    missing (pip install), version conflict (pip install -U, or a deliberate
+    downgrade), and satisfied. A conflict is not cosmetic for the SDK categories
+    — requirements.txt documents azure-mgmt majors that return wrong or empty
+    evidence instead of erroring, so a drifted pin is a silent evidence bug.
+    """
+    out = []
+    for name in names:
+        key = canonicalize_name(name)
+        spec = pins.get(key)
+        try:
+            found = pkg_version(name)
+        except PackageNotFoundError:
+            found = None
+        if found is None:
+            status = "missing"
+        elif spec and not SpecifierSet(spec).contains(found, prereleases=True):
+            status = "conflict"
+        else:
+            status = "ok"
+        out.append({
+            "name": name,
+            "installed": found,
+            "required": spec or None,
+            "status": status,
+            "ok": status == "ok",
+        })
+    return out
 
 
 def doctor(root: Path, manifest_path: Optional[Path] = None) -> dict:
     """Preflight check for running fetchers here.
 
-    Reports the Python version, whether the external CLIs the relevant categories
-    need are on PATH, and — if a manifest is given — which secret env vars it
-    references are actually set. Presentation-agnostic; the CLI and TUI render
-    this one model. `ok` is a go/no-go: Python must clear the floor, and when a
-    manifest is supplied its categories' tools must be present and its secret env
-    vars set. Without a manifest, missing tools are informational (you may run
-    only some categories), so `ok` reflects the Python check alone.
+    Reports the Python version, the external CLIs and pip distributions the
+    relevant categories declare in their `requires:` block, and — if a manifest is
+    given — which secret env vars it references are actually set.
+    Presentation-agnostic; the CLI and TUI render this one model.
+
+    A manifest narrows every check to the categories it actually uses, so a
+    GitLab-only run is not told to install the aws CLI. `ok` is a go/no-go: Python
+    must clear the floor, and when a manifest is supplied its categories' tools and
+    packages must be present and its secret env vars set. Without a manifest,
+    missing dependencies are informational (you may only ever run some
+    categories), so `ok` reflects the Python check alone.
     """
     py = sys.version_info
     python = {
@@ -314,31 +371,60 @@ def doctor(root: Path, manifest_path: Optional[Path] = None) -> dict:
             "ok": manifest_ok,
         }
 
+    platforms = discover_platforms(root)
+
+    def _tools_for(cat: str) -> List[str]:
+        spec = platforms.get(cat)
+        return spec.requires.tools if spec else []
+
     seen: set = set()
     tools = []
     for cat in categories:
-        for tool in CATEGORY_TOOLS.get(cat, []):
+        for tool in _tools_for(cat):
             if tool in seen:
                 continue
             seen.add(tool)
             resolved = shutil.which(tool)
             tools.append({
                 "name": tool,
-                "categories": [c for c in categories if tool in CATEGORY_TOOLS.get(c, [])],
+                "categories": [c for c in categories if tool in _tools_for(c)],
                 "present": resolved is not None,
                 "path": resolved,
             })
     tools.sort(key=lambda t: str(t["name"]))
 
+    # Package checks are per-category rather than flattened like tools: "azure is
+    # ready, gcp is not" is the actionable framing, and a single package can
+    # legitimately be required by two categories at different pins.
+    pins = _requirement_pins(root)
+    packages = []
+    for cat in categories:
+        spec = platforms.get(cat)
+        names = spec.requires.python_packages if spec else []
+        if not names:
+            continue
+        checked = _check_python_packages(names, pins)
+        packages.append({
+            "category": cat,
+            "packages": checked,
+            "missing": [p["name"] for p in checked if p["status"] == "missing"],
+            "conflicts": [p["name"] for p in checked if p["status"] == "conflict"],
+            "ok": all(p["ok"] for p in checked),
+        })
+
     ok = python["ok"]
     if tools_required:
         tools_ok = all(t["present"] for t in tools)
-        ok = ok and tools_ok and (manifest_report["ok"] if manifest_report else True)
+        packages_ok = all(p["ok"] for p in packages)
+        ok = ok and tools_ok and packages_ok and (
+            manifest_report["ok"] if manifest_report else True
+        )
 
     return {
         "python": python,
         "categories": categories,
         "tools": tools,
+        "packages": packages,
         "tools_required": tools_required,
         "manifest": manifest_report,
         "ok": ok,

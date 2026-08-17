@@ -13,3 +13,12 @@ description: >
 #
 # Runner dependency: the `checkov` CLI and `git` must be on PATH. `checkov` is in
 # the top-level requirements.txt; `git` is a system tool.
+requires:
+  tools:
+    - checkov
+    - git
+    - jq
+  # Listed as a package too, not just a binary: a `checkov` on PATH from some
+  # other environment will not match the pin this repo installs.
+  python_packages:
+    - checkov

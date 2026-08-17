@@ -38,6 +38,14 @@ secrets:
       Required in addition to the pair when the credentials are temporary (STS /
       assume-role / SSO-exported, access key beginning ASIA).
 
+# `aws eks update-kubeconfig` is how these reach the cluster, so the aws CLI is
+# needed here as well as kubectl.
+requires:
+  tools:
+    - aws
+    - kubectl
+    - jq
+
 auth:
   passthrough_env:
     # Explicit identity/region selection (set by the runner, or ambient).

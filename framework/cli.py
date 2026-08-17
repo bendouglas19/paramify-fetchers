@@ -361,7 +361,11 @@ def doctor_cmd(
     ),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON"),
 ):
-    """Preflight: Python version, required CLIs on PATH, and (with a manifest) secrets."""
+    """Preflight: Python, required CLIs and packages, and (with a manifest) secrets.
+
+    Passing a manifest narrows every check to the categories it actually uses, so
+    a GitLab-only run is never told to install the aws CLI.
+    """
     root = api.find_repo_root()
     rep = api.doctor(root, Path(manifest) if manifest else None)
     if json_out:
@@ -381,6 +385,27 @@ def doctor_cmd(
             typer.echo(f"  {mark} {t['name']:8s} {where}  ({', '.join(t['categories'])})")
         if not rep["tools_required"]:
             typer.echo("  (informational — you only need the CLIs for categories you run)")
+
+    for grp in rep.get("packages") or []:
+        # Only the problems are listed by name: a healthy category is a one-line
+        # count, since 23 green azure packages is noise, not information.
+        bad = [p for p in grp["packages"] if not p["ok"]]
+        if not bad:
+            typer.echo(
+                f"\n{ok_mark} {grp['category']} packages: "
+                f"{len(grp['packages'])} installed and within pins"
+            )
+            continue
+        typer.echo(f"\n{bad_mark} {grp['category']} packages:")
+        for pkg in bad:
+            if pkg["status"] == "missing":
+                typer.echo(f"  {bad_mark} {pkg['name']:42s} not installed")
+            else:
+                typer.echo(
+                    f"  {bad_mark} {pkg['name']:42s} {pkg['installed']} "
+                    f"installed, needs {pkg['required']}"
+                )
+        typer.echo("  fix: pip install -r requirements.txt")
 
     if rep["manifest"]:
         m = rep["manifest"]

@@ -45,6 +45,13 @@ secrets:
       assume-role / SSO-exported, access key beginning ASIA). Omit for a
       long-lived key pair.
 
+# Every fetcher here is bash and shells out to these; `paramify doctor` checks
+# them against PATH, but only when a manifest actually uses the category.
+requires:
+  tools:
+    - aws
+    - jq
+
 auth:
   passthrough_env:
     # Explicit identity/region selection (set by the runner from a target, or
