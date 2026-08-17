@@ -12,7 +12,9 @@ and "which of the two token vars is in play" are the two questions people
 actually get wrong.
 """
 
+import getpass
 import os
+import sys
 from typing import Mapping, Optional, Tuple
 
 DEFAULT_BASE_URL = "https://app.paramify.com/api/v0"
@@ -71,6 +73,57 @@ def resolve_base_url(
     if from_env:
         return from_env, BASE_URL_ENV
     return DEFAULT_BASE_URL, "default"
+
+
+def can_prompt(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Is it safe to ask the user for a token right now?
+
+    Requires a real terminal on both ends and the absence of CI, because a
+    prompt in a pipeline does not get answered — it hangs the job until the
+    runner's timeout kills it, which is a far worse failure than the clean error
+    the caller would otherwise raise.
+    """
+    src = env if env is not None else os.environ
+    if src.get("CI"):
+        return False
+    try:
+        return sys.stdin.isatty() and sys.stderr.isatty()
+    except (AttributeError, ValueError):
+        # Streams can be replaced or closed under test runners and some hosts.
+        return False
+
+
+def prompt_for_token(base_url: str, *, persist_hint: bool = True) -> Optional[str]:
+    """Ask for the API token interactively; return None if we must not prompt.
+
+    Shows the destination first. Getting this far means a collection has already
+    run, so the two things worth confirming before the token is typed are that a
+    token is needed at all and which workspace it is about to be spent on.
+
+    The value is exported into this process's environment so the rest of the run
+    resolves it normally, and is NOT written to disk — persisting a credential is
+    the user's decision, so we print how instead of guessing.
+    """
+    if not can_prompt():
+        return None
+    label = describe_base_url(base_url)
+    print("\nParamify API token required to upload.", file=sys.stderr)
+    print(f"  destination: {label} — {base_url}", file=sys.stderr)
+    try:
+        token = getpass.getpass("  token (input hidden): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("", file=sys.stderr)
+        return None
+    if not token:
+        return None
+    os.environ[UPLOAD_TOKEN_ENV] = token
+    if persist_hint:
+        print(
+            f"  using it for this run only. To persist it, export {UPLOAD_TOKEN_ENV}"
+            f" or add it to whichever secret source you already use.",
+            file=sys.stderr,
+        )
+    return token
 
 
 def describe_base_url(url: str) -> str:

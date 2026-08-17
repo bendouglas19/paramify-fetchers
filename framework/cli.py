@@ -60,7 +60,7 @@ from typing import List, NoReturn, Optional
 
 import typer
 
-from framework import api
+from framework import api, paramify_auth
 
 _DEFAULT_MANIFEST = "manifest.yaml"
 
@@ -598,6 +598,17 @@ def run_cmd(
         else:
             _err(f"Setup failed: {e}")
         raise typer.Exit(1)
+    # Said before the run, not after: collection can take a long time, and
+    # discovering the upload token is missing at the end of it is the complaint
+    # this answers. Advisory only — collecting without uploading is legitimate.
+    if not json_out:
+        readiness = api.upload_readiness(root)
+        if not readiness["token_present"]:
+            typer.echo(
+                f"Note: no Paramify API token set, so `paramify upload` will need one "
+                f"({api.UPLOAD_TOKEN_ENV}). Collecting anyway.\n"
+            )
+
     try:
         summary = api.run(
             m, root,
@@ -647,6 +658,16 @@ def upload_cmd(
         else:
             _err(f"Upload setup failed: {e}")
         raise typer.Exit(1)
+    # A missing token is the one preflight failure a person can fix on the spot,
+    # and by here they have already paid for a full collection. Ask, rather than
+    # making them quit, export, and re-run. --json and CI never reach this: a
+    # prompt there hangs the job instead of failing it.
+    if not preflight["ok"] and not preflight["token_present"] and not json_out:
+        if paramify_auth.prompt_for_token(preflight["base_url"]) is not None:
+            preflight = api.upload_preflight(
+                resolved_run_dir, root, config_path, dry_run=dry_run
+            )
+
     if not preflight["ok"]:
         if json_out:
             typer.echo(json.dumps(preflight, indent=2, default=str))
@@ -654,6 +675,11 @@ def upload_cmd(
             for err in preflight["errors"]:
                 _err(f"  ERROR  {err}")
         raise typer.Exit(1)
+
+    if not json_out:
+        typer.echo(
+            f"Uploading to {preflight['base_url_label']}: {preflight['base_url']}"
+        )
 
     try:
         summary = api.upload_run(

@@ -8,11 +8,15 @@ name produced working fetchers and an upload that failed at the last step.
 
 from __future__ import annotations
 
+import sys
+
 from framework.paramify_auth import (
     DEFAULT_BASE_URL,
     READ_TOKEN_ENV,
     UPLOAD_TOKEN_ENV,
+    can_prompt,
     describe_base_url,
+    prompt_for_token,
     resolve_base_url,
     resolve_upload_token,
 )
@@ -72,3 +76,87 @@ def test_hosts_are_labelled_for_preflight_output():
     assert describe_base_url("https://app.paramify.com/api/v0") == "production"
     assert describe_base_url("https://stage.paramify.com/api/v0") == "stage"
     assert describe_base_url("https://paramify.acme.internal/api/v0") == "self-hosted"
+
+
+# --------------------------------------------------------------------------- #
+# Prompting. The failure mode being guarded is a prompt in a pipeline: it does
+# not get answered, so the job hangs until the runner's timeout kills it — much
+# worse than the clean error the caller raises otherwise.
+# --------------------------------------------------------------------------- #
+
+class _FakeTTY:
+    """Stands in for stdin/stderr: answers isatty() and swallows prompt output."""
+
+    def __init__(self, tty: bool):
+        self._tty = tty
+        self.written: list[str] = []
+
+    def isatty(self) -> bool:
+        return self._tty
+
+    def write(self, text: str) -> int:
+        self.written.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+def test_never_prompts_in_ci_even_on_a_terminal(monkeypatch):
+    monkeypatch.setattr(sys, "stdin", _FakeTTY(True))
+    monkeypatch.setattr(sys, "stderr", _FakeTTY(True))
+    assert can_prompt({"CI": "true"}) is False
+
+
+def test_never_prompts_when_stdin_is_redirected(monkeypatch):
+    monkeypatch.setattr(sys, "stdin", _FakeTTY(False))
+    monkeypatch.setattr(sys, "stderr", _FakeTTY(True))
+    assert can_prompt({}) is False
+
+
+def test_never_prompts_when_output_is_piped(monkeypatch):
+    """`paramify upload | tee log` must not stall waiting on a hidden prompt."""
+    monkeypatch.setattr(sys, "stdin", _FakeTTY(True))
+    monkeypatch.setattr(sys, "stderr", _FakeTTY(False))
+    assert can_prompt({}) is False
+
+
+def test_prompts_on_a_real_interactive_terminal(monkeypatch):
+    monkeypatch.setattr(sys, "stdin", _FakeTTY(True))
+    monkeypatch.setattr(sys, "stderr", _FakeTTY(True))
+    assert can_prompt({}) is True
+
+
+def test_prompt_returns_none_instead_of_blocking_when_it_must_not_ask(monkeypatch):
+    monkeypatch.setattr(sys, "stdin", _FakeTTY(False))
+    monkeypatch.setattr(sys, "stderr", _FakeTTY(False))
+    assert prompt_for_token("https://app.paramify.com/api/v0") is None
+
+
+def test_an_accepted_token_is_exported_for_the_rest_of_the_process(monkeypatch):
+    monkeypatch.setattr(sys, "stdin", _FakeTTY(True))
+    monkeypatch.setattr(sys, "stderr", _FakeTTY(True))
+    monkeypatch.delenv(UPLOAD_TOKEN_ENV, raising=False)
+    monkeypatch.setattr("framework.paramify_auth.getpass.getpass", lambda _: "typed-token")
+    assert prompt_for_token("https://app.paramify.com/api/v0") == "typed-token"
+    assert resolve_upload_token() == ("typed-token", UPLOAD_TOKEN_ENV)
+
+
+def test_an_empty_answer_is_not_treated_as_a_token(monkeypatch):
+    monkeypatch.setattr(sys, "stdin", _FakeTTY(True))
+    monkeypatch.setattr(sys, "stderr", _FakeTTY(True))
+    monkeypatch.delenv(UPLOAD_TOKEN_ENV, raising=False)
+    monkeypatch.setattr("framework.paramify_auth.getpass.getpass", lambda _: "  ")
+    assert prompt_for_token("https://app.paramify.com/api/v0") is None
+
+
+def test_ctrl_c_at_the_prompt_declines_rather_than_propagating(monkeypatch):
+    """Declining should fall through to the normal error, not a traceback."""
+    monkeypatch.setattr(sys, "stdin", _FakeTTY(True))
+    monkeypatch.setattr(sys, "stderr", _FakeTTY(True))
+
+    def _interrupt(_):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("framework.paramify_auth.getpass.getpass", _interrupt)
+    assert prompt_for_token("https://app.paramify.com/api/v0") is None
