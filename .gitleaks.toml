@@ -59,3 +59,29 @@ condition = "AND"
 paths = ['''fetchers/azure/entra_conditional_access_policies/fetcher\.py$''']
 regexes = ['''(?m)^WINDOWS_AZURE_SERVICE_MANAGEMENT_API = "797f4846-ba00-4fd7-ba43-dac1f8f63013"\s*$''']
 regexTarget = "line"
+
+# --- False positive: GCP key-algorithm enum in deleted test fixtures --------- #
+# `KEY_ALG_RSA_2048` is the GCP IAM enum NAME for an RSA-2048 service-account
+# key algorithm — the literal string the API returns in a key's `keyAlgorithm`
+# field. It names an algorithm; it is not key material. The fetcher that reads
+# that field (gcp_iam_service_accounts) never collects key material at all.
+#
+# generic-api-key fires because the field name pairs "key" with "algorithm" and
+# the enum clears the rule's entropy threshold (3.58) — name-plus-entropy, the
+# same shape as the entry above, not an actual leak.
+#
+# The three matches are in synthetic fixtures in a file deleted in 9744a37, when
+# the GCP fetcher unit tests came out the way the Azure ones did in 65d59f3. The
+# value never appeared anywhere else, in any commit, so scoping to that path and
+# that exact literal means this entry cannot suppress a finding in live code —
+# it exists purely because `gitleaks git` still walks the deleted blob.
+#
+# `(?m)` is required for the reason documented on the entry above; both the
+# snake_case and camelCase fixture spellings are matched.
+[[allowlists]]
+description = "GCP KEY_ALG_RSA_2048 is an algorithm enum name in deleted synthetic fixtures"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''tests/test_gcp_platform_fetchers\.py$''']
+regexes = ['''(?m)^\s*"(?:key_algorithm|keyAlgorithm)": "KEY_ALG_RSA_2048",\s*$''']
+regexTarget = "line"
