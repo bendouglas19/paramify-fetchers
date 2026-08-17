@@ -1,0 +1,167 @@
+name: gitlab_significant_change_notifications
+version: 0.1.0
+description: >
+  FedRAMP Significant Change Notification evidence. Finds GitLab merge requests
+  flagged as significant changes (ticked "Significant Change — SCN required"
+  checkbox, or a configured label), parses the MR description's Significant
+  Change section, and emits one FedRAMP-schema-valid SCN object per flagged MR
+  (schema 2026-06-24, SCN-CSO-INF). Single-target per invocation; runner does fanout.
+category: gitlab
+
+supports_targets: true
+
+target_schema:
+  project_id:
+    type: string
+    required: true
+    env: GITLAB_PROJECT_ID
+    description: GitLab project path, e.g. "group/project"
+  url:
+    type: string
+    required: true
+    env: GITLAB_URL
+    description: GitLab instance URL
+  certification_package_overview_uri:
+    type: string
+    required: false
+    env: FEDRAMP_CERT_PACKAGE_URI
+    description: >
+      Full URI of the provider's Certification Package Overview document. Required
+      by the FedRAMP SCN schema and constant per service offering. Quote it in a
+      shell — these URIs commonly contain percent-encoded spaces.
+
+      OPTIONAL because it falls back to PARAMIFY_CERT_PACKAGE_URI
+      (platforms.paramify.config.cert_package_uri), which the paramify VER
+      fetchers also read. One workspace publishes one Certification Package
+      Overview, so sharing that setting keeps an SCN from citing a different
+      document than the VER reports. Set this field only to override it
+      for a run targeting a different service offering. One of the two must be set.
+
+      The MR template carries the same value on a
+      "**Certification Package Overview URI:**" line; when the two differ, the
+      merge request wins for that notification.
+  state:
+    type: string
+    required: false
+    default: merged
+    env: GITLAB_SCN_STATE
+    description: Merge request state filter (merged | opened | closed | all)
+  days_back:
+    type: integer
+    required: false
+    default: 30
+    env: GITLAB_SCN_DAYS_BACK
+    description: >
+      How many days of merge requests to scan. Set to cover your notification
+      cadence with margin — SCN-ADP-NTF allows 10 business days after an adaptive
+      change finishes, so a 30-day window run weekly leaves no gap.
+  max_results:
+    type: integer
+    required: false
+    default: 100
+    env: GITLAB_SCN_MAX_RESULTS
+    description: Maximum number of merge requests to scan
+  marker_label:
+    type: string
+    required: false
+    env: GITLAB_SCN_MARKER_LABEL
+    description: >
+      Optional GitLab label (e.g. "significant-change") treated as an alternative
+      to the ticked checkbox. When set it is ALSO pushed to the API as a server-side
+      filter, so only labeled MRs are fetched.
+  section_heading:
+    type: string
+    required: false
+    default: Significant Change
+    env: GITLAB_SCN_SECTION_HEADING
+    description: Markdown heading whose body holds the SCN content
+  require_scn_cso_inf_complete:
+    type: boolean
+    required: false
+    default: true
+    env: GITLAB_SCN_REQUIRE_COMPLETE
+    description: >
+      When true, a notification that validates against the FedRAMP schema but omits
+      information SCN-CSO-INF requires — impacted controls, planned dates, approver
+      name and title — fails the run. FedRAMP's schema requires three properties;
+      SCN-CSO-INF asks for a dozen, so schema validity alone does not mean a
+      notification is worth submitting. Set false to collect without that gate.
+  strict:
+    type: boolean
+    required: false
+    default: true
+    env: GITLAB_SCN_STRICT
+    description: >
+      When true, exit non-zero if any flagged merge request fails to produce a
+      schema-valid SCN. The evidence file is still written either way — this only
+      controls whether an incomplete notification is surfaced as a failed run.
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gitlab_significant_change_notifications.json
+  aggregation: per_target
+
+config_schema:
+  cert_package_uri:
+    type: string
+    required: false
+    env: PARAMIFY_CERT_PACKAGE_URI
+    description: >-
+      Shared fallback for certificationPackageOverviewUri, identical to the knob
+      the paramify category declares. Declared here so the runner actually injects
+      it for this fetcher — a fetcher only receives env vars it declares.
+
+secrets:
+- name: api_token
+  env: GITLAB_API_TOKEN
+  per_target: true
+
+ksis:
+  - KSI-CMT-04
+
+validators:
+  - id: scn_schema_valid
+    regex: '"schema_invalid_count":\s*0'
+    proves: >
+      Every merge request the engineering team flagged as a FedRAMP significant
+      change produced a notification that validates against the FedRAMP SCN
+      schema — the change-notification pipeline is complete, not just running.
+    failure_modes:
+      - An author ticked the SCN checkbox but left the Significant Change section blank or partial
+      - The MR template drifted and its headings no longer map to SCN fields
+      - Change Type was written as something other than Adaptive or Transformative
+  - id: scn_cso_inf_complete
+    regex: '"scn_cso_inf_incomplete_count":\s*0'
+    proves: >
+      Every notification carries the information SCN-CSO-INF requires — not merely
+      the three properties FedRAMP's JSON schema enforces. A schema-valid
+      notification naming no impacted controls, no dates and no approver would pass
+      validation and fail review; this is the check that separates the two.
+    failure_modes:
+      - Impacted KSIs or controls left as template placeholders
+      - Planned start/completion dates never filled in
+      - Approver name and title omitted from the merge request
+  - id: scn_marker_honored
+    regex: '"unticked_marker_count":\s*0'
+    proves: >
+      No merge request in the window carried an unticked significant-change
+      checkbox — authors are making an explicit call rather than skipping the box.
+    failure_modes:
+      - Author left the template checkbox untouched instead of deciding
+      - Change was genuinely routine recurring (SCN-RTR) and needs no notification
+
+evidence_set:
+  reference_id: EVD-GITLAB-SCN
+  name: GitLab FedRAMP Significant Change Notifications
+  instructions: >
+    Script: fetchers/gitlab/significant_change_notifications/fetcher.py. Commands
+    executed: GitLab API GET /projects/:id/merge_requests (paginated, filtered by
+    state and updated_after) and GET /projects/:id/merge_requests/:iid/approvals.
+    Merge requests carrying a ticked "Significant Change — SCN required" checkbox
+    (or the configured label) have their "Significant Change" description section
+    parsed into a FedRAMP Significant Change Notification, which is validated
+    against the vendored FedRAMP SCN schema 2026-06-24 (v0.1.2) before output.
