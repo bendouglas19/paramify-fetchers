@@ -5,37 +5,26 @@ KSI-MLA-01 / KSI-CMT-01: GCP Cloud Logging Configuration
 The GCP analogue of the AWS cloudtrail_configuration evidence set. For one
 project: every log sink (destination, filter, whether it exports everything,
 whether it is disabled), every log bucket (retention days, locked, CMEK,
-lifecycle state), the project-level log-router CMEK/storage settings, and the
-log-based metrics paired with the alert policies that fire on them — the GCP
-shape of "a metric filter with an alarm on it".
+lifecycle state), the project-level log-router CMEK and storage settings, and
+the log-based metrics paired with the alert policies that fire on them — the GCP
+shape of a metric filter with an alarm on it.
 
-Ported from Prowler's GCP logging + monitoring services (prowler/providers/gcp/
-services/logging/logging_service.py and .../monitoring/monitoring_service.py,
-Apache-2.0). Prowler's Sink projects name/destination/filter/include_children,
-its Metric projects name/type/filter/bucket_name, and its AlertPolicy projects
-display_name/enabled/filters (unwrapping the four condition types); the bucket,
-retention, locked, and CMEK fields come from logging buckets.list, which its
-checks don't need.
+Ported from Prowler's GCP logging and monitoring services (prowler/providers/
+gcp/services/{logging,monitoring}, Apache-2.0). The bucket, retention, locked
+and CMEK fields come from `buckets.list`, which its checks do not need.
 
 Departures from the Prowler original:
-- **GAPIC clients, not discovery.** logging_v2 (ConfigServiceV2 / MetricsServiceV2)
-  and monitoring_v3 (AlertPolicyService) instead of googleapiclient.discovery,
-  per the category's preference.
 - **Ancestor sinks are resolved, not assumed.** Prowler collects org-level sinks
-  for every scanned project's organization. Here the project's ancestry is walked
-  (Resource Manager v3) and sinks are listed at each ancestor, so a project nested
-  under folders is covered too. Those reads sit outside the project, so a
-  project-scoped read-only role legitimately 403s on them: they are tolerated and
-  recorded in metadata.skipped_calls rather than failing the collection.
-- **No verdict on filter coverage.** Prowler's `_sink_delivers_activity_logs`
-  decides whether a non-trivial filter *provably* exports the whole Admin Activity
-  stream, because it has to flip a CIS check to PASS. A fetcher collects facts, so
-  the filter is reported verbatim alongside two plain observations
-  (`exports_all_logs`, `filters_on_audit_logs`) and the judgment is left to a
+  for the scanned project's organization. Here the ancestry is walked (Resource
+  Manager v3) and sinks listed at each ancestor, so a project nested under
+  folders is covered. Those reads sit outside the project, so a project-scoped
+  role legitimately 403s: they are tolerated and recorded in
+  metadata.skipped_calls rather than failing the collection.
+- **No verdict on filter coverage.** Prowler decides whether a non-trivial filter
+  *provably* exports the whole Admin Activity stream because it has to flip a CIS
+  check. The filter is reported verbatim alongside two plain observations
+  (`exports_all_logs`, `filters_on_audit_logs`), leaving the judgment to a
   validator.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
 """
 
 import logging
@@ -64,8 +53,7 @@ from gcp_common import (  # noqa: E402
 
 logger = logging.getLogger("gcp_cloud_logging_configuration")
 
-# GCP allows at most 10 levels of folders between a project and its organization,
-# so the ancestry walk is bounded by the platform, not by a guess.
+# At most 10 folder levels between a project and its org — a platform bound, not a guess.
 _MAX_ANCESTRY_DEPTH = 10
 
 # Destination prefixes the log router supports, longest-lived first.
@@ -77,7 +65,7 @@ _DESTINATION_TYPES = (
 )
 
 
-# --- pure transforms (operate on to_dict() output; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def destination_type(destination: str | None) -> str | None:
     """Which sink destination service a sink writes to."""
@@ -90,9 +78,8 @@ def destination_type(destination: str | None) -> str | None:
 def exports_all_logs(sink_filter: str | None) -> bool:
     """True when the sink's filter excludes nothing.
 
-    An absent or empty filter exports every log entry in scope; Prowler spells
-    the same condition as `filter == "all"` because its discovery response
-    defaults a missing filter to that literal.
+    Prowler spells the same condition as `filter == "all"`, because its discovery
+    response defaults a missing filter to that literal. Both are accepted.
     """
     normalized = (sink_filter or "").strip().lower()
     return normalized in ("", "all")
@@ -101,9 +88,8 @@ def exports_all_logs(sink_filter: str | None) -> bool:
 def filters_on_audit_logs(sink_filter: str | None) -> bool:
     """True when the filter names a Cloud Audit log stream at all.
 
-    Reported as an observation, not a coverage verdict: a filter can name the
-    Admin Activity stream and still narrow it with AND / NOT / severity clauses.
-    Sink filters may carry the stream URL-encoded, so normalize %2F first.
+    An observation, not a coverage verdict — the filter can still narrow the stream
+    with AND/NOT/severity. Sink filters may URL-encode the path, so %2F is normalized.
     """
     normalized = (sink_filter or "").replace("%2F", "/").replace("%2f", "/").lower()
     return "cloudaudit.googleapis.com/" in normalized
@@ -122,9 +108,8 @@ def location_of(resource_name: str | None) -> str | None:
 def sink_record(sink: dict, scope: str = "project") -> dict:
     """Normalize one log sink into an evidence record.
 
-    `scope` is where the sink is defined — "project", or the ancestor resource
-    ("organizations/123", "folders/456"). An ancestor sink only covers this
-    project when include_children is set.
+    `scope` is where the sink is defined: "project", or the ancestor resource
+    ("organizations/123", "folders/456").
     """
     sink_filter = dig_any(sink, "filter") or None
     return {
@@ -148,10 +133,8 @@ def sink_record(sink: dict, scope: str = "project") -> dict:
 def bucket_record(bucket: dict) -> dict:
     """Normalize one log bucket into an evidence record.
 
-    CMEK is the PRESENCE of cmek_settings.kms_key_name (absent ⇒ the
-    Google-managed default, as everywhere else in GCP). `locked` is the
-    tamper-resistance fact: a locked bucket's retention cannot be shortened and
-    the bucket cannot be deleted.
+    `cmek` is the PRESENCE of cmek_settings.kms_key_name (absent ⇒ the Google-managed
+    default); `locked` means retention cannot be shortened nor the bucket deleted.
     """
     kms = dig_any(bucket, "cmek_settings", "kms_key_name") or None
     name = dig_any(bucket, "name")
@@ -174,9 +157,8 @@ def bucket_record(bucket: dict) -> dict:
 def alert_policy_record(policy: dict) -> dict:
     """Normalize one monitoring alert policy into an evidence record.
 
-    The filter (or MQL/PromQL query) is what ties a policy to a log-based metric,
-    and it lives under one of five condition shapes — the same unwrapping
-    Prowler's monitoring service does, plus the PromQL condition it predates.
+    The filter (or query) ties a policy to a log-based metric and hides under one of
+    five condition shapes: Prowler's four, plus the PromQL condition it predates.
     """
     filters = []
     for condition in dig_any(policy, "conditions") or []:
@@ -202,11 +184,7 @@ def alert_policy_record(policy: dict) -> dict:
 
 
 def metric_record(metric: dict, alert_policies: list[dict] | None = None) -> dict:
-    """Normalize one log-based metric, linked to the policies that alert on it.
-
-    A metric with no alert policy referencing it detects nothing — the pairing is
-    the evidence, which is why Prowler's CIS logging checks test both.
-    """
+    """Normalize one log-based metric, linked to the policies that alert on it."""
     name = dig_any(metric, "name")
     alerting = sorted(
         p["display_name"] or p["name"] or ""
@@ -217,8 +195,7 @@ def metric_record(metric: dict, alert_policies: list[dict] | None = None) -> dic
         "name": name,
         "metric_type": dig_any(metric, "metric_descriptor", "type") or None,
         "filter": dig_any(metric, "filter") or None,
-        # Set on a bucket-scoped metric: the metric counts entries in that log
-        # bucket rather than the project's stream.
+        # Set only on a bucket-scoped metric: counts that bucket, not the project stream.
         "bucket_name": dig_any(metric, "bucket_name") or None,
         "disabled": bool(dig_any(metric, "disabled")),
         "alerted": bool(alerting),
@@ -230,10 +207,8 @@ def metric_record(metric: dict, alert_policies: list[dict] | None = None) -> dic
 def project_captures_all_logs(sinks: list[dict]) -> bool:
     """True when some enabled sink exports every log entry for this project.
 
-    A project-scope sink covers the project directly; an ancestor sink only counts
-    with include_children. This is Prowler's `logging_sink_created` rule, kept as
-    a summary fact because it is the one question the AWS CloudTrail evidence set
-    also answers ("is everything being exported somewhere?").
+    Prowler's `logging_sink_created` rule: a project-scope sink counts directly, an
+    ancestor sink only with include_children.
     """
     for sink in sinks:
         if sink["disabled"] or not sink["exports_all_logs"]:
@@ -287,7 +262,7 @@ def settings_record(settings: dict | None) -> dict:
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def _config_client(creds):
     from google.cloud import logging_v2
@@ -298,21 +273,15 @@ def _config_client(creds):
 def _outside_project_scope(exc: BaseException) -> bool:
     """`guard(tolerate=...)` predicate for the reads that sit above the project.
 
-    Resource-hierarchy and ancestor-sink reads are not in a project-scoped
-    read-only role's grant, and the Resource Manager API may not be enabled at
-    all. Either way the project-level evidence is still complete, so these are
-    recorded as skipped rather than failing the collection.
+    Ancestry and ancestor-sink reads sit outside a project-scoped read-only role's
+    grant, and Resource Manager may not be enabled at all. Project-level evidence is
+    complete either way, so these land in metadata.skipped_calls, not a failed run.
     """
     return access_denied(exc) or service_disabled(exc)
 
 
 def collect_ancestry(project, creds, collector: Collector) -> list[str]:
-    """The project's ancestors, nearest first (e.g. folders/1, organizations/2).
-
-    Reading the resource hierarchy is outside a project-scoped role's grant, so a
-    403 here is tolerated: the evidence then covers project-level sinks only and
-    says so in metadata.skipped_calls.
-    """
+    """The project's ancestors, nearest first (e.g. folders/1, organizations/2)."""
     from google.cloud import resourcemanager_v3
 
     def _parent_of_project():
@@ -350,7 +319,6 @@ def collect_sinks(project, creds, collector: Collector, ancestors: list[str]) ->
     from google.cloud import logging_v2
 
     def _lister(parent, scope):
-        """A no-arg callable for guard(), bound to one parent resource."""
         def _call():
             client = _config_client(creds)
             # The GAPIC pager iterates every page; no manual page-token loop.
@@ -484,9 +452,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

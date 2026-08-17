@@ -2,60 +2,39 @@
 """
 GCP Cloud KMS Key Configuration
 
-Every key ring and crypto key in one project, across every KMS location: the key's
-purpose, protection level, rotation schedule, primary version state, the grace
-period before a destroyed version is really gone, and who holds IAM on the key.
+Every key ring and crypto key in one project, across every KMS location: the
+key's purpose, protection level, rotation schedule, primary version state, the
+grace period before a destroyed version is really gone, and who holds IAM on the
+key and on its ring.
 
 This is the key-management counterpart to the data-at-rest evidence sets. Those
-report which resources use a customer-managed key; this one reports whether the
-key itself is managed properly. The findings, in order of severity:
-- **`allUsers` / `allAuthenticatedUsers` on a key or key ring** — anyone can use
-  the key to decrypt, which makes the CMEK on every resource that references it
-  decorative. Prowler's kms_key_not_publicly_accessible.
-- **No rotation period** on a key that supports rotation, or a rotation period
-  longer than 90 days, or a next rotation date more than 90 days out. Prowler
-  splits this across kms_key_rotation_enabled and kms_key_rotation_max_90_days,
-  and the second one deliberately fails when only one of the two conditions holds.
-- **A primary version that is not ENABLED** — a DISABLED or DESTROY_SCHEDULED
-  primary means the key cannot currently do the job something depends on.
-- **A short destroy-scheduled duration** — the window in which an accidental (or
-  malicious) key destruction can still be reversed. The API's floor is 24 hours;
-  the default is 30 days.
-- **The same principal holding `cloudkms.admin` and a crypto-key use role** on one
-  key, which is Prowler's iam_role_kms_enforce_separation_of_duties evaluated at
-  the key rather than at the project.
-
-Ported from Prowler's GCP KMS service (prowler/providers/gcp/services/kms/
-kms_service.py, Apache-2.0), whose CriptoKey projects id/name/location/
-rotation_period/next_rotation_time/key_ring/members, collected by walking
-projects.locations.list → keyRings.list → cryptoKeys.list → cryptoKeys.getIamPolicy.
-
-Departures from the Prowler original:
-- **GAPIC client, not discovery.** google.cloud.kms instead of
-  googleapiclient.discovery, per the category's preference. Its
-  KeyManagementServiceClient carries the Locations and IAM mixins, so the same
-  four-call walk runs on one client.
-- **Purpose, protection level, primary version and destroy window are collected.**
-  Prowler's three checks need only rotation and members. A key ring in HSM at
-  protection level SOFTWARE is a materially different control from the same ring
-  in HSM hardware, and neither is visible from the rotation fields.
-- **Key ring IAM is read as well as key IAM.** Prowler reads the policy on each
-  crypto key. A binding on the RING inherits to every key in it, so a public key
-  ring is a public key that the per-key policy never mentions.
-- **Rotation is reported against what the key supports.** Only ENCRYPT_DECRYPT keys
-  can carry a rotation period; asymmetric signing and MAC keys cannot. Prowler's
-  90-day check fails them all anyway, so the summary counts rotation compliance
-  over the eligible keys and says how many there were.
-- **Key versions are not enumerated.** The key's `primary` version and its
-  `version_template` answer the state and algorithm questions in the response
-  already returned by cryptoKeys.list; listing every version of every key would
-  multiply the call count without adding a control fact.
+report which resources use a customer-managed key; this reports whether the key
+itself is managed properly — `allUsers` on a key or ring being the critical one,
+since it makes the CMEK on every resource referencing that key decorative.
 
 No key material is read. cryptoKeys.list and getIamPolicy return metadata and
-policy only — the raw key never leaves KMS, and no decrypt or export call is made.
+policy only; no decrypt or export call is made.
 
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+Ported from Prowler's GCP KMS service (prowler/providers/gcp/services/kms/
+kms_service.py, Apache-2.0), which walks projects.locations.list → keyRings.list
+→ cryptoKeys.list → cryptoKeys.getIamPolicy.
+
+Departures from the Prowler original:
+- **Key ring IAM is read as well as key IAM.** A binding on the RING inherits to
+  every key in it, so a public key ring is a public key the per-key policy never
+  mentions.
+- **Rotation is reported against what the key supports.** Only ENCRYPT_DECRYPT
+  keys can carry a rotation period; asymmetric signing and MAC keys cannot.
+  Prowler's 90-day check fails them all anyway, so compliance is counted over the
+  eligible keys and the count is stated.
+- **Purpose, protection level, primary version and destroy window are
+  collected.** Prowler's checks need only rotation and members, but a ring at
+  protection level SOFTWARE is a materially different control from one in HSM
+  hardware, and neither is visible from the rotation fields.
+- **Key versions are not enumerated.** The `primary` version and
+  `version_template` already in the cryptoKeys.list response answer the state and
+  algorithm questions; listing every version of every key would multiply the call
+  count without adding a control fact.
 """
 
 import logging
@@ -90,17 +69,15 @@ _MAX_ROTATION_DAYS = 90
 
 _SECONDS_PER_DAY = 24 * 3600
 
-# The two members that mean "not access-controlled". On a KMS key this is the
-# critical finding: it makes every CMEK that references the key meaningless.
+# The two members that mean "not access-controlled".
 _PUBLIC_MEMBERS = frozenset({"allUsers", "allAuthenticatedUsers"})
 
 # Only a symmetric encrypt/decrypt key can carry a rotation period; asymmetric
-# and MAC keys are rotated by creating a new version, so "no rotation period" on
-# one of those is the API's design, not a misconfiguration.
+# and MAC keys rotate by new version, so "no rotation period" on one of those is
+# the API's design, not a misconfiguration.
 _ROTATABLE_PURPOSES = frozenset({"ENCRYPT_DECRYPT"})
 
-# Protection levels that put the key material in dedicated hardware or outside
-# Google entirely.
+# HSM holds key material in dedicated hardware; EXTERNAL* holds it outside Google.
 _HSM_PROTECTION_LEVELS = frozenset({"HSM"})
 _EXTERNAL_PROTECTION_LEVELS = frozenset({"EXTERNAL", "EXTERNAL_VPC"})
 
@@ -118,7 +95,7 @@ _KMS_USE_ROLES = frozenset(
 )
 
 
-# --- pure transforms (operate on to_dict() output; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def parse_timestamp(value) -> datetime | None:
     """RFC3339 timestamp string → aware datetime, or None when absent/odd."""
@@ -134,10 +111,9 @@ def parse_timestamp(value) -> datetime | None:
 def duration_seconds(value) -> int | None:
     """A protobuf Duration in any of the shapes it serializes to → seconds.
 
-    `to_dict()` renders a Duration as the string "7776000s"; a Duration read
-    straight off the message or out of captured JSON can instead be
-    {"seconds": 7776000}. Prowler assumes the string form and slices the trailing
-    "s" off by hand, which crashes on the dict form.
+    `to_dict()` renders a Duration as the string "7776000s"; off the message or
+    out of captured JSON it can instead be {"seconds": 7776000}. Prowler assumes
+    the string form and slices the trailing "s" by hand, crashing on the dict.
     """
     if value is None or isinstance(value, bool):
         return None
@@ -164,9 +140,8 @@ def duration_days(value) -> int | None:
 def duration_text(value) -> str | None:
     """A protobuf Duration, normalized to the API's own "<seconds>s" spelling.
 
-    So the evidence reads the same whether the Duration arrived as a string or as
-    a {"seconds": n} mapping, instead of leaking a Python dict repr into a field a
-    validator might match on.
+    Either input shape then reads the same in the evidence, instead of leaking a
+    Python dict repr into a field a validator might match on.
     """
     seconds = duration_seconds(value)
     if seconds is not None:
@@ -177,10 +152,9 @@ def duration_text(value) -> str | None:
 def resource_segment(resource_name: str | None, key: str) -> str | None:
     """The segment following `key` in a KMS resource path.
 
-    A crypto key's name is `projects/*/locations/*/keyRings/*/cryptoKeys/*`, so
-    location and key ring are read out of the name by label rather than by index
-    (Prowler takes `name.split("/")[3]`, which breaks the moment the path shape
-    changes).
+    Location and key ring are read out of the name by label, not by index:
+    Prowler takes `name.split("/")[3]`, which breaks the moment the path shape
+    changes.
     """
     parts = (resource_name or "").split("/")
     if key in parts:
@@ -220,7 +194,6 @@ def iam_summary(bindings: list[dict] | None) -> dict:
         "publicly_accessible": bool(public),
         "kms_admin_members": sorted(admins),
         "kms_use_members": sorted(users),
-        # A principal that can both administer and use the key.
         "separation_of_duties_members": sorted(admins & users),
         "separation_of_duties_violated": bool(admins & users),
     }
@@ -250,8 +223,6 @@ def crypto_key_record(key: dict, bindings: list[dict] | None, now: datetime) -> 
         "location": resource_segment(name, "locations"),
         "purpose": purpose,
         "create_time": dig_any(key, "create_time") or None,
-        # Reported so a missing rotation period on an asymmetric key reads as
-        # "cannot rotate on a schedule" rather than as a finding.
         "rotation_supported": purpose in _ROTATABLE_PURPOSES,
         "rotation_enabled": rotation_period is not None,
         "rotation_period": duration_text(rotation_period),
@@ -292,8 +263,6 @@ def key_ring_record(ring: dict, keys: list[dict], bindings: list[dict] | None) -
         "location": resource_segment(name, "locations"),
         "create_time": dig_any(ring, "create_time") or None,
         "crypto_key_count": len(keys),
-        # A binding here inherits to every key in the ring, which is why the ring
-        # policy is collected and not only the per-key one.
         "crypto_keys": sorted(k["key_id"] or "" for k in keys),
     }
     record.update(iam_summary(bindings))
@@ -355,7 +324,6 @@ def summarize(
             if k["primary_version_state"] and not k["primary_version_enabled"]
         ),
         "shortest_destroy_scheduled_days": min(destroy_days) if destroy_days else None,
-        # The critical finding: a key anyone can use.
         "publicly_accessible": any(
             r["publicly_accessible"] for r in rings + keys
         ),
@@ -369,13 +337,11 @@ def summarize(
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def policy_bindings(policy) -> list[dict]:
-    """google.iam.v1.Policy → {role, members} dicts.
-
-    Raw protobuf rather than a proto-plus message, so there is no to_dict();
-    reading the two fields that matter beats pulling in json_format.
+    """google.iam.v1.Policy → {role, members} dicts. Raw protobuf, not proto-plus:
+    no to_dict(), and reading the two fields that matter beats json_format.
     """
     return [{"role": b.role, "members": list(b.members)} for b in policy.bindings]
 
@@ -389,18 +355,16 @@ def _client(creds):
 def collect_locations(project, creds, collector: Collector) -> tuple[list[str], bool]:
     """Every KMS location the project can hold key rings in.
 
-    Cloud KMS has no wildcard location for keyRings.list, so the locations have to
-    be enumerated first and the ring listing repeated per location — the same walk
-    Prowler does. A project that never enabled cloudkms.googleapis.com 403s here
-    with SERVICE_DISABLED, which is evidence ("this project manages no keys of its
-    own"), so it is tolerated and reported as an unreadable API.
+    keyRings.list has no wildcard location, so locations are enumerated first and
+    the ring listing repeated per location — Prowler's walk. A project that never
+    enabled cloudkms.googleapis.com 403s here with SERVICE_DISABLED, itself
+    evidence, so it is tolerated and reported as an unreadable API.
     """
     def _list():
         client = _client(creds)
-        # list_locations comes from the generic Locations mixin rather than the
-        # KMS surface, so unlike every other call here it returns a bare
-        # ListLocationsResponse instead of a pager — iterating the response
-        # itself raises TypeError, and the page token has to be walked by hand.
+        # list_locations comes from the generic Locations mixin, not the KMS
+        # surface: it returns a bare ListLocationsResponse, not a pager. Iterating
+        # the response raises TypeError, so the page token is walked by hand.
         found, token = [], ""
         while True:
             response = client.list_locations(
@@ -531,9 +495,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

@@ -2,45 +2,30 @@
 """
 GCP BigQuery Dataset Configuration
 
-For each BigQuery dataset in one project, reports the default (dataset-level)
-CMEK encryption key, the access-control list with any public grant called out,
-the default table expiration, and the dataset's location. BigQuery is always
-encrypted at rest, so "encrypted: true" can never fail — the facts that vary are
-CMEK vs Google-managed, who is on the ACL, and where the data lives.
+For each BigQuery dataset in one project: the dataset-level CMEK key, the access
+control list with any public grant called out, the default table expiration and
+the location. BigQuery is always encrypted at rest, so "encrypted: true" can
+never fail — what varies is CMEK vs Google-managed, who is on the ACL, and where
+the data lives.
 
 Ported from Prowler's GCP BigQuery service (prowler/providers/gcp/services/
-bigquery/bigquery_service.py, Apache-2.0) and its three checks
-(bigquery_dataset_cmk_encryption, bigquery_dataset_public_access,
-bigquery_table_cmk_encryption). Prowler's Dataset collapses the datasets.get
-response into name/id/region plus two booleans — cmk_encryption (any
-defaultEncryptionConfiguration) and public (the string "allUsers" or
-"allAuthenticatedUsers" appearing anywhere in the stringified ACL). The response
-it already reads carries the key name, the individual ACL entries, the default
-table and partition expirations, and the labels, which is why this projection is
-wider than the checks.
+bigquery/bigquery_service.py, Apache-2.0) and its dataset checks. The
+`datasets.get` response Prowler already reads carries the key name, the
+individual ACL entries and the expirations, which is why this projection is
+wider than its two booleans.
 
-Uses the official GAPIC-era client (google.cloud.bigquery) per the category's
-preference, rather than Prowler's googleapiclient.discovery build of bigquery v2.
-`Dataset.to_api_repr()` hands back the same REST resource dict Prowler reads, so
-the pure transforms below consume that shape directly.
-
-Three deliberate departures from the Prowler original:
-- **Public access is classified per ACL entry, not grepped.** A substring match on
-  the whole stringified ACL also fires on a dataset owned by, say,
-  `allusers-admin@example.com`. Here each entry's principal is read from its own
-  field (`specialGroup`, `iamMember`, …) and compared exactly.
-- **Human identities are counted, not enumerated.** ACL entries naming a person or
-  a group carry their role and a count; the address is not copied. Public,
-  domain-wide, special-group and authorized-view/routine/dataset entries ARE named
-  — those are the posture facts, and none of them is a personal identity. (Same
-  rule the IAM service-accounts fetcher applies to project bindings.)
+Departures from the Prowler original:
+- **Public access is classified per ACL entry, not grepped.** A substring match
+  on the stringified ACL also fires on a dataset owned by
+  `allusers-admin@example.com`. Each entry's principal is read from its own field
+  and compared exactly.
+- **Human identities are counted, not enumerated.** Entries naming a person or
+  group carry their role and a count, not the address. Public, domain-wide,
+  special-group and authorized-view entries ARE named — those are posture facts,
+  not personal identities.
 - **Table-level CMEK is out of scope.** Prowler's bigquery_table_cmk_encryption
-  does a tables.get per table, which is one API call per table in the project.
-  Dataset default encryption is the control that governs new tables; a
-  table-by-table inventory belongs in its own evidence set if it is wanted.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+  does a tables.get per table. Dataset default encryption is the control that
+  governs new tables; a per-table inventory belongs in its own evidence set.
 """
 
 import logging
@@ -67,12 +52,10 @@ from gcp_common import (  # noqa: E402
 
 logger = logging.getLogger("gcp_bigquery_dataset_configuration")
 
-# The two principals that make a dataset readable outside the organization.
 # allUsers is anyone on the internet; allAuthenticatedUsers is any Google account.
 _PUBLIC_PRINCIPALS = frozenset({"allusers", "allauthenticatedusers"})
 
-# The ACL entry fields that identify a principal, in the order the API documents
-# them. Exactly one is set per entry.
+# The ACL entry fields that identify a principal, in API order. Exactly one is set.
 _PRINCIPAL_KEYS = (
     "userByEmail",
     "groupByEmail",
@@ -84,26 +67,22 @@ _PRINCIPAL_KEYS = (
     "dataset",
 )
 
-# Entry fields whose value is a person or a mailing list. Their role and count are
-# evidence; their address is a different evidence set's business.
+# Entry fields whose value is a person or a mailing list.
 _PERSONAL_KEYS = frozenset({"userByEmail", "groupByEmail"})
 
-# iamMember carries a full IAM principal string, so a personal identity can arrive
-# through it too.
+# iamMember carries a full IAM principal string, so a person can arrive through it too.
 _PERSONAL_IAM_PREFIXES = ("user:", "group:", "principal:", "principalset:")
 
 # Entry fields whose value is a BigQuery resource reference rather than a string.
 _RESOURCE_KEYS = frozenset({"view", "routine", "dataset"})
 
 
-# --- pure transforms (operate on REST-style dicts; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def is_public_principal(principal) -> bool:
     """Exact match against allUsers / allAuthenticatedUsers.
 
-    Tolerates the `iamMember` spelling, where the principal can arrive bare or
-    prefixed. A substring test (Prowler's approach) also matches an ordinary
-    account whose address happens to contain the word.
+    Tolerates the `iamMember` spelling, where the principal arrives bare or prefixed.
     """
     value = str(principal or "").strip().lower()
     return value in _PUBLIC_PRINCIPALS or value.split(":")[-1] in _PUBLIC_PRINCIPALS
@@ -129,8 +108,7 @@ def resource_path(ref) -> str | None:
 def access_entry_record(entry: dict) -> dict:
     """One dataset ACL entry: its role, principal type, and principal when nameable.
 
-    `principal` is None for an entry naming a person or a group — see the module
-    docstring. `public` is the fact the whole entry exists to surface.
+    `principal` is None for a person or group entry — see the module docstring.
     """
     principal_type = next((k for k in _PRINCIPAL_KEYS if dig_any(entry, k) is not None), None)
     raw = dig_any(entry, principal_type) if principal_type else None
@@ -158,10 +136,9 @@ def access_entry_record(entry: dict) -> dict:
 def dataset_record(dataset: dict) -> dict:
     """Normalize one dataset resource dict into an evidence record.
 
-    CMEK is the PRESENCE of defaultEncryptionConfiguration.kmsKeyName. On a
-    Google-managed dataset the whole block is absent, so this tests for presence
-    rather than for an empty value — the same rule the Cloud SQL, Cloud Storage
-    and Persistent Disk encryption fetchers use.
+    CMEK is the PRESENCE of defaultEncryptionConfiguration.kmsKeyName — the block is
+    absent entirely on a Google-managed dataset — the same rule the Cloud SQL, Cloud
+    Storage and Persistent Disk encryption fetchers use.
     """
     reference = dig_any(dataset, "dataset_reference") or {}
     kms = dig_any(dataset, "default_encryption_configuration", "kms_key_name")
@@ -230,18 +207,14 @@ def _grants_to(dataset: dict, principal: str) -> bool:
 def summarize(datasets: list[dict], *, api_readable: bool = True) -> dict:
     cmek = sum(1 for d in datasets if d["cmek"])
     public = sum(1 for d in datasets if d["publicly_accessible"])
-    # Counted independently: a dataset can grant both, so one is not the other's
-    # complement.
+    # Counted independently: a dataset can grant both, so one is not the other's inverse.
     all_users = sum(1 for d in datasets if _grants_to(d, "allusers"))
     all_authenticated = sum(1 for d in datasets if _grants_to(d, "allauthenticatedusers"))
     return {
-        # False when bigquery.googleapis.com is not enabled on this project
-        # (recorded in metadata.skipped_calls) — distinguishing "no datasets" from
-        # "could not look".
+        # False when bigquery.googleapis.com is not enabled on this project (recorded
+        # in metadata.skipped_calls) — "no datasets" vs "could not look".
         "bigquery_api_readable": api_readable,
         "total_datasets": len(datasets),
-        # BigQuery is always encrypted at rest; CMEK vs Google-managed is the fact
-        # that varies, so coverage is expressed over CMEK, not over "encrypted".
         "cmek_datasets": cmek,
         "google_managed_datasets": len(datasets) - cmek,
         "cmek_percentage": coverage_percentage(cmek, len(datasets)),
@@ -260,14 +233,14 @@ def summarize(datasets: list[dict], *, api_readable: bool = True) -> dict:
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def collect_datasets(project, creds, collector: Collector) -> list[dict] | None:
     """Every dataset in the project, or None when BigQuery could not be listed.
 
-    datasets.list returns only a reference and the location, so each dataset is
-    fetched once for its ACL and encryption config — the same two-step Prowler
-    does. That is one call per dataset, not per table.
+    datasets.list returns only a reference and the location, so each dataset is fetched
+    once for its ACL and encryption config — Prowler's same two-step. One call per
+    dataset, not per table.
     """
     from google.cloud import bigquery
 
@@ -335,9 +308,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

@@ -44,18 +44,5 @@ evidence_set:
   name: Compute Engine Instance Configuration
   instructions: >
     Script: fetcher.py. Google Cloud client library calls: compute
-    instances.aggregatedList (one call covers every zone) and compute
-    projects.get for the project-wide commonInstanceMetadata defaults. Per
-    instance: shieldedInstanceConfig (enableSecureBoot / enableVtpm /
-    enableIntegrityMonitoring), confidentialInstanceConfig, canIpForward,
-    deletionProtection, scheduling (onHostMaintenance, automaticRestart,
-    preemptible, provisioningModel), serviceAccounts[].email + .scopes,
-    networkInterfaces[].accessConfigs[].natIP for public-IP presence, network
-    tags, and the metadata keys enable-oslogin, enable-oslogin-2fa,
-    serial-port-enable and block-project-ssh-keys. Effective OS Login is the
-    instance's own metadata when set, otherwise the project default, and
-    os_login_source records which level decided it. Metadata is read key by key
-    so startup scripts and SSH keys never enter the evidence — SSH keys are
-    reduced to a presence flag. Disk encryption is a separate evidence set
-    (gcp_persistent_disk_encryption_status). A project with the Compute API
-    disabled is recorded as not readable rather than failing.
+    instances.aggregatedList(), projects.get() for the project-wide metadata
+    defaults instances inherit. One evidence file per project.

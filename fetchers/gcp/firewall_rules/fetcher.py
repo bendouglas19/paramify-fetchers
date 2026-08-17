@@ -3,42 +3,28 @@
 GCP VPC Firewall Rules
 
 Every VPC firewall rule in one project with the fields that decide network
-exposure: direction, the allowed and denied protocol/port ranges, source and
-destination ranges, the target tags / service accounts the rule narrows to,
-priority, whether it is disabled, and whether rule logging is on. This is the
-evidence for "is SSH / RDP / anything open to 0.0.0.0/0".
+exposure: direction, allowed and denied protocol/port ranges, source and
+destination ranges, the target tags and service accounts the rule narrows to,
+priority, disabled state and rule logging. This is the evidence for "is SSH, RDP
+or anything else open to 0.0.0.0/0".
+
+Only `allowed` rules can expose a port, so the exposure fields derive from those
+alone; `denied` entries are still reported, being part of the segmentation story.
 
 Ported from Prowler's GCP compute service (prowler/providers/gcp/services/
-compute/compute_service.py, Apache-2.0) and its two firewall checks,
-compute_firewall_ssh_access_from_the_internet_allowed and
-compute_firewall_rdp_access_from_the_internet_allowed. Prowler's Firewall model
-projects only name/id/source_ranges/direction/allowed_rules because those two
-checks need no more; destination ranges, target tags / service accounts,
-priority, `disabled` and logConfig all come from the same `firewalls.list`
-response, so this is a wider projection of one API call, not extra calls.
+compute/compute_service.py, Apache-2.0) and its two firewall checks. The
+port-overlap algorithm is Prowler's, generalized from its two hardcoded ports to
+a named table (SENSITIVE_PORTS).
 
-The port-overlap algorithm is Prowler's, generalized from its two hardcoded
-ports to a named table (SENSITIVE_PORTS): protocol `all` exposes everything, a
-tcp rule with no `ports` list exposes every TCP port, and a `lower-higher` range
-is expanded. Three deliberate departures:
-
+Departures from the Prowler original:
 - **`disabled` is honored.** Prowler's checks ignore it, so a switched-off
-  `default-allow-ssh` still reads as SSH open to the internet. Here a disabled
-  rule is reported in full but excluded from the exposure counts, with
-  `enforced: false` saying why.
+  `default-allow-ssh` still reads as SSH open to the internet. A disabled rule is
+  reported in full but excluded from the exposure counts, with `enforced: false`
+  saying why.
 - **IPv6 counts as the internet.** Prowler matches only `0.0.0.0/0`; `::/0` is
-  the same exposure and is matched too.
-- **No verdict, just the facts.** A fetcher collects evidence, so the record
-  carries the observations (`open_to_internet`,
-  `internet_exposed_sensitive_services`, `exposes_all_ports`) and the raw
-  protocol/port lists alongside them; the compliance judgment is a validator's.
-
-Only `allowed` rules can expose a port, so the exposure fields are derived from
-`allowed` alone — `denied` entries are still reported, because a deny rule is
-part of the segmentation story.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+  the same exposure.
+- **No verdict, just the facts.** The record carries the observations and the raw
+  protocol/port lists beside them; the compliance judgment is a validator's.
 """
 
 import logging
@@ -66,8 +52,8 @@ from gcp_common import (  # noqa: E402
 
 logger = logging.getLogger("gcp_firewall_rules")
 
-# Source ranges that mean "the whole internet". Prowler only matches the IPv4
-# any-address; a dual-stack VPC with ::/0 is equally exposed.
+# "The whole internet". Prowler matches only the IPv4 any-address; a dual-stack
+# VPC with ::/0 is equally exposed.
 INTERNET_RANGES = frozenset({"0.0.0.0/0", "::/0"})
 
 # Ports whose exposure to the internet is the finding, and the service name
@@ -95,20 +81,19 @@ SENSITIVE_PORTS = {
     27017: "mongodb",
 }
 
-# Protocols a port number is meaningful for. `all` is handled separately (it
-# covers every protocol and every port). Every entry in SENSITIVE_PORTS is a TCP
-# service, matching Prowler's tcp-only port matching.
+# Protocols a port number is meaningful for; `all` is handled separately. Every
+# SENSITIVE_PORTS entry is TCP, matching Prowler's tcp-only port matching.
 _PORT_PROTOCOLS = ("tcp",)
 
 
-# --- pure transforms (operate on Firewall.to_dict() / REST dicts; unit-tested) ---
+# --- pure transforms ---
 
 def port_spec_covers(spec, port: int) -> bool:
     """True when a Compute `ports` entry covers `port`.
 
-    Entries are either a single port ("22") or an inclusive range ("3000-3100"),
-    per Prowler's expansion. An unparseable entry is reported as no match rather
-    than raising — a malformed rule must not take down the collection.
+    Entries are a single port ("22") or an inclusive range ("3000-3100"), per
+    Prowler's expansion. An unparseable entry counts as no match rather than
+    raising: a malformed rule must not take down the collection.
     """
     text = str(spec).strip()
     if "-" in text:
@@ -127,10 +112,9 @@ def protocol_rule(entry: dict) -> dict:
     """Normalize one `allowed` / `denied` entry.
 
     The protocol key is `I_p_protocol` from a GAPIC `to_dict()` (verified against
-    google-cloud-compute) and `IPProtocol` over REST, hence the spelling list.
-    An entry with no `ports` means every port of that protocol, which is the
-    exposure Prowler flags — so it is stated explicitly rather than left as an
-    empty list a reader has to interpret.
+    google-cloud-compute) and `IPProtocol` over REST, hence the spelling list. No
+    `ports` means every port of that protocol — the exposure Prowler flags — so
+    `all_ports` states it rather than leaving an empty list to interpret.
     """
     ports = [str(p) for p in (first(entry, "ports") or [])]
     protocol = first(entry, "I_p_protocol", "IPProtocol", "ip_protocol", "i_p_protocol")
@@ -187,8 +171,7 @@ def firewall_record(firewall: dict) -> dict:
 
     ingress = str(direction or "").upper() == "INGRESS"
     from_internet = bool(INTERNET_RANGES & set(source_ranges))
-    # An egress rule, a deny rule, or a switched-off rule exposes nothing, so all
-    # three drop out of the exposure derivation while still being reported.
+    # Egress, deny and disabled rules expose nothing; all three are still reported.
     exposing = ingress and from_internet and not disabled and bool(allowed)
 
     return {
@@ -210,8 +193,7 @@ def firewall_record(firewall: dict) -> dict:
         "source_service_accounts": source_service_accounts,
         "target_tags": target_tags,
         "target_service_accounts": target_service_accounts,
-        # No target selector means the rule hits every instance in the network —
-        # the difference between a scoped exception and a project-wide hole.
+        # No target selector means the rule hits every instance in the network.
         "applies_to_all_instances": not target_tags and not target_service_accounts,
         "source_includes_internet": from_internet,
         "open_to_internet": exposing,
@@ -225,8 +207,6 @@ def firewall_record(firewall: dict) -> dict:
         )
         if exposing
         else [],
-        # Firewall Rules Logging: without it there is no record of what the rule
-        # actually permitted.
         "logging_enabled": bool(first(log_config, "enable")),
         "log_metadata": first(log_config, "metadata"),
         "creation_timestamp": first(firewall, "creationTimestamp", "creation_timestamp"),
@@ -238,9 +218,8 @@ def summarize(rules: list[dict], *, api_readable: bool = True) -> dict:
     services = sorted({s for r in exposing for s in r["internet_exposed_sensitive_services"]})
     logging_enabled = sum(1 for r in rules if r["logging_enabled"])
     return {
-        # False when compute.googleapis.com is not enabled on this project
-        # (recorded in metadata.skipped_calls) or the list call failed —
-        # distinguishing "no firewall rules" from "could not look".
+        # False when compute.googleapis.com is not enabled (recorded in
+        # metadata.skipped_calls) or the list call failed — not "no rules".
         "compute_api_readable": api_readable,
         "total_rules": len(rules),
         "ingress_rules": sum(1 for r in rules if str(r["direction"] or "").upper() == "INGRESS"),
@@ -249,8 +228,7 @@ def summarize(rules: list[dict], *, api_readable: bool = True) -> dict:
         "deny_rules": sum(1 for r in rules if r["action"] == "deny"),
         "disabled_rules": sum(1 for r in rules if r["disabled"]),
         "rules_open_to_internet": sum(1 for r in rules if r["open_to_internet"]),
-        # The headline: enforced ingress allow rules that let the internet reach a
-        # remote-administration or datastore port.
+        # Enforced ingress allow rules reaching a SENSITIVE_PORTS service.
         "rules_exposing_sensitive_ports_to_internet": len(exposing),
         "internet_exposed_sensitive_services": services,
         "ssh_open_to_internet": "ssh" in services,
@@ -265,7 +243,7 @@ def summarize(rules: list[dict], *, api_readable: bool = True) -> dict:
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def collect_firewall_rules(project, creds, collector: Collector) -> list[dict] | None:
     """Every firewall rule in the project, or None when Compute could not be listed."""
@@ -273,7 +251,7 @@ def collect_firewall_rules(project, creds, collector: Collector) -> list[dict] |
 
     def _list():
         client = compute_v1.FirewallsClient(credentials=creds)
-        # Firewall rules are a global resource; the GAPIC pager walks every page.
+        # Firewall rules are a global resource — no per-region walk.
         return [
             firewall_record(compute_v1.Firewall.to_dict(f))
             for f in client.list(project=project)
@@ -320,9 +298,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

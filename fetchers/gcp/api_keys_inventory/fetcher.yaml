@@ -43,23 +43,5 @@ evidence_set:
   reference_id: EVD-GCP-API-KEYS
   name: API Keys Inventory and Restrictions
   instructions: >
-    Script: fetcher.py. Google Cloud client library call: apikeys v2
-    projects.locations.keys.list against projects/<id>/locations/global (the only
-    location API keys exist in). Per key this reports uid, resource name,
-    displayName, createTime, updateTime, deleteTime, the derived age in days and
-    days since last update, and the restrictions block unpacked into its axes —
-    apiTargets (service plus the methods each target is narrowed to),
-    browserKeyRestrictions allowedReferrers, serverKeyRestrictions allowedIps,
-    androidKeyRestrictions allowed application package names, and
-    iosKeyRestrictions allowedBundleIds. A key whose only API target is
-    cloudapis.googleapis.com counts as having no API restriction, since that
-    wildcard grants every Cloud API. A key with neither an API restriction nor a
-    client restriction is reported as unrestricted. Key age is computed against
-    collection time and counted against a 90-day rotation interval, because an API
-    key has no expiry. No key material is read: the v2 API returns key strings only
-    from the separate GetKeyString method, which this fetcher never calls, and every
-    field is projected by name so a key string could not reach the evidence file
-    even if keys.list began returning one — recorded as
-    summary.key_material_collected: false. When apikeys.googleapis.com is not
-    enabled on the project the call is tolerated and reported as
-    summary.api_keys_api_readable: false rather than as a collection failure.
+    Script: fetcher.py. Google Cloud client library call: apikeys
+    keys.list(). No key string is read. One evidence file per project.

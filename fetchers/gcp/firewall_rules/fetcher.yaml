@@ -43,14 +43,4 @@ evidence_set:
   name: VPC Firewall Rules
   instructions: >
     Script: fetcher.py. Google Cloud client library call: compute
-    firewalls.list (a global resource — one call covers the project). Per rule:
-    direction, priority, disabled, network, allowed[] and denied[]
-    (IPProtocol + ports, ranges expanded), sourceRanges, destinationRanges,
-    sourceTags, sourceServiceAccounts, targetTags, targetServiceAccounts and
-    logConfig.enable. Exposure is derived only from ENFORCED ingress allow rules
-    whose sourceRanges include 0.0.0.0/0 or ::/0: protocol `all` or a tcp entry
-    with no ports list counts as every port, and port ranges are expanded against
-    a fixed table of remote-administration and datastore ports (SSH 22, RDP 3389,
-    telnet, FTP, SMB, MSRPC, MySQL, PostgreSQL, MSSQL, Oracle, Redis, MongoDB,
-    Elasticsearch, memcached, VNC, Docker API, etcd). A project with the Compute
-    API disabled is recorded as not readable rather than failing.
+    firewalls.list(). One evidence file per project.

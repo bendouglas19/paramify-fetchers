@@ -44,23 +44,6 @@ evidence_set:
   name: Cloud KMS Key Configuration and Rotation
   instructions: >
     Script: fetcher.py. Google Cloud client library calls: cloudkms
-    projects.locations.list (Cloud KMS has no wildcard location, so the ring
-    listing is repeated per location), keyRings.list per location, cryptoKeys.list
-    per ring, and getIamPolicy on both each key ring and each crypto key. Per key
-    this reports purpose, createTime, versionTemplate protectionLevel and
-    algorithm, rotationPeriod and nextRotationTime, destroyScheduledDuration, the
-    primary version's id / state / protectionLevel / algorithm / generateTime, and
-    importOnly. Rotation compliance requires BOTH a rotation period of 90 days or
-    less AND a next rotation time within 90 days, and is measured only over keys
-    whose purpose is ENCRYPT_DECRYPT, since asymmetric and MAC keys cannot carry a
-    rotation period. Key ring policies are collected as well as key policies
-    because a binding on the ring inherits to every key in it. Each policy yields
-    its role/member bindings, the allUsers / allAuthenticatedUsers members, and any
-    principal holding both roles/cloudkms.admin and a crypto-key use role on the
-    same resource. When cloudkms.googleapis.com is not enabled on the project the
-    location listing is tolerated and reported as summary.kms_api_readable: false
-    rather than as a collection failure. No key material is read: cryptoKeys.list
-    and getIamPolicy return metadata and policy only, and no decrypt or export call
-    is made. Key versions are not enumerated individually — the primary version and
-    the version template in the list response answer the state and algorithm
-    questions.
+    locations.list(), then keyRings.list() per location, cryptoKeys.list()
+    per ring, and getIamPolicy() on each ring and key. No key material is
+    read. One evidence file per project.

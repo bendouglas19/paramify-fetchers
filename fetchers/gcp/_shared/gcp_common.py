@@ -1,30 +1,16 @@
 """Shared helpers for the GCP evidence fetchers.
 
-Every GCP fetcher follows the same shape (mirroring the AWS category's
-`_shared/aws.sh`): resolve the target project from ADC, collect one evidence
-set, wrap it in a deterministic payload with a small metadata block, and exit
-non-zero if any API call failed so a partial failure never looks like success.
+Every GCP fetcher resolves its target project from ADC, collects one evidence
+set, and exits non-zero if any API call failed, so a partial failure never
+looks like success.
 
-Nothing here imports a Google client library — the heavy `google.*` imports are
-kept lazy inside each fetcher's `collect_*()` so the pure transform functions
-(and their tests) import with only the standard library present.
+Nothing here imports a Google client library — the `google.*` imports stay lazy
+inside each fetcher's `collect_*()`, so the pure transforms (and their tests)
+import with only the standard library present.
 
-Design notes:
-- **Auth is ADC only.** `google.auth.default()` resolves the credential and the
-  default project. No secret is declared or read; see fetchers/_categories/gcp.yaml
-  for the resolution order and why GOOGLE_APPLICATION_CREDENTIALS is deliberately
-  not wired.
-- **`environment`** is read from GCP_ENVIRONMENT (set per target in the manifest)
-  and written into the payload's metadata block. The runner-built envelope does
-  not carry an `environment` field, so it lives in the payload — see the module
-  README / SETUP notes for the rationale.
-- **Determinism.** Resource lists are sorted by a stable identifier and the file
-  is written with sort_keys=True, so a re-run with unchanged infra is byte-stable
-  and regex validators stay quiet.
-- **Failure reporting.** A non-zero exit says *that* collection failed;
-  `write_status()` says *why* (see docs/fetcher_contract.md § Output). Without it
-  the runner falls back to the tail of stderr — which, on the way out, is the
-  "Evidence saved to ..." INFO line.
+Resource lists are sorted by a stable identifier and written with
+sort_keys=True, so a re-run against unchanged infrastructure is byte-stable and
+regex validators stay quiet.
 """
 
 from __future__ import annotations
@@ -37,13 +23,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-# Read-only scope for every GCP fetcher — least privilege at the token level, on
-# top of the read-only IAM role the setup notes define.
+# Least privilege at the token level, on top of the read-only IAM role.
 READ_ONLY_SCOPES = ["https://www.googleapis.com/auth/cloud-platform.read-only"]
 
-# The failure categories the runner accepts in the `code` field of the status
-# file. Exit codes stay binary (0 / non-zero), so the category lives here rather
-# than carving up an exit-code space shared with the shell and signals.
+# Categories the runner accepts in the status file's `code`. Exit codes stay
+# binary (0 / non-zero); the category goes here instead.
 STATUS_CODES = (
     "auth_failed",
     "not_authorized",
@@ -69,10 +53,9 @@ def sanitize_for_filename(value: str) -> str:
 def basename(resource_url: Optional[str]) -> Optional[str]:
     """Last path segment of a GCP self-link / partial URL.
 
-    Compute returns fully-qualified URLs for `zone`, `type`, `sourceDisk`, etc.
-    (e.g. ".../zones/us-central1-a"); the human-meaningful part is the tail. KMS
-    key `name` values are already relative resource paths and are left whole by
-    callers that want the full path.
+    Compute returns fully-qualified URLs for `zone`, `type`, `sourceDisk`; KMS
+    `name` values are already relative paths, so callers wanting the whole path
+    skip this.
     """
     if not resource_url:
         return resource_url
@@ -80,11 +63,8 @@ def basename(resource_url: Optional[str]) -> Optional[str]:
 
 
 def first(obj: Optional[Dict[str, Any]], *keys: str) -> Any:
-    """Return the first present, non-None value among `keys` in `obj`.
-
-    Defensive against camelCase (REST / Compute / KMS `to_dict`) vs snake_case
-    (gcloud-reformatted samples, some client serializers) spellings of the same
-    field, so the pure transforms work on whichever shape the collector hands in.
+    """First present, non-None value among `keys` — the REST/Compute/KMS
+    serializers disagree on camelCase vs snake_case spelling.
     """
     if not isinstance(obj, dict):
         return None
@@ -114,14 +94,10 @@ def _spellings(key: str) -> Tuple[str, ...]:
 
 
 def dig_any(obj: Any, *path: str) -> Any:
-    """`dig()` that tolerates camelCase or snake_case at every level.
+    """`dig()` tolerating camelCase or snake_case at every level.
 
-    GAPIC `to_dict()` emits snake_case; the REST/discovery APIs (and captured
-    gcloud samples) emit camelCase. The encryption fetchers spell both variants
-    by hand because their resources are one or two levels deep; the GKE and
-    logging resources are deep enough (`private_cluster_config.
-    enable_private_nodes`, `cmek_settings.kms_key_name`) that doing so stops
-    being readable.
+    GAPIC `to_dict()` emits snake_case, the REST/discovery APIs camelCase; only
+    the deeply-nested GKE and logging shapes need this over spelling both by hand.
     """
     cur = obj
     for key in path:
@@ -137,11 +113,8 @@ def dig_any(obj: Any, *path: str) -> Any:
 
 
 def _one_line(text: Any, limit: int = 800) -> str:
-    """Collapse to a single bounded line.
-
-    Google API errors are routinely multi-line (a gRPC status block, a "go enable
-    this API" URL on its own line). The status file's `error` is a one-line
-    reason, so the collapse happens here rather than at each call site.
+    """Collapse to a single bounded line: Google API errors run multi-line (gRPC
+    status blocks, enable-this-API URLs) and the status file's `error` does not.
     """
     collapsed = " ".join(str(text).split())
     return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"
@@ -150,16 +123,11 @@ def _one_line(text: Any, limit: int = 800) -> str:
 def write_status(error: str, code: Optional[str] = None) -> None:
     """Tell the runner WHY this invocation failed, via $FETCHER_STATUS_FILE.
 
-    The runner masks any injected secret out of what we write and puts it in the
-    envelope's `metadata.error` — the field Paramify shows whoever is triaging a
-    failed collection. Skip it and the runner falls back to the *tail* of stderr,
-    so the last thing logged becomes the reported reason: for these fetchers that
-    is the "Evidence saved to ..." INFO line, i.e. a failed run reporting a
-    success message as its cause.
-
-    `error` is the required one-line reason; `code` is an optional category from
-    STATUS_CODES. Writing is a silent no-op when the env var is unset (running a
-    fetcher by hand), which is also why nothing here depends on the runner.
+    Without this the runner falls back to the *tail* of stderr, which on the way
+    out is the "Evidence saved to ..." INFO line — a failed run reporting a
+    success message as its cause. For the same reason every caller logs its
+    failure reason before any success line, never after. A no-op when the env
+    var is unset.
     """
     path = os.environ.get("FETCHER_STATUS_FILE")
     if not path:
@@ -170,10 +138,9 @@ def write_status(error: str, code: Optional[str] = None) -> None:
     Path(path).write_text(json.dumps(body))
 
 
-# Substrings that map a recorded failure onto a STATUS_CODES category, matched
+# Substrings mapping a recorded failure onto a STATUS_CODES category, matched
 # against "<exception type> <message>" lowercased. First hit wins, so the order
-# is deliberate: a 403 raised while refreshing a token is an auth problem, not a
-# missing IAM permission.
+# is deliberate: a 403 while refreshing a token is auth, not a missing IAM role.
 _FAILURE_SIGNATURES = (
     ("auth_failed", (
         "defaultcredentialserror", "refresherror", "invalid_grant", "invalid_client",
@@ -199,10 +166,7 @@ _FAILURE_SIGNATURES = (
     ("bad_config", ("invalidargument", "badrequest", "notfound", "no project id", "400")),
 )
 
-# How much accumulated detail goes into the one-line reason. The runner truncates
-# at 4000 chars; this keeps the line legible in a UI cell. Only the first few
-# failures are spelled out — the leading count says how many there were, and the
-# full ledger is in the payload's api_failures.
+# Keeps the one-line reason legible in a UI cell; api_failures has the full ledger.
 _MAX_REPORTED_FAILURES = 3
 _MAX_REPORTED_MESSAGE_CHARS = 200
 
@@ -218,11 +182,9 @@ def _failure_code(failure: Dict[str, str]) -> str:
 def service_disabled(exc: BaseException) -> bool:
     """True when the API itself was never enabled on this project.
 
-    GCP does not answer "no such resources" for a service a project has never
-    used — it 403s with SERVICE_DISABLED. A project with no GKE clusters usually
-    has container.googleapis.com off, and that is evidence ("this project runs no
-    GKE"), not a collection failure; the AWS fetchers reached the same conclusion
-    about SubscriptionRequiredException. Pass as `guard(tolerate=...)`.
+    GCP 403s with SERVICE_DISABLED rather than answering "no such resources", so
+    a project with container.googleapis.com off reads as a failure when it is
+    evidence: this project runs no GKE. Pass as `guard(tolerate=...)`.
     """
     text = f"{type(exc).__name__} {exc}".lower()
     return any(
@@ -239,11 +201,8 @@ def service_disabled(exc: BaseException) -> bool:
 def access_denied(exc: BaseException) -> bool:
     """True for a 403 / permission error.
 
-    Tolerable only for reads *above* the project — an organization- or
-    folder-level sink lookup that a project-scoped read-only role is not expected
-    to be granted. Never tolerate it for a project-scoped call: there, a 403 is a
-    missing permission the operator has to fix, which is exactly what exiting
-    non-zero is for.
+    Tolerable only for reads *above* the project, which a project-scoped role is
+    not granted; project-scoped it is a missing permission the operator must fix.
     """
     text = f"{type(exc).__name__} {exc}".lower()
     return any(marker in text for marker in ("permissiondenied", "forbidden", "403"))
@@ -252,11 +211,8 @@ def access_denied(exc: BaseException) -> bool:
 class Collector:
     """Tracks per-call API failures so a partial failure surfaces as exit 1.
 
-    One project of five being inaccessible must not exit 0 with quietly-empty
-    data (the worst failure mode for a compliance tool). Call `guard()` around
-    each API interaction; failures accumulate and drive the exit code, a
-    `partial_failure` flag in the payload, and the reason reported to the runner
-    via `failure_report()` + `write_status()`.
+    One inaccessible project of five must not exit 0 with quietly-empty data;
+    failures drive the exit code, the `partial_failure` flag, and the runner reason.
     """
 
     def __init__(self, logger: logging.Logger):
@@ -271,11 +227,11 @@ class Collector:
         self.logger.error("API call failed: %s (%s: %s)", operation, type(exc).__name__, exc)
 
     def skip(self, operation: str, exc: BaseException) -> None:
-        """Record a call that failed for a reason that is itself evidence.
+        """Record a call whose failure is itself evidence.
 
-        Kept out of `failures` so it doesn't set partial_failure or the exit
-        code, but still written into the payload (metadata.skipped_calls) — a
-        silently absent result is the failure mode this whole module avoids.
+        Kept out of `failures` so it sets neither partial_failure nor the exit
+        code, but still written to metadata.skipped_calls — a silently absent
+        result is the failure mode this module exists to avoid.
         """
         self.skipped.append(
             {"operation": operation, "type": type(exc).__name__, "message": _one_line(exc)}
@@ -294,9 +250,7 @@ class Collector:
     ) -> Any:
         """Run `fn()`, recording (not raising) any exception; returns `default`.
 
-        `tolerate` is an optional predicate over the exception — when it matches,
-        the call is `skip()`ped instead of failed (see `service_disabled` /
-        `access_denied`).
+        A matching `tolerate` (`service_disabled`, `access_denied`) routes to `skip()`.
         """
         try:
             return fn()
@@ -314,12 +268,9 @@ class Collector:
     def failure_report(self) -> Tuple[str, str]:
         """The one-line reason + STATUS_CODES category for `write_status()`.
 
-        Summarizing here keeps every GCP fetcher's failure path identical.
-        Failures that all classify the same way report that cause — expired ADC
-        takes down every call in the run, and telling the operator `auth_failed`
-        beats telling them `partial_failure`. A run with disagreeing causes has no
-        single answer, so it reports `partial_failure` and leaves the detail to
-        the reason line and the payload's api_failures ledger.
+        A unanimous cause is reported as itself — expired ADC takes down every call,
+        and `auth_failed` says more than `partial_failure`. Mixed causes report
+        `partial_failure` and leave the detail to the api_failures ledger.
         """
         codes = {_failure_code(f) for f in self.failures}
         code = codes.pop() if len(codes) == 1 else "partial_failure"
@@ -335,9 +286,8 @@ class Collector:
 def resolve_project(collector: Collector) -> Dict[str, Optional[str]]:
     """Resolve the project to collect from.
 
-    Explicit GOOGLE_CLOUD_PROJECT (set by the runner from a target) wins; else
-    fall back to the ADC default project ("collect where deployed"). Returns the
-    project id and where it came from, for the metadata block.
+    Explicit GOOGLE_CLOUD_PROJECT (runner-set from a target) wins; otherwise the
+    ADC default project — "collect where deployed".
     """
     explicit = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCLOUD_PROJECT")
     if explicit:
@@ -371,24 +321,18 @@ def build_payload(
 ) -> Dict[str, Any]:
     """Assemble the raw evidence dict the runner will wrap in an envelope.
 
-    `environment` comes from GCP_ENVIRONMENT (manifest target/config). The
-    envelope adds fetcher_name/version/status/target; this metadata block adds
-    the GCP-specific context the AWS fetchers keep too (their profile/region/
-    account_id).
+    The envelope carries no `environment` field, so GCP_ENVIRONMENT goes here.
     """
     metadata: Dict[str, Any] = {
         "project": project,
         "project_source": project_source,
         "environment": os.environ.get("GCP_ENVIRONMENT"),
         "datetime": current_timestamp(),
-        # Explicit so a validator can assert on it, and so a partially-failed
-        # run is legible from the payload alone, not only the envelope status.
+        # Explicit so a validator can assert on it, not only the envelope status.
         "partial_failure": not collector.ok,
         "api_failures": collector.failures,
     }
-    # Only present when something was actually tolerated (an API not enabled on
-    # the project, an org-level read outside a project-scoped role), so a fetcher
-    # that never calls guard(tolerate=...) keeps its payload byte-for-byte.
+    # Absent unless something was tolerated, keeping other payloads byte-for-byte.
     if collector.skipped:
         metadata["skipped_calls"] = collector.skipped
     return {"metadata": metadata, "results": results, "summary": summary}

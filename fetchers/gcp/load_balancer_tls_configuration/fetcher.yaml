@@ -44,15 +44,5 @@ evidence_set:
   name: Load Balancer TLS Configuration
   instructions: >
     Script: fetcher.py. Google Cloud client library calls: compute
-    sslPolicies.aggregatedList and compute targetHttpsProxies.aggregatedList
-    (each one call covering the global scope plus every region), and compute
-    targetSslProxies.list (a global-only resource). Per SSL policy:
-    minTlsVersion, profile, enabledFeatures (the API's resolved cipher list),
-    customFeatures and postQuantumKeyExchange. Per proxy: sslPolicy,
-    sslCertificates, certificateMap, urlMap or backend service, quicOverride,
-    tlsEarlyData, serverTlsPolicy and proxyHeader. The proxy's sslPolicy
-    self-link is joined to the policy list to give an effective minimum TLS
-    version and profile; a proxy with no sslPolicy is recorded as running GCP's
-    default of TLS 1.0 + COMPATIBLE. `weak_tls` means minimum TLS below 1.2 or
-    the COMPATIBLE profile. A project with the Compute API disabled is recorded as
-    not readable rather than failing.
+    targetHttpsProxies.aggregatedList(), targetSslProxies.list(),
+    sslPolicies.aggregatedList(). One evidence file per project.

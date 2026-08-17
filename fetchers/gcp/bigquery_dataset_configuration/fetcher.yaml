@@ -43,18 +43,5 @@ evidence_set:
   name: BigQuery Dataset Configuration
   instructions: >
     Script: fetcher.py. Google Cloud client library calls: bigquery
-    datasets.list (paginated by the client's iterator) then datasets.get per
-    dataset — the list response carries only a reference, so the ACL and the
-    encryption config come from the get. Per dataset:
-    defaultEncryptionConfiguration.kmsKeyName (present ⇒ customer-managed;
-    absent ⇒ Google-managed default encryption), access[] (each entry's
-    principal read from its own field — specialGroup, iamMember, domain,
-    userByEmail, groupByEmail, view, routine, dataset — and compared exactly
-    against allUsers / allAuthenticatedUsers), defaultTableExpirationMs,
-    defaultPartitionExpirationMs, maxTimeTravelHours, location and labels. ACL
-    entries naming a person or a group contribute their role and a count only;
-    public, domain-wide, special-group and authorized view/routine/dataset
-    entries are named. Table-level CMEK is deliberately out of scope: it costs
-    one API call per table and dataset default encryption is the control that
-    governs new tables. A project with the BigQuery API disabled is recorded as
-    not readable rather than failing.
+    datasets.list(), then datasets.get() per dataset. One evidence file per
+    project.

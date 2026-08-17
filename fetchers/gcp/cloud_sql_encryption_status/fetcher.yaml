@@ -46,8 +46,4 @@ evidence_set:
   name: Cloud SQL Encryption
   instructions: >
     Script: fetcher.py. Google Cloud client library call: sqladmin
-    instances.list (diskEncryptionConfiguration.kmsKeyName, diskEncryptionStatus,
-    settings.backupConfiguration). CMEK present ⇒ customer-managed; absent ⇒
-    Google-managed default encryption. NOTE: a test Cloud SQL instance uses the
-    Google-managed default (its service agent can't be granted a key until the
-    instance exists), so the fixture shows the Google-managed case.
+    instances.list(). One evidence file per project.

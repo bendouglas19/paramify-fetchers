@@ -42,17 +42,5 @@ evidence_set:
   reference_id: EVD-GCP-CLOUDSQL-BACKUP
   name: Cloud SQL Backup Configuration
   instructions: >
-    Script: fetcher.py. Google Cloud client library call: sqladmin (Cloud SQL
-    Admin, discovery v1beta4) instances.list — one call, paginated internally.
-    Per instance: settings.backupConfiguration (enabled, startTime, location,
-    pointInTimeRecoveryEnabled, binaryLogEnabled, transactionLogRetentionDays,
-    transactionalLogStorageState, backupRetentionSettings.retainedBackups /
-    retentionUnit), settings.availabilityType (REGIONAL = standby replica in a
-    second zone with automatic failover; ZONAL = neither),
-    settings.deletionProtectionEnabled, gceZone / secondaryGceZone,
-    failoverReplica, replicaNames and masterInstanceName. Point-in-time recovery
-    is read per engine — binaryLogEnabled on MySQL, pointInTimeRecoveryEnabled on
-    PostgreSQL and SQL Server — and both raw fields are kept alongside the derived
-    answer. The high-availability percentage covers primary instances only; a read
-    replica inherits availability from its primary. A project with the Cloud SQL
-    Admin API disabled is recorded as not readable rather than failing.
+    Script: fetcher.py. Google Cloud client library call: sqladmin
+    instances.list(). One evidence file per project.

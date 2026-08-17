@@ -2,42 +2,30 @@
 """
 GCP Load Balancer TLS Configuration
 
-The transport-encryption posture of every internet-facing HTTPS/SSL load
-balancer front end in one project: each target HTTPS proxy and target SSL proxy,
-the SSL policy attached to it (if any), and each SSL policy's minimum TLS
-version, profile (COMPATIBLE / MODERN / RESTRICTED / FIPS_202205 / CUSTOM) and
-resolved cipher list. Each proxy carries the *effective* minimum TLS version and
+Transport-encryption posture of every internet-facing HTTPS/SSL load balancer
+front end in one project: each target HTTPS proxy and target SSL proxy, the SSL
+policy attached to it, and each policy's minimum TLS version, profile and
+resolved cipher list. Each proxy carries its *effective* minimum version and
 profile, because a proxy with no SSL policy silently runs Google's permissive
-default — TLS 1.0 with the COMPATIBLE profile — and that is the finding this
-evidence exists to surface.
+default — TLS 1.0, COMPATIBLE — and that is the finding this evidence exists to
+surface.
 
-**NOT ported from Prowler.** Prowler's GCP provider has no SSL policy or target
-proxy coverage: `compute_service.py` collects url maps and backend services (for
-compute_loadbalancer_logging_enabled) but never reads `sslPolicies`,
-`targetHttpsProxies` or `targetSslProxies`, and there is no check directory for
-any of them. The field list here therefore comes from the Compute Engine v1 API
-resources directly (SslPolicy, TargetHttpsProxy, TargetSslProxy), and the
-`min_tls_version` / `profile` value sets are the ones those resources document.
+**NOT ported from Prowler.** Its GCP provider has no SSL policy or target proxy
+coverage: compute_service.py collects url maps and backend services but never
+reads `sslPolicies`, `targetHttpsProxies` or `targetSslProxies`. The field list
+comes from the Compute Engine v1 resources directly.
 
-Two conventions worth stating, since there is no upstream to defer to:
-
-- **The default policy is named, not left as a null.** When
-  `targetHttpsProxy.sslPolicy` is absent, GCP applies its default: minimum TLS
-  1.0, COMPATIBLE profile. The record says so via `uses_default_ssl_policy: true`
-  plus `effective_min_tls_version` / `effective_profile` filled with those
-  defaults, so a reader (or a regex validator) never has to know the GCP default
-  to interpret the evidence.
+Two conventions, since there is no upstream to defer to:
+- **The default policy is named, not left null.** When `sslPolicy` is absent, GCP
+  applies TLS 1.0 / COMPATIBLE. The record says so via `uses_default_ssl_policy`
+  plus the effective fields, so a reader never has to know the GCP default to
+  interpret the evidence.
 - **`weak_tls` is one derived flag with a stated rule**: minimum TLS below 1.2,
-  or the COMPATIBLE profile (which re-admits the weak cipher suites regardless of
-  the version floor). Everything it is derived from is reported alongside it.
+  or the COMPATIBLE profile, which re-admits weak cipher suites regardless of the
+  version floor. Everything it derives from is reported alongside it.
 
-Regional and global resources are both collected: `sslPolicies.aggregatedList`
-and `targetHttpsProxies.aggregatedList` cover global plus every region in one
-paged call each; `targetSslProxies` is a global-only resource and is listed
-directly.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+Regional and global resources are both collected: the two `aggregatedList` calls
+cover global plus every region, and `targetSslProxies` is global-only.
 """
 
 import logging
@@ -65,31 +53,27 @@ from gcp_common import (  # noqa: E402
 
 logger = logging.getLogger("gcp_load_balancer_tls_configuration")
 
-# What GCP applies when a target proxy has no SSL policy attached. Named here so
-# the evidence states the effective posture instead of an unexplained null.
+# What GCP applies when a target proxy has no SSL policy attached.
 DEFAULT_MIN_TLS_VERSION = "TLS_1_0"
 DEFAULT_PROFILE = "COMPATIBLE"
 
-# Ordered weakest-first, so "at least TLS 1.2" is an index comparison rather than
-# string parsing. Anything unrecognized sorts as unknown (see tls_at_least).
+# Weakest first, so "at least TLS 1.2" is an index comparison, not string parsing.
 TLS_VERSION_ORDER = ("TLS_1_0", "TLS_1_1", "TLS_1_2", "TLS_1_3")
 
 # The floor this evidence measures against. TLS 1.0/1.1 are deprecated
 # (RFC 8996); FedRAMP and CIS both want 1.2 or better.
 MINIMUM_ACCEPTABLE_TLS_VERSION = "TLS_1_2"
 
-# The profile that re-admits out-of-date cipher suites whatever the version floor
-# says, so it is treated as weak in its own right.
+# Re-admits out-of-date cipher suites whatever the version floor says — weak in itself.
 PERMISSIVE_PROFILE = "COMPATIBLE"
 
 
-# --- pure transforms (operate on to_dict() output or REST dicts; unit-tested) ---
+# --- pure transforms ---
 
 def tls_at_least(version, floor: str = MINIMUM_ACCEPTABLE_TLS_VERSION) -> bool:
-    """True when `version` is at or above `floor` in TLS_VERSION_ORDER.
+    """True when `version` is at or above `floor`; unknown or absent reads as below.
 
-    An unknown or absent version is reported as NOT meeting the floor: this drives
-    a compliance-relevant count, so an unrecognized value must not read as a pass.
+    This drives a compliance-relevant count, so an unrecognized value must not pass.
     """
     try:
         return TLS_VERSION_ORDER.index(str(version)) >= TLS_VERSION_ORDER.index(floor)
@@ -105,9 +89,8 @@ def is_weak_tls(min_tls_version, profile) -> bool:
 def scope_of(resource: dict) -> str:
     """"global" or the region name, from the resource's own `region` field.
 
-    Global SSL policies and target proxies have no `region`; regional ones carry a
-    fully-qualified region URL. The aggregatedList key is not used because it
-    spells the global scope as "global" in one API and "" in another.
+    Not the aggregatedList key: it spells the global scope "global" in one API and ""
+    in another. Global resources have no `region`; regional ones carry a region URL.
     """
     region = first(resource, "region")
     return basename(region) if region else "global"
@@ -144,10 +127,9 @@ def ssl_policy_record(policy: dict) -> dict:
 def proxy_record(proxy: dict, proxy_type: str, policies_by_name: dict) -> dict:
     """Normalize one target HTTPS / SSL proxy, resolving its SSL policy.
 
-    `policies_by_name` maps an SSL policy name to its record; the proxy stores the
-    policy as a self-link, so only the basename is needed to join them. A proxy
-    whose policy could not be read (regional policy list failed) keeps
-    `ssl_policy_resolved: false` rather than silently reading as the GCP default.
+    The proxy stores its policy as a self-link, so `policies_by_name` is joined on the
+    basename. A proxy whose policy could not be read keeps `ssl_policy_resolved:
+    false` rather than silently reading as the GCP default.
     """
     policy_name = basename(first(proxy, "sslPolicy", "ssl_policy")) or None
     policy = policies_by_name.get(policy_name) if policy_name else None
@@ -171,7 +153,6 @@ def proxy_record(proxy: dict, proxy_type: str, policies_by_name: dict) -> dict:
         "scope": scope_of(proxy),
         # --- SSL policy attachment ---
         "ssl_policy": policy_name,
-        # True when no policy is attached, i.e. GCP's permissive default applies.
         "uses_default_ssl_policy": uses_default,
         "ssl_policy_resolved": uses_default or policy is not None,
         "effective_min_tls_version": effective_min_tls,
@@ -187,8 +168,7 @@ def proxy_record(proxy: dict, proxy_type: str, policies_by_name: dict) -> dict:
         "backend_service": basename(first(proxy, "service")),
         "quic_override": first(proxy, "quicOverride", "quic_override"),
         "tls_early_data": first(proxy, "tlsEarlyData", "tls_early_data"),
-        # mTLS / Traffic Director policies; presence only, they are separate
-        # resources with their own configuration.
+        # mTLS / Traffic Director policy; presence only — it is a separate resource.
         "server_tls_policy": basename(first(proxy, "serverTlsPolicy", "server_tls_policy")),
         "proxy_header": first(proxy, "proxyHeader", "proxy_header"),
         "creation_timestamp": first(proxy, "creationTimestamp", "creation_timestamp"),
@@ -200,9 +180,8 @@ def summarize(
 ) -> dict:
     compliant = sum(1 for p in proxies if p["meets_tls_floor"])
     return {
-        # False when compute.googleapis.com is not enabled on this project
-        # (recorded in metadata.skipped_calls) or a list call failed —
-        # distinguishing "no load balancers" from "could not look".
+        # False when compute.googleapis.com is disabled (recorded in skipped_calls) or
+        # a list call failed — "no load balancers" is not the same as "could not look".
         "compute_api_readable": api_readable,
         "tls_floor": MINIMUM_ACCEPTABLE_TLS_VERSION,
         "default_min_tls_version_when_no_policy": DEFAULT_MIN_TLS_VERSION,
@@ -217,16 +196,14 @@ def summarize(
         "https_proxies": sum(1 for p in proxies if p["type"] == "target_https_proxy"),
         "ssl_proxies": sum(1 for p in proxies if p["type"] == "target_ssl_proxy"),
         "proxies_with_ssl_policy": sum(1 for p in proxies if not p["uses_default_ssl_policy"]),
-        # The finding: a front end running on Google's default policy, which
-        # accepts TLS 1.0 and the COMPATIBLE cipher set.
+        # The finding: a front end on Google's default policy — TLS 1.0, COMPATIBLE.
         "proxies_on_default_ssl_policy": sum(
             1 for p in proxies if p["uses_default_ssl_policy"]
         ),
         "proxies_meeting_tls_floor": compliant,
         "tls_floor_percentage": coverage_percentage(compliant, len(proxies)),
         "proxies_with_weak_tls": sum(1 for p in proxies if p["weak_tls"]),
-        # Non-zero means a proxy names an SSL policy this run could not read, so
-        # its effective posture is unknown rather than defaulted.
+        # Non-zero: a proxy names a policy this run could not read — unknown, not default.
         "proxies_with_unresolved_ssl_policy": sum(
             1 for p in proxies if not p["ssl_policy_resolved"]
         ),
@@ -235,7 +212,7 @@ def summarize(
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def collect_ssl_policies(project, creds, collector: Collector) -> list[dict] | None:
     """Every SSL policy (global + regional), or None when Compute couldn't be listed."""
@@ -267,7 +244,6 @@ def collect_proxies(
     def _https():
         client = compute_v1.TargetHttpsProxiesClient(credentials=creds)
         out = []
-        # Global + every region in one paged call.
         for _scope, scoped in client.aggregated_list(project=project):
             for proxy in getattr(scoped, "target_https_proxies", []) or []:
                 out.append(
@@ -346,9 +322,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

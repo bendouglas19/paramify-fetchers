@@ -3,62 +3,29 @@
 GCP Project IAM Policy Bindings
 
 The "who has what access" evidence set for one GCP project: every binding in the
-project's IAM policy with its role and its members, rolled up a second time per
-principal so the same policy can be read either way (by role, or by who holds
-it), plus whether Cloud Audit Logging is configured on the policy.
-
-The findings this evidence exists to surface, in order of severity:
-- **`allUsers` / `allAuthenticatedUsers` in a project binding** — the whole
-  internet, or every Google account, holding a project role.
-- **Primitive roles** (`roles/owner`, `roles/editor`, `roles/viewer`) — pre-IAM
-  grants that span every service in the project, and the reason "least privilege"
-  fails on most GCP projects.
-- **Service accounts holding admin or primitive roles** — an over-privileged
-  non-human identity, which is also a key-compromise blast radius.
-- **External members** — an identity outside the organization's primary domain,
-  and consumer accounts (`gmail.com`) specifically, which are CIS 1.1's
-  "corporate login credentials" finding.
-- **Cross-project service accounts** — a `serviceAccount:` member owned by a
-  different project (Google's own service agents excluded, since those exist
-  because an API was enabled, not because a person granted them).
-- **Conditional bindings** — a binding whose grant is gated on an IAM condition
-  expression. Not a finding by itself, but the condition changes what the role
-  actually means, so a binding read without it is misleading.
+project's IAM policy with its role and members, rolled up a second time per
+principal so the policy can be read either way, plus whether Cloud Audit Logging
+is configured and who is exempted from it.
 
 Ported from Prowler's GCP Cloud Resource Manager service (prowler/providers/gcp/
-services/cloudresourcemanager/cloudresourcemanager_service.py, Apache-2.0), whose
-Binding projects role/members/project_id and whose Project projects
-id/number/audit_logging/audit_configs (service + log_types). The rules come from
-the checks that consume those bindings — iam_audit_logs_enabled (auditConfigs
-present at all), iam_role_kms_enforce_separation_of_duties (a member holding both
-`roles/cloudkms.admin` and a crypto-key use role), and
-iam_role_sa_enforce_separation_of_duties (`roles/iam.serviceAccountUser` /
-`serviceAccountAdmin` granted project-wide).
+services/cloudresourcemanager/cloudresourcemanager_service.py, Apache-2.0) and
+the checks that consume its bindings.
 
 Departures from the Prowler original:
-- **GAPIC client, not discovery.** resourcemanager_v3 instead of
-  googleapiclient.discovery, per the category's preference.
-- **Policy version 3 is requested explicitly.** Prowler's `getIamPolicy` call
-  takes the default (version 1), which does not return condition expressions. A
-  binding's condition is part of what the binding grants, so it is asked for.
-- **Members are enumerated, not counted.** This is deliberately the opposite of
-  the sibling `gcp_iam_service_accounts` fetcher, which names only its
-  `serviceAccount:` members and counts the rest so it doesn't quietly become a
-  user inventory. Here the user inventory IS the evidence set, so members are
-  written out in full — including human identities. Nothing else in this payload
-  is sensitive: an IAM policy contains no credentials.
+- **Policy version 3 is requested explicitly.** Prowler takes the default
+  (version 1), which does not return condition expressions. A binding's condition
+  is part of what it grants.
+- **Members are enumerated, not counted.** Deliberately the opposite of the
+  sibling gcp_iam_service_accounts, which counts humans so it does not quietly
+  become a user inventory. Here the access inventory IS the evidence set, and an
+  IAM policy contains no credentials.
 - **Separation of duties is reported as data, not a verdict.** Prowler's two SoD
-  checks each collapse to PASS/FAIL. The per-principal rollup carries every role
-  a member holds, so any SoD pair (KMS admin + crypto-key user, or any other) is
-  answerable from the evidence by a validator without this fetcher hard-coding
-  which pairs matter.
-- **Audit configs carry their exempted members.** Prowler records the service and
-  the log types; an exempted member is an identity whose access to that service
-  is deliberately NOT logged, which is the part of an audit config a reviewer
-  needs to see.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+  checks collapse to PASS/FAIL. The per-principal rollup carries every role a
+  member holds, so any SoD pair is answerable by a validator without this fetcher
+  hard-coding which pairs matter.
+- **Audit configs carry their exempted members.** An exempted member is an
+  identity whose access is deliberately not logged — the part of an audit config
+  a reviewer needs to see.
 """
 
 import logging
@@ -85,13 +52,11 @@ from gcp_common import (  # noqa: E402
 
 logger = logging.getLogger("gcp_iam_policy_bindings")
 
-# GCP allows at most 10 levels of folders between a project and its organization,
-# so the ancestry walk that finds the org (and thus the org domain) is bounded by
-# the platform rather than by a guess.
+# GCP allows at most 10 folder levels between a project and its organization, so the
+# ancestry walk is bounded by the platform rather than by a guess.
 _MAX_ANCESTRY_DEPTH = 10
 
-# The two members that mean "not access-controlled". allUsers is the entire
-# internet; allAuthenticatedUsers is every Google account that exists.
+# allUsers is the entire internet; allAuthenticatedUsers is every Google account.
 _PUBLIC_MEMBERS = frozenset({"allUsers", "allAuthenticatedUsers"})
 
 # Primitive (pre-IAM) roles. Broad by construction — owner and editor are
@@ -100,13 +65,12 @@ _PRIMITIVE_ROLES = frozenset({"roles/owner", "roles/editor", "roles/viewer"})
 _WRITE_PRIMITIVE_ROLES = frozenset({"roles/owner", "roles/editor"})
 
 # Consumer Google accounts. CIS GCP 1.1 wants corporate credentials only, so a
-# personal account holding a project role is a finding regardless of whether the
+# personal account holding a project role is a finding whether or not the
 # organization domain resolved.
 _CONSUMER_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
 
-# The member prefixes IAM defines. Anything else is bucketed as "other" rather
-# than guessed at, so a new principal type shows up as unclassified instead of
-# silently mis-typed.
+# The member prefixes IAM defines. Anything else buckets to "other", so a new
+# principal type shows up as unclassified rather than silently mis-typed.
 _MEMBER_TYPES = frozenset(
     {
         "user",
@@ -129,26 +93,22 @@ _MEMBER_TYPES = frozenset(
 _GOOGLE_SERVICE_AGENT_DOMAIN_MARKERS = (
     # service-<projectnumber>@gcp-sa-<api>.iam.gserviceaccount.com
     "gcp-sa-",
-    # <projectnumber>@cloudservices.gserviceaccount.com — the Google APIs agent
     "cloudservices.gserviceaccount.com",
     "system.gserviceaccount.com",
     "containerregistry.iam.gserviceaccount.com",
     "container-engine-robot.iam.gserviceaccount.com",
 )
 
-# Domain suffixes that identify the project owning a service account.
 _SERVICE_ACCOUNT_DOMAIN_SUFFIXES = (
     ".iam.gserviceaccount.com",
     ".appspot.gserviceaccount.com",
     ".developer.gserviceaccount.com",
 )
 
-# The log types CIS GCP 2.1 wants on `allServices` for audit logging to count as
-# configured across the project.
+# The log types CIS GCP 2.1 wants on `allServices` for project-wide audit logging.
 _FULL_AUDIT_LOG_TYPES = frozenset({"ADMIN_READ", "DATA_READ", "DATA_WRITE"})
 
-# google.iam.v1.AuditLogConfig.LogType. Only used if the protobuf enum wrapper
-# can't be reached off the message (see `audit_log_type_name`).
+# google.iam.v1.AuditLogConfig.LogType — the fallback in `audit_log_type_name`.
 _AUDIT_LOG_TYPE_NAMES = {
     0: "LOG_TYPE_UNSPECIFIED",
     1: "ADMIN_READ",
@@ -157,13 +117,13 @@ _AUDIT_LOG_TYPE_NAMES = {
 }
 
 
-# --- pure transforms (operate on plain dicts; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def is_over_broad_role(role: str) -> bool:
     """Prowler's administrative-privilege rule: owner/editor, or any *admin* role.
 
-    Kept identical to the sibling gcp_iam_service_accounts fetcher's rule so the
-    two evidence sets classify the same role the same way.
+    Identical to the sibling gcp_iam_service_accounts rule, so both evidence sets
+    classify a given role the same way.
     """
     return role in _WRITE_PRIMITIVE_ROLES or "admin" in role.lower()
 
@@ -171,9 +131,8 @@ def is_over_broad_role(role: str) -> bool:
 def member_type(member: str) -> str:
     """The IAM principal type of a member string.
 
-    `deleted:user:a@b.com?uid=1` — a binding left pointing at a deleted identity
-    — reports as `deleted_user`, because a stale binding is worth seeing but is
-    not a live grant.
+    `deleted:user:a@b.com?uid=1` reports as `deleted_user`: a binding left pointing
+    at a deleted identity is worth seeing, but it is not a live grant.
     """
     if member in _PUBLIC_MEMBERS:
         return "public"
@@ -187,8 +146,7 @@ def member_type(member: str) -> str:
 def member_domain(member: str) -> str | None:
     """The email/domain part of a member, or None when it doesn't carry one.
 
-    `domain:example.com` IS its domain; `user:a@example.com` has one after the @;
-    `principalSet://iam.googleapis.com/...` (workload identity) has none.
+    `domain:example.com` IS its domain; a `principalSet://` workload identity has none.
     """
     if member in _PUBLIC_MEMBERS:
         return None
@@ -228,11 +186,10 @@ def is_consumer_account(member: str) -> bool:
 def is_external(member: str, org_domain: str | None) -> bool:
     """True for a human/group/domain identity outside the organization's domain.
 
-    Only meaningful once the org domain is known — with no domain to compare
-    against, everything reports False and the summary says the evaluation didn't
-    happen rather than implying "no external members". Service accounts are
-    excluded here on purpose: they never live on the org domain, and
-    `is_cross_project_service_account` is the right question for them.
+    With no org domain to compare against, everything reports False and the summary
+    says the evaluation didn't happen rather than implying "no external members".
+    Service accounts never live on the org domain, so
+    `is_cross_project_service_account` is their question instead.
     """
     if not org_domain or member in _PUBLIC_MEMBERS:
         return False
@@ -248,9 +205,9 @@ def is_external(member: str, org_domain: str | None) -> bool:
 def is_cross_project_service_account(member: str, project: str | None) -> bool:
     """True for a service account owned by some other project.
 
-    A cross-project grant is a legitimate pattern (a shared CI account) and a
-    real finding (an account nobody in this project controls), so it is reported
-    rather than judged. Google's service agents are excluded.
+    A cross-project grant is both a legitimate pattern (a shared CI account) and a
+    real finding (an account nobody here controls), so it is reported rather than
+    judged. Google's own service agents are excluded.
     """
     if member_type(member) not in ("serviceAccount", "deleted_serviceAccount"):
         return False
@@ -309,13 +266,7 @@ def binding_record(binding: dict, org_domain: str | None, project: str | None) -
 def principal_record(
     member: str, bindings: list[dict], org_domain: str | None, project: str | None
 ) -> dict:
-    """The same policy read by principal: every role one member holds.
-
-    This is the view that answers "what can this identity do in this project",
-    and the view an SoD question needs — a member holding both `cloudkms.admin`
-    and a crypto-key use role is visible here without the fetcher deciding which
-    role pairs constitute a conflict.
-    """
+    """The same policy read by principal: every role one member holds."""
     held = [b for b in bindings if member in b["members"]]
     roles = sorted({b["role"] for b in held})
     return {
@@ -345,11 +296,7 @@ def principal_records(
 
 
 def audit_config_record(config: dict) -> dict:
-    """One auditConfig: which service is logged, at what log types, minus whom.
-
-    An exempted member is an identity whose access to that service is explicitly
-    NOT written to Data Access logs — the part of an audit config that undoes it.
-    """
+    """One auditConfig: which service is logged, at what log types, minus whom."""
     log_configs = []
     exempted: set[str] = set()
     for entry in config.get("audit_log_configs") or []:
@@ -377,8 +324,8 @@ def project_record(project_details: dict | None, project_id: str | None) -> dict
     name = details.get("name") or ""
     return {
         "project_id": details.get("project_id") or project_id,
-        # resourcemanager v3 names a project `projects/<number>`; Prowler reads
-        # the same number out of the v1 `projectNumber` field.
+        # resourcemanager v3 names a project `projects/<number>`; Prowler reads the
+        # same number out of v1's `projectNumber`.
         "project_number": name.split("/")[-1] if name.startswith("projects/") else None,
         "display_name": details.get("display_name") or None,
         "parent": details.get("parent") or None,
@@ -405,8 +352,6 @@ def summarize(
         "total_bindings": len(bindings),
         "total_roles_granted": len({b["role"] for b in bindings}),
         "total_principals": len(principals),
-        # Least privilege, as a single number: the share of bindings that name a
-        # specific role rather than owner/editor/viewer.
         "non_primitive_binding_percentage": coverage_percentage(non_primitive, len(bindings)),
         "primitive_role_bindings": len(bindings) - non_primitive,
         "over_broad_role_bindings": sum(1 for b in bindings if b["over_broad_role"]),
@@ -414,7 +359,6 @@ def summarize(
         "editor_principals": holders("roles/editor"),
         "viewer_principals": holders("roles/viewer"),
         "principals_with_over_broad_roles": sum(1 for p in principals if p["has_over_broad_role"]),
-        # The critical finding: a project role granted to everyone.
         "publicly_granted": any(b["publicly_granted"] for b in bindings),
         "public_bindings": sum(1 for b in bindings if b["publicly_granted"]),
         "public_members": sorted({m for b in bindings for m in b["public_members"]}),
@@ -430,12 +374,10 @@ def summarize(
         "deleted_principals": sum(1 for p in principals if p["member_type"].startswith("deleted_")),
         "organization_domain": org_domain,
         "organization_domain_source": domain_source,
-        # False means "not asked", not "none found" — the org read is outside a
-        # project-scoped role, so this is the difference between evidence and a
-        # silently empty result.
+        # False means "not asked", not "none found" — the org read sits outside a
+        # project-scoped role.
         "external_members_evaluated": bool(org_domain),
         "external_principals": sum(1 for p in principals if p["external"]),
-        # CIS GCP 1.1 — independent of the org domain resolving.
         "consumer_account_principals": sum(1 for p in principals if p["consumer_account"]),
         "conditional_bindings": sum(1 for b in bindings if b["conditional"]),
         # Prowler's iam_audit_logs_enabled: auditConfigs present on the policy.
@@ -443,7 +385,6 @@ def summarize(
         "audit_config_services": sorted(c["service"] for c in audit_configs if c["service"]),
         "audit_all_services_configured": all_services is not None,
         "audit_all_services_log_types": sorted(all_service_log_types),
-        # CIS GCP 2.1: allServices logged at ADMIN_READ + DATA_READ + DATA_WRITE.
         "audit_full_log_types_on_all_services": _FULL_AUDIT_LOG_TYPES.issubset(
             all_service_log_types
         ),
@@ -453,15 +394,15 @@ def summarize(
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def _outside_project_scope(exc: BaseException) -> bool:
     """`guard(tolerate=...)` predicate for reads above the project.
 
     The organization/folder reads that resolve the org domain are not in a
-    project-scoped read-only role's grant, and Resource Manager may not be
-    enabled at all. Either way the project's policy is still complete evidence,
-    so these are recorded as skipped rather than failing the collection.
+    project-scoped read-only role's grant, and Resource Manager may not be enabled
+    at all. The project's policy is complete evidence either way, so these are
+    recorded as skipped rather than failing the collection.
     """
     return access_denied(exc) or service_disabled(exc)
 
@@ -469,9 +410,8 @@ def _outside_project_scope(exc: BaseException) -> bool:
 def audit_log_type_name(config) -> str | None:
     """Enum name for a google.iam.v1.AuditLogConfig.log_type value.
 
-    An IAM policy comes back as a raw protobuf rather than a proto-plus message,
-    so the enum arrives as an int. The nested enum wrapper on the message knows
-    its own names; the module-level map is the fallback if it can't be reached.
+    An IAM policy comes back as a raw protobuf rather than a proto-plus message, so
+    the enum arrives as an int. The message's own enum wrapper knows the names.
     """
     raw = getattr(config, "log_type", None)
     if raw is None:
@@ -485,10 +425,9 @@ def audit_log_type_name(config) -> str | None:
 def policy_dicts(policy) -> tuple[list[dict], list[dict]]:
     """google.iam.v1.Policy → (binding dicts, audit-config dicts).
 
-    Raw protobuf, so there is no to_dict(); reading the handful of fields that
-    matter beats pulling in json_format. Conditions are preserved here (the
-    sibling service-account fetcher drops them) because a conditional binding
-    grants something different from an unconditional one.
+    Raw protobuf, so there is no to_dict(); reading the handful of fields that matter
+    beats pulling in json_format. Conditions are preserved here (the sibling
+    service-account fetcher drops them): a conditional binding grants something else.
     """
     bindings = [
         {
@@ -531,8 +470,6 @@ def collect_policy(project, creds, collector: Collector) -> tuple[list[dict], li
         client = resourcemanager_v3.ProjectsClient(credentials=creds)
         request = iam_policy_pb2.GetIamPolicyRequest(
             resource=f"projects/{project}",
-            # Version 1 silently omits condition expressions; 3 is the only
-            # version that returns conditional bindings intact.
             options=options_pb2.GetPolicyOptions(requested_policy_version=3),
         )
         return policy_dicts(client.get_iam_policy(request=request))
@@ -559,11 +496,8 @@ def collect_organization_domain(
 ) -> tuple[str | None, str | None]:
     """Walk up from the project to its organization and read its primary domain.
 
-    An organization's `display_name` IS its primary domain (that is how the
-    resource is created), which is what makes "member outside the org" answerable
-    at all. Every read here sits above the project, so a 403 is expected under a
-    project-scoped role and is tolerated — the evidence then says external members
-    were not evaluated instead of reporting zero of them.
+    An organization's `display_name` IS its primary domain (that is how the resource
+    is created), which is what makes "member outside the org" answerable at all.
     """
     from google.cloud import resourcemanager_v3
 
@@ -612,8 +546,8 @@ def main() -> int:
     project = proj["project"]
     creds = collector.guard("google.auth.default (credentials)", credentials)
 
-    # An operator-supplied domain wins over the org lookup: the lookup needs a
-    # permission above the project that a read-only project role doesn't have.
+    # An operator-supplied domain wins: the org lookup needs a permission above the
+    # project that a read-only project role doesn't have.
     configured_domain = (os.environ.get("GCP_ORGANIZATION_DOMAIN") or "").strip().lower()
 
     raw_bindings: list[dict] = []
@@ -672,9 +606,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

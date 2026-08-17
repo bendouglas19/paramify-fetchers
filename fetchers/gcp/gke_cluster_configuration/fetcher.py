@@ -2,36 +2,27 @@
 """
 KSI-CNA-02 / KSI-CNA-07 / KSI-IAM-04 / KSI-SVC-07: GKE Cluster Configuration
 
-Inventory of every GKE cluster in one project with the security posture that
-separates a hardened cluster from a default one: private nodes / private control
-plane endpoint, master-authorized networks, network policy, legacy ABAC (the one
-thing that bypasses RBAC), Workload Identity, shielded nodes, Binary
-Authorization, control-plane logging/monitoring components, etcd
-application-layer secrets encryption with a CMEK, release channel, and per node
-pool auto-upgrade / auto-repair, boot-disk CMEK, and service account.
+Every GKE cluster in one project with the posture that separates a hardened
+cluster from a default one: private nodes and control-plane endpoint,
+master-authorized networks, network policy, legacy ABAC (the one thing that
+bypasses RBAC), Workload Identity, shielded nodes, Binary Authorization,
+control-plane logging and monitoring, etcd secrets encryption with a CMEK,
+release channel, and per node pool auto-upgrade, auto-repair, boot-disk CMEK and
+service account.
 
-Ported from Prowler's GCP GKE service (prowler/providers/gcp/services/gke/
-gke_service.py, Apache-2.0). Prowler projects only name/id/location/region/
-service_account/node_pools[name,locations,service_account] because its single GKE
-check (gke_cluster_no_default_service_account) needs no more; every field above
-comes from the same `clusters.list` resource it already reads, so this is a wider
-projection of one API response, not extra calls.
-
-Two deliberate departures from the Prowler original:
-- **GAPIC client, not discovery.** Prowler builds `container` v1beta1 through
-  googleapiclient.discovery; a stable GAPIC client exists (google-cloud-container),
-  so per the category's preference this uses container_v1. v1 carries every field
-  above.
-- **No per-location fanout.** Prowler lists locations then lists clusters in each.
-  `parent=projects/<id>/locations/-` returns every zonal and regional cluster in
-  one call.
-
-`master_auth` is read field-by-field on purpose: that block also carries the
+`master_auth` is read field by field on purpose: that block also carries the
 control plane's client certificate and private key, which must never land in
 evidence.
 
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+Ported from Prowler's GCP GKE service (prowler/providers/gcp/services/gke/
+gke_service.py, Apache-2.0). Every field above comes from the same
+`clusters.list` resource its one check already reads — a wider projection, not
+extra calls.
+
+Departures from the Prowler original:
+- **No per-location fanout.** Prowler lists locations then clusters in each;
+  `parent=projects/<id>/locations/-` returns every zonal and regional cluster in
+  one call.
 """
 
 import logging
@@ -59,15 +50,13 @@ from gcp_common import (  # noqa: E402
 logger = logging.getLogger("gcp_gke_cluster_configuration")
 
 
-# --- pure transforms (operate on Cluster.to_dict() output; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def node_pool_record(pool: dict) -> dict:
     """Normalize one node pool into an evidence record.
 
-    `service_account: "default"` is the literal the API returns when the pool
-    runs as the Compute Engine default service account — the over-privileged
-    default Prowler's gke_cluster_no_default_service_account flags. An explicit
-    per-pool service account is the least-privilege posture.
+    `service_account: "default"` is the literal the API returns when the pool runs
+    as the over-privileged Compute Engine default service account.
     """
     cfg = dig_any(pool, "config") or {}
     mgmt = dig_any(pool, "management") or {}
@@ -90,8 +79,7 @@ def node_pool_record(pool: dict) -> dict:
         "image_type": dig_any(cfg, "image_type") or None,
         "service_account": service_account,
         "uses_default_service_account": service_account == "default",
-        # CMEK on the node boot disks. Absent/empty ⇒ the Google-managed default,
-        # exactly as for a standalone Persistent Disk.
+        # Absent/empty ⇒ the Google-managed default, as for a standalone disk.
         "boot_disk_cmek": boot_disk_kms is not None,
         "boot_disk_kms_key": boot_disk_kms,
         "secure_boot": bool(dig_any(shielded, "enable_secure_boot")),
@@ -113,8 +101,7 @@ def cluster_record(cluster: dict) -> dict:
     database_encryption = dig_any(cluster, "database_encryption") or {}
     workload_pool = dig_any(cluster, "workload_identity_config", "workload_pool") or None
     legacy_abac = bool(dig_any(cluster, "legacy_abac", "enabled"))
-    # Sorted by name so a re-run with unchanged infra is byte-stable regardless of
-    # the order the API happens to return the pools in.
+    # Sorted by name so unchanged infra re-runs byte-stable.
     node_pools = sorted(
         (node_pool_record(p) for p in (dig_any(cluster, "node_pools") or [])),
         key=lambda p: p.get("name") or "",
@@ -129,15 +116,12 @@ def cluster_record(cluster: dict) -> dict:
         "initial_cluster_version": dig_any(cluster, "initial_cluster_version") or None,
         "current_master_version": dig_any(cluster, "current_master_version") or None,
         "current_node_count": dig_any(cluster, "current_node_count"),
-        # Patch posture: a release channel means Google manages control-plane and
-        # node upgrades on a published cadence instead of a manual bump.
         "release_channel": dig_any(cluster, "release_channel", "channel") or None,
         "autopilot": bool(dig_any(cluster, "autopilot", "enabled")),
         # --- network exposure ---
         "private_nodes": bool(dig_any(private, "enable_private_nodes")),
         "private_control_plane_endpoint": bool(dig_any(private, "enable_private_endpoint")),
-        # The endpoint IPs themselves are deliberately not copied; the posture
-        # fact is whether the control plane is reachable from the internet.
+        # The endpoint IPs are deliberately not copied; reachability is the fact.
         "control_plane_endpoint_access": (
             "private" if dig_any(private, "enable_private_endpoint") else "public"
         ),
@@ -149,8 +133,7 @@ def cluster_record(cluster: dict) -> dict:
         "dataplane_v2": dig_any(network_config, "datapath_provider") == "ADVANCED_DATAPATH",
         "intranode_visibility": bool(dig_any(network_config, "enable_intra_node_visibility")),
         # --- authorization ---
-        # RBAC is always on in a supported cluster; legacy ABAC is what lets a
-        # request bypass it, so the evidence that varies is legacy ABAC being off.
+        # RBAC is always on in a supported cluster; legacy ABAC is what bypasses it.
         "legacy_abac_enabled": legacy_abac,
         "rbac_only_authorization": not legacy_abac,
         "client_certificate_issued": bool(
@@ -194,9 +177,8 @@ def summarize(clusters: list[dict], *, api_readable: bool = True) -> dict:
     workload_identity = sum(1 for c in clusters if c["workload_identity_enabled"])
     auto_upgrade = sum(1 for p in pools if p["auto_upgrade"])
     return {
-        # False when the Container API is not enabled on this project (recorded in
-        # metadata.skipped_calls) or the list call failed — distinguishing "no
-        # clusters" from "could not look".
+        # False when the Container API is disabled or the list failed — "could not
+        # look" rather than "no clusters".
         "gke_api_readable": api_readable,
         "total_clusters": len(clusters),
         "private_node_clusters": private,
@@ -230,7 +212,7 @@ def summarize(clusters: list[dict], *, api_readable: bool = True) -> dict:
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def collect_clusters(project, creds, collector: Collector) -> list[dict] | None:
     """Every cluster in the project, or None when GKE could not be listed."""
@@ -238,8 +220,7 @@ def collect_clusters(project, creds, collector: Collector) -> list[dict] | None:
 
     def _list():
         client = container_v1.ClusterManagerClient(credentials=creds)
-        # locations/- = every zone and region at once. ListClustersResponse is not
-        # a paged response — the API returns the full set in one call.
+        # locations/- = every zone and region; ListClustersResponse is not paged.
         response = client.list_clusters(parent=f"projects/{project}/locations/-")
         return [
             cluster_record(container_v1.Cluster.to_dict(c, use_integers_for_enums=False))
@@ -286,9 +267,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

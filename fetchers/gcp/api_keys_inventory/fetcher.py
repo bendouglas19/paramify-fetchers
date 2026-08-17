@@ -2,59 +2,35 @@
 """
 GCP API Keys Inventory
 
-Every API key in one project: when it was created and last changed, how old it is,
-and exactly what restricts it — which API services it may call, and which
-referrers, IP ranges, Android packages or iOS bundle ids may present it.
+Every API key in one project: creation and last-update time, age against the
+90-day rotation interval, and both restriction axes unpacked — which API
+services the key may call, and which referrers, IP ranges, Android packages or
+iOS bundle ids may present it. An API key is a bearer credential with no
+identity behind it and no expiry, so the only controls are not having one and
+restricting the ones that exist.
 
-An API key is a bearer credential with no identity behind it: whoever holds the
-string is the caller. It cannot be scoped by IAM, cannot be attributed to a person,
-and does not expire. So the controls that exist are (a) not having any, and (b)
-restricting the ones that exist on both axes — which APIs the key can reach, and
-which clients can use it. The findings:
-- **An unrestricted key** — no API targets and no client restriction. The string
-  works against every enabled API in the project from anywhere.
-- **A key targeting `cloudapis.googleapis.com`** — the wildcard target, which reads
-  as "restricted" in the console while granting every Cloud API. Prowler's
-  apikeys_api_restrictions_configured treats it as equivalent to no restriction,
-  and so does this.
-- **An old key** — nothing rotates an API key, and nothing expires it. Age is the
-  only rotation evidence available. Prowler's apikeys_key_rotated_in_90_days.
-- **Any key at all** — Prowler's apikeys_key_exists exists because the defensible
-  posture for most projects is zero API keys, using service accounts or OAuth
-  instead. `summary.no_api_keys` is that fact.
+No key string is ever read. The v2 API returns key material only from the
+separate GetKeyString method, which this fetcher never calls, and every field is
+projected by name, so a future API that returned `keyString` from `list` still
+would not reach the evidence. `summary.key_material_collected` records that.
 
-**No key string is ever read.** The v2 API returns key material only from the
-separate `GetKeyString` method, which this fetcher does not call; `keys.list`
-returns metadata and restrictions. Every field written below is projected by name,
-so a future API that started returning `keyString` in the list response still would
-not reach the evidence file. `summary.key_material_collected` records this
-explicitly.
-
-Ported from Prowler's GCP API Keys service (prowler/providers/gcp/services/apikeys/
-apikeys_service.py, Apache-2.0), whose Key projects displayName as `name`, uid as
-`id`, createTime and the raw restrictions dict, collected from
-projects.locations.keys.list against `projects/<id>/locations/global`.
+Ported from Prowler's GCP API Keys service (prowler/providers/gcp/services/
+apikeys/apikeys_service.py, Apache-2.0).
 
 Departures from the Prowler original:
-- **GAPIC client, not discovery.** google.cloud.api_keys_v2 instead of
-  googleapiclient.discovery, per the category's preference. It also makes the
-  key-material separation structural: `list_keys` has no way to return a key
-  string, and `get_key_string` is a method this fetcher never calls.
-- **The restrictions dict is unpacked, not stored raw.** Prowler keeps
-  `restrictions` verbatim and asks one question of it. Each restriction axis is
-  projected here, so "restricted to these three APIs from these two IP ranges" is
-  legible without re-parsing a nested blob, and the two axes are counted separately
-  — an API-target restriction and a client restriction defend against different
-  things.
+- **The restrictions dict is unpacked, not stored raw.** Prowler keeps it
+  verbatim and asks one question of it. Both axes are projected and counted
+  separately, because an API-target restriction and a client restriction defend
+  against different things.
+- **`cloudapis.googleapis.com` is not a restriction.** The wildcard target reads
+  as "restricted" in the console while granting every Cloud API; it is counted
+  as unrestricted, as Prowler does.
 - **`updateTime` is collected alongside `createTime`.** Prowler measures age from
-  creation only. A key whose restrictions were tightened last week is a different
-  artifact from one untouched since 2019, and both can share a creation date.
+  creation only, but a key whose restrictions were tightened last week is a
+  different artifact from one untouched since 2019.
 - **Both spellings of the display name are kept.** Prowler stores displayName as
-  `name`, which collides with the key's resource name. Here `display_name`, `uid`
-  and `name` are distinct fields.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+  `name`, colliding with the resource name; `display_name`, `uid` and `name` are
+  distinct fields here.
 """
 
 import logging
@@ -86,15 +62,14 @@ logger = logging.getLogger("gcp_api_keys_inventory")
 # key has no expiry, so age is the whole of the rotation evidence.
 _ROTATION_AGE_DAYS = 90
 
-# The wildcard API target. A key restricted to this one service can call every
-# Cloud API, so the console shows "restricted" and nothing is restricted.
+# A key "restricted" to this wildcard target can still call every Cloud API.
 _WILDCARD_API_TARGET = "cloudapis.googleapis.com"
 
 # API keys only exist in the `global` location.
 _KEY_LOCATION = "global"
 
 
-# --- pure transforms (operate on to_dict() output; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def parse_timestamp(value) -> datetime | None:
     """RFC3339 timestamp string → aware datetime, or None when absent/odd."""
@@ -110,8 +85,7 @@ def parse_timestamp(value) -> datetime | None:
 def api_target_records(restrictions: dict) -> list[dict]:
     """Which API services the key may call, and how narrowly within each.
 
-    `methods` narrows a target to specific RPCs; an empty list means the whole
-    service, which is the common case and worth distinguishing.
+    `methods` narrows a target to specific RPCs; empty means the whole service.
     """
     targets = []
     for target in dig_any(restrictions, "api_targets") or []:
@@ -131,10 +105,9 @@ def api_target_records(restrictions: dict) -> list[dict]:
 def client_restrictions(restrictions: dict) -> dict:
     """The four client-side restriction axes, whichever one the key uses.
 
-    A key carries at most one of these — browser, server, Android or iOS — because
-    they describe mutually exclusive call sites. Android application entries carry
-    an APK signing-certificate fingerprint as well as a package name; only the
-    package names are projected, since the fingerprint is not a control fact.
+    A key carries at most one — browser, server, Android or iOS — since they
+    describe mutually exclusive call sites. Android entries also carry an APK
+    signing-certificate fingerprint, dropped here: it is not a control fact.
     """
     android = dig_any(restrictions, "android_key_restrictions", "allowed_applications") or []
     return {
@@ -192,11 +165,9 @@ def key_record(key: dict, now: datetime) -> dict:
         "targets_all_cloud_apis": any(t["wildcard_service"] for t in targets),
         "api_restrictions_configured": api_restricted,
         "client_restrictions_configured": client_restricted,
-        # The standing finding: a bearer credential usable against everything from
-        # anywhere.
         "unrestricted": not api_restricted and not client_restricted,
         "fully_restricted": api_restricted and client_restricted,
-        # Present in the API response but never written: see the module docstring.
+        # Never collected: GetKeyString is the only source, and it is never called.
         "key_material_collected": False,
     }
     record.update(clients)
@@ -234,22 +205,21 @@ def summarize(keys: list[dict], api_readable: bool = True) -> dict:
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def collect_keys(project, creds, collector: Collector, now: datetime) -> tuple[list[dict], bool]:
     """Every API key in the project's `global` location.
 
-    A project that never enabled apikeys.googleapis.com 403s with SERVICE_DISABLED,
-    which is evidence ("this project issues no API keys"), so it is tolerated and
-    reported as an unreadable API rather than as a collection failure.
+    A project that never enabled apikeys.googleapis.com 403s with
+    SERVICE_DISABLED — itself evidence, so it is tolerated and reported as an
+    unreadable API rather than as a collection failure.
     """
     from google.cloud import api_keys_v2
 
     def _list():
         client = api_keys_v2.ApiKeysClient(credentials=creds)
-        # The GAPIC pager iterates every page; no manual page-token loop. The
-        # response carries no key string — GetKeyString is a separate method, and
-        # it is never called.
+        # The response carries no key string: GetKeyString is a separate method,
+        # and it is never called.
         return [
             key_record(api_keys_v2.Key.to_dict(k, use_integers_for_enums=False), now)
             for k in client.list_keys(
@@ -304,9 +274,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

@@ -48,14 +48,6 @@ evidence_set:
   name: IAM Service Accounts and Keys
   instructions: >
     Script: fetcher.py. Google Cloud client library calls: iam
-    serviceAccounts.list (email, displayName, uniqueId, disabled),
-    serviceAccounts.keys.list per account (keyType USER_MANAGED vs
-    SYSTEM_MANAGED, keyOrigin, keyAlgorithm, validAfterTime, validBeforeTime,
-    disabled), serviceAccounts.getIamPolicy per account (who holds
-    serviceAccountUser / serviceAccountTokenCreator on it) and
-    cloudresourcemanager projects.getIamPolicy (the project bindings each account
-    appears in). Key ages are computed against collection time; the summary counts
-    user-managed keys older than 90 days. No key material is read — only a key's
-    identity and validity window. Project bindings name their serviceAccount:
-    members and count everything else, so this evidence set does not become a user
-    inventory.
+    serviceAccounts.list(), then keys.list() and getIamPolicy() per account;
+    cloudresourcemanager projects.getIamPolicy(). Key metadata only. One
+    evidence file per project.

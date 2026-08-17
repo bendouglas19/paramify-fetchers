@@ -43,13 +43,5 @@ evidence_set:
   name: VPC Network Configuration
   instructions: >
     Script: fetcher.py. Google Cloud client library calls: compute
-    networks.list (a global resource) and compute subnetworks.aggregatedList
-    (one call covers every region). Per network: autoCreateSubnetworks —
-    absent means a legacy pre-subnet network, true means auto mode, false means
-    custom mode — plus routingConfig.routingMode, mtu, peerings, the subnetwork
-    list, networkFirewallPolicyEnforcementOrder, and whether the network is named
-    `default`. Per subnet: ipCidrRange, purpose, role, stackType,
-    privateIpGoogleAccess, and flow logs from logConfig (enable,
-    aggregationInterval, flowSampling, metadata, filterExpr), falling back to the
-    deprecated top-level enableFlowLogs when logConfig is absent. A project with
-    the Compute API disabled is recorded as not readable rather than failing.
+    networks.list(), subnetworks.aggregatedList(). One evidence file per
+    project.

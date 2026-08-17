@@ -2,41 +2,25 @@
 """
 GCP Cloud SQL Backup & High Availability Configuration
 
-The recovery-planning evidence for Cloud SQL: for each instance in one project,
-whether automated backups run and in which window, whether point-in-time recovery
-is on (binary logging on MySQL, the PITR toggle elsewhere), how many backups and
-how many days of transaction log are retained, and whether the instance is
-regional (a standby in a second zone, automatic failover) or zonal.
+Recovery-planning evidence for each Cloud SQL instance in one project: whether
+automated backups run and in which window, whether point-in-time recovery is on,
+how many backups and days of transaction log are retained, and whether the
+instance is regional (standby in a second zone, automatic failover) or zonal.
 
 Ported from Prowler's GCP Cloud SQL service (prowler/providers/gcp/services/
-cloudsql/cloudsql_service.py, Apache-2.0), whose Instance projects
-automated_backups (settings.backupConfiguration.enabled), availability_type and
-instance_type — the fields behind cloudsql_instance_automated_backups and
-cloudsql_instance_high_availability_enabled. Prowler stops at those two booleans;
-the same `instances.list` response also carries the retention counts, the backup
-window, the transaction-log retention and the replica topology, which is what
-turns "backups are on" into recovery evidence. No extra API calls.
+cloudsql/cloudsql_service.py, Apache-2.0). Prowler stops at two booleans;
+the same `instances.list` response carries the retention counts, the window and
+the replica topology, which is what turns "backups are on" into recovery
+evidence. Siblings gcp_cloud_sql_network_configuration and
+gcp_cloud_sql_encryption_status project different slices of that one response.
 
-Sibling fetchers reading the same one response: gcp_cloud_sql_network_configuration
-(boundary posture) and gcp_cloud_sql_encryption_status (CMEK).
-
-Uses the official Google API Python client (discovery: sqladmin v1beta4) — Cloud
-SQL Admin has no stable dedicated GAPIC client, so the category's "prefer GAPIC"
-rule does not apply here.
-
-Two deliberate departures from the Prowler original:
-- **PITR is read per engine.** MySQL signals point-in-time recovery through
-  `binaryLogEnabled`, PostgreSQL and SQL Server through
-  `pointInTimeRecoveryEnabled`. Prowler reads neither; a fetcher that read only
+Departures from the Prowler original:
+- **PITR is read per engine.** MySQL signals it through `binaryLogEnabled`,
+  PostgreSQL and SQL Server through `pointInTimeRecoveryEnabled`. Reading only
   one would report every instance on the other engine as unprotected. Both raw
-  fields stay in the evidence next to the derived answer.
-- **High availability is scoped to primaries.** A read replica has no
-  availabilityType of its own — it inherits from its primary — so the HA
-  percentage is over primary instances only (Prowler's check skips replicas the
-  same way, by filtering instanceType).
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+  fields stay beside the derived answer.
+- **High availability is scoped to primaries.** A read replica inherits
+  availabilityType from its primary, so the HA percentage covers primaries only.
 """
 
 import logging
@@ -63,8 +47,8 @@ from gcp_common import (  # noqa: E402
 
 logger = logging.getLogger("gcp_cloud_sql_backup_configuration")
 
-# The instanceType that identifies a primary. Read replicas (READ_REPLICA_INSTANCE)
-# and the legacy first-generation type inherit availability from their primary.
+# The instanceType of a primary; READ_REPLICA_INSTANCE and the legacy first-generation
+# type inherit availability from their primary.
 _PRIMARY_INSTANCE_TYPE = "CLOUD_SQL_INSTANCE"
 
 # availabilityType that provisions a standby in a second zone with automatic
@@ -72,7 +56,7 @@ _PRIMARY_INSTANCE_TYPE = "CLOUD_SQL_INSTANCE"
 _REGIONAL_AVAILABILITY = "REGIONAL"
 
 
-# --- pure transforms (operate on REST-style dicts; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def is_mysql(database_version) -> bool:
     """MySQL is the engine whose PITR signal is binaryLogEnabled, not the toggle."""
@@ -82,9 +66,7 @@ def is_mysql(database_version) -> bool:
 def point_in_time_recovery(backup: dict, database_version) -> bool:
     """Whether the instance can be restored to an arbitrary moment.
 
-    Engine-specific by design — see the module docstring. Reads the field that
-    actually governs the engine in question rather than OR-ing the two, so a MySQL
-    instance cannot look protected because of a field MySQL does not use.
+    Per engine, not OR-ed: a MySQL instance must not look protected by an unused field.
     """
     if is_mysql(database_version):
         return bool(dig_any(backup, "binary_log_enabled"))
@@ -92,7 +74,6 @@ def point_in_time_recovery(backup: dict, database_version) -> bool:
 
 
 def instance_record(inst: dict) -> dict:
-    """Normalize one Cloud SQL instance resource into a recovery-posture record."""
     settings = dig_any(inst, "settings") or {}
     backup = dig_any(settings, "backup_configuration") or {}
     retention = dig_any(backup, "backup_retention_settings") or {}
@@ -137,15 +118,13 @@ def instance_record(inst: dict) -> dict:
         "failover_replica_available": bool(dig_any(failover_replica, "available")),
         "read_replica_names": replica_names,
         "read_replica_count": len(replica_names),
-        # Not a backup, but the control that stops a recovery plan being defeated
-        # by a delete.
+        # Not a backup, but what stops a recovery plan being defeated by a delete.
         "deletion_protection_enabled": bool(dig_any(settings, "deletion_protection_enabled")),
     }
 
 
 def summarize(instances: list[dict], *, api_readable: bool = True) -> dict:
-    # HA is a property of a primary; replicas inherit it, so including them would
-    # dilute the percentage with instances that cannot be configured either way.
+    # HA is a primary's property — replicas inherit it, so they would dilute the rate.
     primaries = [i for i in instances if i["is_primary"]]
     backed_up = sum(1 for i in instances if i["backup_enabled"])
     pitr = sum(1 for i in instances if i["point_in_time_recovery_enabled"])
@@ -160,9 +139,8 @@ def summarize(instances: list[dict], *, api_readable: bool = True) -> dict:
         if i["transaction_log_retention_days"] is not None
     ]
     return {
-        # False when sqladmin.googleapis.com is not enabled on this project
-        # (recorded in metadata.skipped_calls) — distinguishing "no Cloud SQL
-        # instances" from "could not look".
+        # False when sqladmin.googleapis.com is not enabled (recorded in
+        # metadata.skipped_calls) — "no instances" and "could not look" are different.
         "cloud_sql_api_readable": api_readable,
         "total_instances": len(instances),
         "primary_instances": len(primaries),
@@ -181,8 +159,7 @@ def summarize(instances: list[dict], *, api_readable: bool = True) -> dict:
         "deletion_protection_instances": sum(
             1 for i in instances if i["deletion_protection_enabled"]
         ),
-        # The weakest link, not the average: a recovery plan is bounded by its
-        # shortest retention.
+        # The weakest link, not the average: recovery is bounded by the shortest one.
         "minimum_retained_backup_count": min(retained) if retained else None,
         "maximum_retained_backup_count": max(retained) if retained else None,
         "minimum_transaction_log_retention_days": min(log_days) if log_days else None,
@@ -190,7 +167,7 @@ def summarize(instances: list[dict], *, api_readable: bool = True) -> dict:
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def collect_instances(project, creds, collector: Collector) -> list[dict] | None:
     """Every Cloud SQL instance in the project, or None when it could not list."""
@@ -207,9 +184,8 @@ def collect_instances(project, creds, collector: Collector) -> list[dict] | None
                 break
         return [instance_record(i) for i in items]
 
-    # A project that has never run Cloud SQL has sqladmin.googleapis.com disabled
-    # and the call 403s rather than returning an empty list — evidence, not a
-    # failure (the same call the GKE fetcher makes about the Container API).
+    # A project that has never run Cloud SQL has the API disabled and 403s here rather
+    # than returning an empty list — evidence, not a failure.
     records = collector.guard("sqladmin.instances.list", _list, tolerate=service_disabled)
     if records is None:
         return None
@@ -250,9 +226,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

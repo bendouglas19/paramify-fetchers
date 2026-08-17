@@ -42,19 +42,5 @@ evidence_set:
   reference_id: EVD-GCP-DNS
   name: Cloud DNS Zone and DNSSEC Configuration
   instructions: >
-    Script: fetcher.py. Google API client (discovery: dns v1 — the handwritten
-    google-cloud-dns library does not surface dnssecConfig, so the discovery client
-    is used here as it is for Cloud SQL) calls: managedZones.list and policies.list,
-    both paginated by pageToken. Per zone this reports name, id, dnsName,
-    creationTime, visibility, dnssecConfig state and nonExistence, every entry in
-    dnssecConfig defaultKeySpecs (keyType, algorithm, keyLength),
-    cloudLoggingConfig enableLogging, nameServers, the networks and GKE clusters in
-    privateVisibilityConfig, forwardingConfig targetNameServers and peeringConfig
-    targetNetwork. Key-signing and zone-signing algorithms are reported separately
-    because they are configured independently and either can be RSASHA1. DNSSEC
-    coverage is measured over PUBLIC zones only, since a private zone has no public
-    resolution path for DNSSEC to protect. Per policy this reports enableLogging,
-    enableInboundForwarding, the attached networks, and any alternative name
-    servers. When dns.googleapis.com is not enabled on the project the calls are
-    tolerated and reported as summary.dns_api_readable: false rather than as a
-    collection failure.
+    Script: fetcher.py. Google Cloud client library calls: dns
+    managedZones.list(), policies.list(). One evidence file per project.

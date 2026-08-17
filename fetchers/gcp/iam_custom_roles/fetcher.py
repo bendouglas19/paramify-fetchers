@@ -3,46 +3,24 @@
 GCP IAM Custom Role Definitions
 
 Every custom role defined for one project — and, when the organization is
-readable, the custom roles defined above it that can be bound inside it. For each
-role: its id, launch stage, deleted state, and the full list of permissions it
-grants, classified so the permissions that let a holder escalate out of the role
-are visible without reading 200 permission strings by eye.
+readable, the custom roles above it that can be bound inside it. Per role: id,
+launch stage, deleted state, and the full permission list, classified so the
+permissions that let a holder escalate out of the role are visible without
+reading 200 permission strings by eye.
 
-A predefined role's contents are Google's problem. A CUSTOM role's contents are
-the customer's, which makes this the only IAM surface where the definition itself
-is the evidence: `roles/appOperator` tells a reviewer nothing, while
-`iam.serviceAccounts.actAs` + `cloudfunctions.functions.create` tells them the
-role is a path to any identity in the project.
-
-The escalation classes reported per role:
-- **`set_iam_policy`** — any `*.setIamPolicy` permission. A holder can grant
-  themselves (or anyone) any role on that resource, so the role's stated scope
-  stops bounding it.
-- **`act_as_service_account`** — `iam.serviceAccounts.actAs` and the token/blob/JWT
-  signing permissions. A holder runs code as another identity, inheriting its
-  roles.
-- **`role_management`** — `iam.roles.create` / `.update` / `.delete` / `.undelete`.
-  A holder rewrites the definition of the role they hold.
-- **`service_account_key_creation`** — minting a downloadable private key for an
-  identity, which then lives outside GCP's control (see the sibling
-  gcp_iam_service_accounts evidence set for what those keys look like afterwards).
-- **`deployment_pivot`** — create/update on a compute or build surface that runs
-  code with an attached service account. Dangerous only when paired with actAs,
-  which is why the pairing is reported per role rather than each half alone.
+A predefined role's contents are Google's problem; a custom role's are the
+customer's, which makes this the only IAM surface where the definition itself is
+the evidence. The escalation classes reported per role are `set_iam_policy`,
+`act_as_service_account`, `role_management`, `service_account_key_creation`, and
+`deployment_pivot` — create/update on a surface that runs code as an attached
+identity, which is dangerous only paired with actAs, so the pairing is reported
+rather than each half alone.
 
 **Prowler is not the source here.** Its GCP provider has no custom-role service
-and no custom-role check: prowler/providers/gcp/services/iam/ enumerates service
-accounts, their keys, and workload identity pool providers, and its role-related
-checks (iam_role_kms_enforce_separation_of_duties,
-iam_role_sa_enforce_separation_of_duties) read project BINDINGS from
-cloudresourcemanager, never role DEFINITIONS. The API offers
-`iam.projects.roles.list` with `view=FULL`, which returns included_permissions;
-everything below the role's id and title is therefore an extension beyond Prowler,
-and the escalation classification is this fetcher's own — modelled on the
-well-known GCP privilege-escalation paths, not ported from a Prowler check.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+and no custom-role check; its role-related checks read project BINDINGS from
+cloudresourcemanager, never role DEFINITIONS. Everything below the role's id and
+title is an extension beyond Prowler, and the escalation classification is this
+fetcher's own, modelled on the well-known GCP privilege-escalation paths.
 """
 
 import logging
@@ -73,10 +51,9 @@ logger = logging.getLogger("gcp_iam_custom_roles")
 # GCP allows at most 10 levels of folders between a project and its organization.
 _MAX_ANCESTRY_DEPTH = 10
 
-# Any permission ending here lets its holder rewrite the IAM policy on that
-# resource — including granting themselves a broader role. Matched by suffix
-# because every GCP service spells its own (resourcemanager.projects.setIamPolicy,
-# iam.serviceAccounts.setIamPolicy, cloudkms.cryptoKeys.setIamPolicy, ...).
+# Any permission ending here lets its holder rewrite that resource's IAM policy,
+# including granting itself a broader role. Suffix-matched because every service
+# spells its own (resourcemanager.projects, iam.serviceAccounts, cloudkms.cryptoKeys).
 _SET_IAM_POLICY_SUFFIX = ".setIamPolicy"
 
 # Run code as another identity, or mint a credential for it.
@@ -101,8 +78,7 @@ _ROLE_MANAGEMENT_PERMISSIONS = frozenset(
     }
 )
 
-# Produce a downloadable private key, which then rotates only if someone
-# remembers to rotate it.
+# Mint a downloadable private key, which then rotates only if someone remembers to.
 _SERVICE_ACCOUNT_KEY_PERMISSIONS = frozenset(
     {
         "iam.serviceAccountKeys.create",
@@ -110,9 +86,8 @@ _SERVICE_ACCOUNT_KEY_PERMISSIONS = frozenset(
     }
 )
 
-# Create or update something that RUNS CODE with an attached service account.
-# Escalation only in combination with actAs, so the two are reported separately
-# and their coincidence is reported as its own fact.
+# Create or update something that RUNS CODE with an attached service account. An
+# escalation only paired with actAs, so the pairing is reported as its own fact.
 _DEPLOYMENT_PIVOT_PERMISSIONS = frozenset(
     {
         "cloudbuild.builds.create",
@@ -141,9 +116,8 @@ _ESCALATION_CATEGORIES = (
     "set_iam_policy",
 )
 
-# The final segment of a permission that only ever reads. Anything else mutates
-# state, which is what makes "is this custom role actually read-only?" answerable.
-# getIamPolicy reads a policy; setIamPolicy is deliberately absent.
+# Verbs that only ever read; anything else mutates, which is what makes "is this role
+# read-only?" answerable. getIamPolicy reads — setIamPolicy is absent by design.
 _READ_ONLY_VERBS = frozenset(
     {
         "aggregatedList",
@@ -158,7 +132,7 @@ _READ_ONLY_VERBS = frozenset(
 )
 
 
-# --- pure transforms (operate on to_dict() output; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def permission_escalation_category(permission: str) -> str | None:
     """Which escalation class a permission belongs to, or None for an ordinary one."""
@@ -178,9 +152,8 @@ def permission_escalation_category(permission: str) -> str | None:
 def permission_service(permission: str) -> str | None:
     """The service a permission belongs to (`compute` in `compute.instances.get`).
 
-    How many services a single custom role spans is the plainest measure of how
-    focused it is: a role touching one service is scoped, a role touching twelve
-    is a primitive role wearing a custom name.
+    How many services a role spans is the plainest measure of how focused it is: one
+    service is scoped, twelve is a primitive role wearing a custom name.
     """
     service = (permission or "").split(".", 1)[0]
     return service or None
@@ -199,10 +172,8 @@ def is_read_only_permission(permission: str) -> bool:
 def role_record(role: dict, scope: str = "project") -> dict:
     """Normalize one custom role definition into an evidence record.
 
-    `scope` is where the role is defined: "project", or the ancestor resource
-    ("organizations/123"). An organization-level custom role is bindable inside
-    the project, so it belongs in the project's evidence even though it isn't
-    defined there.
+    `scope` is where the role is defined — "project" or "organizations/123". An
+    org-level role is bindable inside the project, so it belongs in this evidence.
     """
     permissions = sorted(set(role.get("included_permissions") or []))
     by_category: dict[str, list[str]] = {}
@@ -221,11 +192,9 @@ def role_record(role: dict, scope: str = "project") -> dict:
         "scope": scope,
         "title": role.get("title") or None,
         "description": role.get("description") or None,
-        # ALPHA-stage roles come back with no stage field at all (the API omits it),
-        # so an absent stage is reported as ALPHA rather than as unknown.
+        # The API omits `stage` for ALPHA roles, so an absent stage reports as ALPHA.
         "stage": role.get("stage") or "ALPHA",
-        # A DISABLED role contributes no permissions to any principal it is bound
-        # to; a deleted one is in the 7-day undelete window.
+        # A DISABLED role grants nothing; a deleted one is in the 7-day undelete window.
         "disabled": (role.get("stage") or "") == "DISABLED",
         "deleted": bool(role.get("deleted")),
         "permission_count": len(permissions),
@@ -238,9 +207,8 @@ def role_record(role: dict, scope: str = "project") -> dict:
         "privilege_escalation_categories": sorted(by_category),
         "privilege_escalation_by_category": {k: v for k, v in sorted(by_category.items())},
         "grants_privilege_escalation": bool(escalation),
-        # Spelled out individually because these are the three a reviewer looks
-        # for by name, and because the actAs + deployment pairing is the classic
-        # "run as any service account" path.
+        # Spelled out by name because these are the ones a reviewer looks for, and the
+        # actAs + deployment pairing is the classic "run as any service account" path.
         "grants_set_iam_policy": "set_iam_policy" in by_category,
         "grants_act_as_service_account": "act_as_service_account" in by_category,
         "grants_role_management": "role_management" in by_category,
@@ -264,8 +232,8 @@ def summarize(roles: list[dict], organization_scope: str | None, org_readable: b
         "project_scoped_roles": sum(1 for r in roles if r["scope"] == "project"),
         "organization_scoped_roles": sum(1 for r in roles if r["scope"] != "project"),
         "organization_scope": organization_scope,
-        # False means the organization's roles were not readable, so the inventory
-        # covers the project's own custom roles only — not that there are none.
+        # False means the organization's roles were not readable — the inventory covers
+        # the project's own custom roles only, not that there are none.
         "organization_roles_readable": org_readable,
         "role_stages": dict(sorted(stages.items())),
         "disabled_roles": sum(1 for r in roles if r["disabled"]),
@@ -295,15 +263,13 @@ def summarize(roles: list[dict], organization_scope: str | None, org_readable: b
     return summary
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def _outside_project_scope(exc: BaseException) -> bool:
-    """`guard(tolerate=...)` predicate for the reads above the project.
+    """`guard(tolerate=...)` predicate for the organization reads.
 
-    Resolving the organization and listing its custom roles are not in a
-    project-scoped read-only role's grant. The project's own custom roles are
-    still complete evidence, so these are recorded as skipped rather than failing
-    the collection.
+    They are outside a project-scoped role's grant, and the project's own roles are
+    still complete evidence — so a 403 there is recorded as skipped, not fatal.
     """
     return access_denied(exc) or service_disabled(exc)
 
@@ -313,11 +279,9 @@ def collect_roles(
 ) -> list[dict] | None:
     """Custom roles defined on `parent` (a project or an organization).
 
-    `view=FULL` is required: the default BASIC view omits included_permissions,
-    which is the entire point of this evidence set.
-
-    Returns None — not [] — when the call did not happen, so "no custom roles
-    here" and "couldn't look" stay distinguishable in the summary.
+    `view=FULL` is required: the default BASIC view omits included_permissions, the
+    entire point of this evidence set. Returns None — not [] — when the call did not
+    happen, so "no custom roles" and "couldn't look" stay distinguishable.
     """
     from google.cloud import iam_admin_v1
 
@@ -341,8 +305,7 @@ def collect_roles(
 def collect_organization(project, creds, collector: Collector) -> str | None:
     """The organization the project sits under, walking up through any folders.
 
-    Reading the resource hierarchy is outside a project-scoped role's grant, so a
-    403 here is tolerated and the inventory covers project-level roles only.
+    A 403 is tolerated — see `_outside_project_scope`.
     """
     from google.cloud import resourcemanager_v3
 
@@ -422,9 +385,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

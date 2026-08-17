@@ -47,6 +47,4 @@ evidence_set:
   name: Persistent Disk Encryption
   instructions: >
     Script: fetcher.py. Google Cloud client library calls: compute
-    disks.aggregatedList (diskEncryptionKey.kmsKeyName) and
-    snapshots.list (snapshotEncryptionKey.kmsKeyName). CMEK present ⇒
-    customer-managed; absent ⇒ Google-managed default encryption.
+    disks.aggregatedList(), snapshots.list(). One evidence file per project.

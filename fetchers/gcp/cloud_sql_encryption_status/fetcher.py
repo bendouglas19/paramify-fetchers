@@ -12,9 +12,6 @@ Uses the official Google API Python client (discovery: sqladmin v1beta4); there
 is no stable dedicated GAPIC client for Cloud SQL Admin. instances.list already
 returns full instance resources (REST/camelCase dicts), which the pure transform
 below consumes directly.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
 """
 
 import logging
@@ -42,7 +39,7 @@ from gcp_common import (  # noqa: E402
 logger = logging.getLogger("gcp_cloud_sql_encryption_status")
 
 
-# --- pure transforms (operate on REST-style dicts; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def instance_record(inst: dict) -> dict:
     """Normalize one Cloud SQL instance resource dict into an evidence record.
@@ -87,7 +84,7 @@ def summarize(instances: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def collect_instances(project, creds, collector: Collector) -> list[dict]:
     from googleapiclient.discovery import build
@@ -139,9 +136,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

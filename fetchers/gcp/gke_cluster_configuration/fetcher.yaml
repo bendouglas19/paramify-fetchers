@@ -49,14 +49,5 @@ evidence_set:
   reference_id: EVD-GCP-GKE-CONFIG
   name: GKE Cluster Configuration
   instructions: >
-    Script: fetcher.py. Google Cloud client library call: container (GKE)
-    clusters.list against projects/<id>/locations/- (one call covers every zonal
-    and regional cluster). Per cluster: privateClusterConfig,
-    masterAuthorizedNetworksConfig, networkPolicy, legacyAbac,
-    workloadIdentityConfig, shieldedNodes, binaryAuthorization, releaseChannel,
-    loggingConfig / monitoringConfig component lists, databaseEncryption (etcd
-    CMEK) and each nodePool's management.autoUpgrade / autoRepair,
-    config.serviceAccount, config.bootDiskKmsKey and
-    config.shieldedInstanceConfig. masterAuth is read field-by-field so the
-    control plane's client key never enters the evidence. A project with the
-    Container API disabled is recorded as not readable rather than failing.
+    Script: fetcher.py. Google Cloud client library call: container
+    clusters.list(). One evidence file per project.

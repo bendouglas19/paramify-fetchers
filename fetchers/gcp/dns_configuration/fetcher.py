@@ -3,47 +3,32 @@
 GCP Cloud DNS Configuration
 
 Every Cloud DNS managed zone in one project: whether DNSSEC is on, which
-algorithms sign the keys and the zone, whether the zone is public or private, and
-whether query logging is enabled — plus the project's DNS policies, which is where
-logging and inbound forwarding are configured network-wide.
-
-The findings this evidence exists to surface:
-- **DNSSEC off on a public zone** — the zone's answers can be spoofed on the way
-  to a resolver. Prowler's dns_dnssec_disabled.
-- **RSASHA1 as the key-signing or zone-signing algorithm** — a broken hash in the
-  signing chain, so DNSSEC is technically on and cryptographically hollow.
-  Prowler splits this into dns_rsasha1_in_use_to_key_sign_in_dnssec and
-  dns_rsasha1_in_use_to_zone_sign_in_dnssec because the two key types are
-  configured separately and either can be weak on its own.
-- **No query logging** — DNS queries are the earliest signal of a compromised
-  workload calling home, and Cloud DNS does not log them by default.
+algorithms sign the keys and the zone (RSASHA1 in either position being the
+finding), whether the zone is public or private, and whether query logging is
+enabled — plus the project's DNS policies, where logging and inbound forwarding
+are configured network-wide.
 
 Visibility is collected because it changes what the other facts mean: DNSSEC does
-not apply to a private zone at all (there is no public resolution path to
-protect), so a private zone with DNSSEC off is not the same finding as a public one
-with DNSSEC off. Prowler's check does not make that distinction, and the summary
-here reports DNSSEC coverage over public zones for exactly that reason.
+not apply to a private zone at all, so a private zone with DNSSEC off is not the
+same finding as a public one. Prowler's check does not distinguish them, which is
+why the summary reports DNSSEC coverage over public zones.
 
 Ported from Prowler's GCP DNS service (prowler/providers/gcp/services/dns/
-dns_service.py, Apache-2.0), whose ManagedZone projects name/id/dnssec (state ==
-"on")/key_specs and whose Policy projects name/id/logging/networks.
+dns_service.py, Apache-2.0).
 
 Departures from the Prowler original:
-- **Discovery client, deliberately.** The Cloud DNS API has no GAPIC client that
-  exposes dnssecConfig — the handwritten google-cloud-dns library predates DNSSEC
-  and does not surface it — so this uses googleapiclient.discovery (dns v1), the
-  same client Prowler uses and the same exception the Cloud SQL fetcher makes.
+- **Discovery client, deliberately.** No GAPIC client exposes dnssecConfig — the
+  handwritten google-cloud-dns library predates DNSSEC — so this uses
+  googleapiclient.discovery (dns v1), the same exception the Cloud SQL fetchers
+  make.
 - **The DNSSEC state is reported, not flattened to a boolean.** Prowler collapses
-  the state to `dnssec = state == "on"`, which loses "transfer" — a zone
-  mid-migration between DNSSEC providers, which is neither on nor simply off.
-- **Zone visibility, logging, and the private/forwarding/peering topology are
+  it to `state == "on"`, losing "transfer": a zone mid-migration between DNSSEC
+  providers, which is neither on nor simply off.
+- **Zone visibility, logging and the private/forwarding/peering topology are
   collected.** Prowler's zone model carries none of them.
 - **Zone-level logging is separated from policy-level logging.** Prowler reads
-  `enableLogging` off DNS policies only. A managed zone carries its own
-  cloudLoggingConfig, and that is the one that governs queries against that zone.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+  `enableLogging` off DNS policies only, but a managed zone's own
+  cloudLoggingConfig is what governs queries against that zone.
 """
 
 import logging
@@ -71,12 +56,11 @@ from gcp_common import (  # noqa: E402
 
 logger = logging.getLogger("gcp_dns_configuration")
 
-# The signing algorithm that is the finding. SHA-1 is collision-broken, so a
-# signature chain rooted in it proves nothing.
+# SHA-1 is collision-broken, so a signature chain rooted in it proves nothing.
 _WEAK_ALGORITHMS = frozenset({"rsasha1"})
 
-# Cloud DNS key spec types. Key-signing and zone-signing keys are configured
-# independently and either can be the weak one.
+# Key-signing and zone-signing keys are configured independently; either can be
+# the weak one, so the two are tracked apart.
 _KEY_SIGNING = "keySigning"
 _ZONE_SIGNING = "zoneSigning"
 
@@ -84,7 +68,7 @@ _ZONE_SIGNING = "zoneSigning"
 _PUBLIC_VISIBILITY = "public"
 
 
-# --- pure transforms (operate on REST-style dicts; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def key_spec_record(spec: dict) -> dict:
     """One DNSSEC key spec: which key it signs, with what, at what length."""
@@ -111,8 +95,7 @@ def zone_record(zone: dict) -> dict:
     guessing "private" for an absent value would understate the exposure.
     """
     specs = [key_spec_record(s) for s in (dig_any(zone, "dnssec_config", "default_key_specs") or [])]
-    # "on" | "off" | "transfer". Prowler tests == "on" and loses "transfer", a zone
-    # mid-migration between DNSSEC providers.
+    # "on" | "off" | "transfer" — reported, not flattened (see the departures above).
     state = (dig_any(zone, "dnssec_config", "state") or "").lower() or None
     visibility = (dig_any(zone, "visibility") or _PUBLIC_VISIBILITY).lower()
 
@@ -131,7 +114,6 @@ def zone_record(zone: dict) -> dict:
         "creation_time": dig_any(zone, "creation_time") or None,
         "visibility": visibility,
         "public": visibility == _PUBLIC_VISIBILITY,
-        # A private zone has no public resolution path, so DNSSEC does not apply.
         "dnssec_applicable": visibility == _PUBLIC_VISIBILITY,
         "dnssec_state": state,
         "dnssec_enabled": state == "on",
@@ -139,8 +121,6 @@ def zone_record(zone: dict) -> dict:
         "key_specs": specs,
         "key_signing_algorithms": key_signing,
         "zone_signing_algorithms": zone_signing,
-        # Prowler's two RSASHA1 checks, kept apart for the same reason it keeps
-        # them apart: either key type can be the weak one.
         "rsasha1_key_signing": rsasha1_key,
         "rsasha1_zone_signing": rsasha1_zone,
         "uses_weak_signing_algorithm": rsasha1_key or rsasha1_zone,
@@ -155,8 +135,7 @@ def zone_record(zone: dict) -> dict:
             dig_any(cluster, "gke_cluster_name") or ""
             for cluster in (dig_any(private, "gke_clusters") or [])
         ),
-        # A forwarding or peering zone hands resolution to somewhere else, which
-        # is where the answers actually come from.
+        # A forwarding or peering zone is where the answers actually come from.
         "forwarding_targets": sorted(
             dig_any(target, "ipv4_address") or dig_any(target, "domain_name") or ""
             for target in (dig_any(zone, "forwarding_config", "target_name_servers") or [])
@@ -203,16 +182,14 @@ def summarize(zones: list[dict], policies: list[dict], api_readable: bool = True
             zone_algorithms[algorithm] = zone_algorithms.get(algorithm, 0) + 1
 
     return {
-        # False means the Cloud DNS API is disabled or unreadable on this project,
-        # not that the project has no zones.
+        # False means the API is disabled or unreadable, not that there are no zones.
         "dns_api_readable": api_readable,
         "total_managed_zones": len(zones),
         "public_zones": len(public),
         "private_zones": len(zones) - len(public),
         "dnssec_enabled_zones": sum(1 for z in zones if z["dnssec_enabled"]),
         "dnssec_transferring_zones": sum(1 for z in zones if z["dnssec_state"] == "transfer"),
-        # Measured over PUBLIC zones only: DNSSEC does not apply to a private one,
-        # so counting private zones as failures would misreport the posture.
+        # Public zones only: counting private ones as failures would misreport it.
         "dnssec_public_zone_percentage": coverage_percentage(len(signed_public), len(public)),
         "unsigned_public_zones": len(public) - len(signed_public),
         "zones_using_weak_signing_algorithm": sum(
@@ -234,7 +211,7 @@ def summarize(zones: list[dict], policies: list[dict], api_readable: bool = True
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def _service(creds):
     from googleapiclient.discovery import build
@@ -258,9 +235,9 @@ def _paginate(request_factory, key: str) -> list[dict]:
 def collect_zones(project, creds, collector: Collector) -> tuple[list[dict], bool]:
     """Managed zones in the project.
 
-    A project that never enabled dns.googleapis.com 403s with SERVICE_DISABLED,
-    which is evidence ("this project serves no DNS"), so it is tolerated and
-    reported as an unreadable API rather than as a collection failure.
+    A project that never enabled dns.googleapis.com 403s with SERVICE_DISABLED —
+    evidence that it serves no DNS, so it is tolerated and reported as an
+    unreadable API rather than a failure.
     """
     def _list():
         service = _service(creds)
@@ -330,9 +307,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

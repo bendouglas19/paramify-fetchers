@@ -47,15 +47,7 @@ evidence_set:
   name: Cloud Logging Configuration
   instructions: >
     Script: fetcher.py. Google Cloud client library calls: logging
-    sinks.list (destination, filter, disabled, includeChildren, writerIdentity),
-    logging buckets.list against projects/<id>/locations/- (retentionDays, locked,
-    cmekSettings.kmsKeyName, lifecycleState), logging settings.get (log-router
-    kmsKeyName, storageLocation, disableDefaultSink), logging metrics.list
-    (filter, bucketName, metricDescriptor.type) and monitoring
-    alertPolicies.list (per-condition filters, matched against each metric name).
-    The project's ancestry is resolved through Resource Manager projects.get /
-    folders.get so an organization- or folder-level aggregated sink is seen too;
-    those above-project reads are tolerated when the role cannot make them and are
-    then listed in metadata.skipped_calls. Filters are reported verbatim — whether
-    a filter proves full audit-stream coverage is a validator's judgment, not the
-    fetcher's.
+    sinks.list(), buckets.list(), settings.get(), metrics.list(); monitoring
+    alertPolicies.list(); cloudresourcemanager projects.get() and
+    folders.get() to walk ancestry for org and folder sinks. One evidence
+    file per project.

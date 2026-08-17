@@ -7,9 +7,6 @@ encryption uses a customer-managed key (CMEK) or the Google-managed key, and the
 data-protection posture (uniform bucket-level access, versioning, retention).
 Cloud Storage is always encrypted at rest by default, so "encrypted: true" can
 never fail — the fact that varies is CMEK vs Google-managed and which KMS key.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
 """
 
 import logging
@@ -37,7 +34,7 @@ from gcp_common import (  # noqa: E402
 logger = logging.getLogger("gcp_cloud_storage_encryption_status")
 
 
-# --- pure transforms (operate on REST-style dicts; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def bucket_record(bucket: dict) -> dict:
     """Normalize one bucket resource dict into an evidence record.
@@ -92,7 +89,7 @@ def summarize(buckets: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def collect_buckets(project, creds, collector: Collector) -> list[dict]:
     from google.cloud import storage
@@ -139,9 +136,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

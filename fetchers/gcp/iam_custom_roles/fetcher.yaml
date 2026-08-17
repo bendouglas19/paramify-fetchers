@@ -44,23 +44,7 @@ evidence_set:
   reference_id: EVD-GCP-IAM-CUSTOM-ROLES
   name: IAM Custom Role Definitions
   instructions: >
-    Script: fetcher.py. Google Cloud client library calls: iam roles.list with
-    parent projects/<id> and view=FULL — the default BASIC view omits
-    includedPermissions, which is the substance of this evidence set — reporting
-    each role's name, title, description, stage, deleted flag and permission list.
-    The project's organization is then resolved with cloudresourcemanager
-    projects.get plus folders.get up the hierarchy, and iam roles.list is repeated
-    against organizations/<id> so organization-level custom roles bindable in the
-    project are covered; both of those reads sit above the project and are
-    tolerated when denied, in which case summary.organization_roles_readable is
-    false. Permissions are classified per role: any permission ending in
-    .setIamPolicy, the iam.serviceAccounts actAs / getAccessToken / getOpenIdToken
-    / implicitDelegation / signBlob / signJwt set, iam.roles create / update /
-    delete / undelete, iam.serviceAccountKeys create / update, and create-or-update
-    permissions on compute, Cloud Build, Cloud Functions, Cloud Run, Dataflow,
-    Dataproc, Composer, Cloud Scheduler, Deployment Manager and organization
-    policy. Roles are also measured by how many distinct services their
-    permissions span, and marked read-only when every permission's verb is get,
-    list, watch, search, view, aggregatedList, getIamPolicy or
-    testIamPermissions. An ALPHA-stage role is returned by the API with no stage
-    field, so an absent stage is reported as ALPHA.
+    Script: fetcher.py. Google Cloud client library calls: iam roles.list()
+    for the project and, where readable, the organization;
+    cloudresourcemanager projects.get() and folders.get() for ancestry. One
+    evidence file per project.

@@ -57,21 +57,7 @@ evidence_set:
   reference_id: EVD-GCP-IAM-BINDINGS
   name: IAM Policy Bindings and Audit Configuration
   instructions: >
-    Script: fetcher.py. Google Cloud client library calls: cloudresourcemanager
-    projects.get (project number, display name, parent, lifecycle state, labels)
-    and projects.getIamPolicy requested at policy version 3 so conditional
-    bindings return their condition expression. Each binding yields its role, its
-    full member list, per-principal-type counts, and the members that are
-    allUsers / allAuthenticatedUsers, service accounts, consumer Google accounts,
-    or outside the organization domain. The same bindings are rolled up per
-    principal, so every role a single identity holds — and therefore any
-    separation-of-duties pair, such as cloudkms.admin alongside a crypto-key use
-    role — is answerable from the evidence without the fetcher judging it. The
-    policy's auditConfigs are reported per service with their log types and the
-    members exempted from Data Access logging. Roles count as over-broad when they
-    are roles/owner, roles/editor, or any role whose name contains "admin". The
-    organization domain comes from GCP_ORGANIZATION_DOMAIN when set, otherwise
-    from cloudresourcemanager folders.get / organizations.get walked up from the
-    project; those reads sit above the project and are tolerated when denied. This
-    evidence set enumerates human identities on purpose — it is the project's
-    access inventory. An IAM policy carries no credentials.
+    Script: fetcher.py. Google Cloud client library calls:
+    cloudresourcemanager projects.getIamPolicy() at policy version 3,
+    projects.get(), organizations.get() and folders.get() for ancestry. One
+    evidence file per project.

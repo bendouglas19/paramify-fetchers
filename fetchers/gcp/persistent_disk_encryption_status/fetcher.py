@@ -7,9 +7,6 @@ whether encryption at rest uses a customer-managed key (CMEK) or the default
 Google-managed key. GCP encrypts every disk and snapshot at rest by default, so
 "encrypted: true" can never be false and would be worthless evidence — the fact
 that actually varies is CMEK vs Google-managed, and which KMS key is attached.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
 """
 
 import logging
@@ -37,7 +34,7 @@ from gcp_common import (  # noqa: E402
 logger = logging.getLogger("gcp_persistent_disk_encryption_status")
 
 
-# --- pure transforms (operate on REST-style dicts; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def _kms_key_name(encryption_block) -> str | None:
     """kmsKeyName out of a *EncryptionKey block, tolerant of key spellings."""
@@ -97,7 +94,7 @@ def summarize(disks: list[dict], snapshots: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def collect_disks(project, creds, collector: Collector) -> list[dict]:
     from google.cloud import compute_v1
@@ -159,9 +156,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

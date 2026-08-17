@@ -7,38 +7,24 @@ user-managed, and which locations), whether the replicas are wrapped with a CMEK
 whether a rotation schedule exists and when it next fires, whether the secret
 expires, its labels, who can read it, and how many versions it has in each state.
 
-**No secret payload ever enters this evidence.** The fetcher calls
-`ListSecrets`, `ListSecretVersions` and `GetIamPolicy` — never
-`AccessSecretVersion`, the only call that returns a value. Version records carry
-the version's state and timestamps, not its data, and no checksum field is copied
-either.
+**No secret payload ever enters this evidence.** The fetcher calls ListSecrets,
+ListSecretVersions and GetIamPolicy — never AccessSecretVersion, the only call
+that returns a value. Version records carry state and timestamps, not data, and
+no checksum field is copied either.
 
 Ported from Prowler's GCP Secret Manager service (prowler/providers/gcp/services/
-secretmanager/secretmanager_service.py, Apache-2.0) and its two checks
-(secretmanager_secret_rotation_enabled, secretmanager_secret_not_publicly_
-accessible). Prowler's Secret projects id/name/project_id/location/
-rotation_period/next_rotation_time plus a publicly_accessible boolean derived from
-the secret's IAM policy. The same `ListSecrets` response also carries the
-replication policy, the CMEK on each replica, the expiry, the labels and the
-notification topics, and version state is one further list call — which is what
-turns "rotation is configured" into evidence that the rotation actually happened.
+secretmanager/secretmanager_service.py, Apache-2.0) and its two checks. The same
+ListSecrets response also carries the replication policy, per-replica CMEK,
+expiry and labels, and version state is one further list call — which is what
+turns "rotation is configured" into evidence that rotation actually happened.
 
-Uses the official GAPIC client (google.cloud.secretmanager) per the category's
-preference, rather than Prowler's googleapiclient.discovery build of
-secretmanager v1.
-
-Two deliberate departures from the Prowler original:
-- **Rotation is reported, not scored.** Prowler's check FAILs a rotation period
-  longer than a configurable 90-day maximum. Here the period, its length in days,
-  the next rotation time and whether that time has passed all go into the
-  evidence, and the summary counts against the same 90-day reference — the
-  judgment stays out of the collector.
-- **IAM policy members are summarized like the IAM fetcher's bindings.** Public
-  principals and service accounts are named (they are the posture facts); people
-  and groups are counted. A human-identity inventory is a different evidence set.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+Departures from the Prowler original:
+- **Rotation is reported, not scored.** Prowler FAILs a period longer than a
+  configurable maximum. The period, its length in days, the next rotation time
+  and whether it has passed all go into the evidence; the summary counts against
+  the same 90-day reference and the judgment stays out of the collector.
+- **IAM members are summarized like the IAM fetcher's bindings.** Public
+  principals and service accounts are named; people and groups are counted.
 """
 
 import logging
@@ -67,9 +53,8 @@ from gcp_common import (  # noqa: E402
 
 logger = logging.getLogger("gcp_secret_manager_configuration")
 
-# The reference rotation interval the summary counts against — Prowler's default
-# secretmanager_max_rotation_days. A validator can pick a different threshold from
-# each secret's rotation_period_days.
+# Prowler's default secretmanager_max_rotation_days, a reference the summary counts
+# against — a validator can pick its own from each secret's rotation_period_days.
 _MAX_ROTATION_PERIOD_DAYS = 90
 
 # The two principals that make a secret readable outside the organization.
@@ -78,15 +63,14 @@ _PUBLIC_PRINCIPALS = frozenset({"allusers", "allauthenticatedusers"})
 # IAM member prefixes that identify a person or a mailing list. Counted, not named.
 _PERSONAL_MEMBER_PREFIXES = ("user:", "group:", "principal:", "principalset:")
 
-# The states a SecretVersion can be in. Enumerated so a secret with none of a
-# given state still reports zero rather than omitting the key, which keeps the
-# payload byte-stable across runs.
+# Enumerated so a secret with none of a given state still reports zero rather than
+# omitting the key, which keeps the payload byte-stable across runs.
 _VERSION_STATES = ("ENABLED", "DISABLED", "DESTROYED", "STATE_UNSPECIFIED")
 
 _SECONDS_PER_DAY = 86_400
 
 
-# --- pure transforms (operate on to_dict() output; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def parse_timestamp(value) -> datetime | None:
     """RFC3339 timestamp string → aware datetime, or None when absent/odd."""
@@ -111,10 +95,9 @@ def parse_duration_seconds(value) -> int | None:
 
 
 def secret_location(resource_name) -> str:
-    """"global", or the region of a regional secret, read from its resource name.
+    """"global", or the region in `projects/p/locations/us-east1/secrets/x`.
 
-    `projects/p/secrets/x` is global; `projects/p/locations/us-east1/secrets/x` is
-    regional. Prowler hardcodes "global" because it only lists the global parent.
+    Prowler hardcodes "global" because it only lists the global parent.
     """
     parts = str(resource_name or "").split("/")
     if "locations" in parts:
@@ -133,10 +116,9 @@ def is_public_member(member) -> bool:
 def replica_records(replication: dict) -> tuple[str | None, list[dict]]:
     """The replication policy name and one record per replica.
 
-    An automatic policy has no location list — Google picks the regions — so it is
-    reported as a single replica with location None. A user-managed policy names
-    each region. CMEK is the PRESENCE of a customerManagedEncryption block, the
-    same presence test the other GCP encryption fetchers use.
+    Automatic policies carry no location list — Google picks the regions — so they
+    become one replica with location None. CMEK is the PRESENCE of a
+    customerManagedEncryption block, as in the other GCP encryption fetchers.
     """
     automatic = dig_any(replication, "automatic")
     user_managed = dig_any(replication, "user_managed")
@@ -177,8 +159,7 @@ def version_record(version: dict) -> dict:
 def binding_record(binding: dict) -> dict:
     """One IAM binding on the secret: public and service-account members named.
 
-    Everything else — people, groups, domains — contributes to a count only, so a
-    secret's access policy cannot quietly become a human-identity inventory.
+    Everyone else is counted only, so the policy cannot become an identity inventory.
     """
     members = binding.get("members") or []
     public = sorted(m for m in members if is_public_member(m))
@@ -198,7 +179,6 @@ def binding_record(binding: dict) -> dict:
 def secret_record(
     secret: dict, versions: list[dict], bindings: list[dict], now: datetime
 ) -> dict:
-    """Normalize one secret, its versions and its access policy into a record."""
     resource_name = dig_any(secret, "name")
     rotation = dig_any(secret, "rotation") or {}
     policy_name, replicas = replica_records(dig_any(secret, "replication") or {})
@@ -234,9 +214,8 @@ def secret_record(
         "replicas": replicas,
         "replica_count": len(replicas),
         "replica_locations": sorted(r["location"] for r in replicas if r["location"]),
-        # CMEK only counts when EVERY replica has one — a secret with one
-        # Google-managed replica is a Google-managed secret in the region that
-        # matters.
+        # CMEK only counts when EVERY replica has one — one Google-managed replica
+        # makes the secret Google-managed in the region that matters.
         "cmek": bool(replicas) and all(r["cmek"] for r in replicas),
         "replicas_with_cmek": sum(1 for r in replicas if r["cmek"]),
         "kms_key_names": sorted({r["kms_key_name"] for r in replicas if r["kms_key_name"]}),
@@ -283,23 +262,19 @@ def summarize(secrets: list[dict], *, api_readable: bool = True) -> dict:
     periods = [s["rotation_period_days"] for s in rotating if s["rotation_period_days"] is not None]
     versions = [v for s in secrets for v in s["versions"]]
     return {
-        # False when secretmanager.googleapis.com is not enabled on this project
-        # (recorded in metadata.skipped_calls) — distinguishing "no secrets" from
-        # "could not look".
+        # False when secretmanager.googleapis.com is not enabled (recorded in
+        # metadata.skipped_calls) — "no secrets" and "could not look" are different.
         "secret_manager_api_readable": api_readable,
         "total_secrets": len(secrets),
-        # --- rotation ---
         "secrets_with_rotation": len(rotating),
         "rotation_percentage": coverage_percentage(len(rotating), len(secrets)),
         "max_rotation_period_days": _MAX_ROTATION_PERIOD_DAYS,
         "secrets_rotating_within_max_period": within_max,
         "secrets_with_overdue_rotation": sum(1 for s in secrets if s["rotation_overdue"]),
         "longest_rotation_period_days": max(periods) if periods else None,
-        # --- encryption at rest ---
         "cmek_secrets": cmek,
         "google_managed_secrets": len(secrets) - cmek,
         "cmek_percentage": coverage_percentage(cmek, len(secrets)),
-        # --- replication ---
         "automatic_replication_secrets": sum(
             1 for s in secrets if s["replication_policy"] == "automatic"
         ),
@@ -307,12 +282,10 @@ def summarize(secrets: list[dict], *, api_readable: bool = True) -> dict:
             1 for s in secrets if s["replication_policy"] == "user_managed"
         ),
         "replica_locations": sorted({loc for s in secrets for loc in s["replica_locations"]}),
-        # --- access ---
         "publicly_accessible_secrets": sum(1 for s in secrets if s["publicly_accessible"]),
         "non_public_secret_percentage": coverage_percentage(
             len(secrets) - sum(1 for s in secrets if s["publicly_accessible"]), len(secrets)
         ),
-        # --- lifecycle ---
         "secrets_with_expiry": sum(1 for s in secrets if s["has_expiry"]),
         "secrets_with_no_enabled_version": sum(
             1 for s in secrets if s["enabled_version_count"] == 0
@@ -324,16 +297,14 @@ def summarize(secrets: list[dict], *, api_readable: bool = True) -> dict:
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def policy_bindings(policy) -> list[dict]:
     """google.iam.v1.Policy → sorted {role, members} dicts.
 
-    An IAM policy comes back as a raw protobuf rather than a proto-plus message,
-    so it has no to_dict(); reading the two fields that matter beats pulling in
-    json_format. (Deliberately a local copy of the same helper in the IAM
-    service-accounts fetcher — fetchers do not import each other, and
-    _shared/gcp_common.py is shared with other categories' authors.)
+    An IAM policy comes back as a raw protobuf, not a proto-plus message, so it has
+    no to_dict(); reading the two fields that matter beats pulling in json_format.
+    Duplicated in the IAM service-accounts fetcher: fetchers do not import each other.
     """
     return sorted(
         ({"role": b.role, "members": sorted(b.members)} for b in policy.bindings),
@@ -344,13 +315,11 @@ def policy_bindings(policy) -> list[dict]:
 def collect_secrets(project, creds, collector: Collector, now: datetime) -> list[dict] | None:
     """Every secret in the project, or None when Secret Manager could not be read.
 
-    Three read calls, and never AccessSecretVersion: ListSecrets once, then
-    ListSecretVersions and GetIamPolicy per secret.
+    Never AccessSecretVersion: ListSecrets, then ListSecretVersions and GetIamPolicy.
     """
     from google.cloud import secretmanager
 
-    # One client for the whole run — a fresh client per call would open a gRPC
-    # channel per call.
+    # One client for the whole run: a fresh one per call opens a new gRPC channel.
     client = collector.guard(
         "secretmanager.client",
         lambda: secretmanager.SecretManagerServiceClient(credentials=creds),
@@ -432,9 +401,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

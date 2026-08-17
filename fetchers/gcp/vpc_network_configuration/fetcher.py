@@ -2,41 +2,30 @@
 """
 GCP VPC Network Configuration
 
-The network-segmentation evidence for one project: every VPC network with its
-subnet mode (legacy / auto / custom), routing mode, peerings and subnet count;
-and every subnet with its CIDR, Private Google Access, and VPC flow logs —
-enabled or not, and when enabled, the aggregation interval, flow sampling rate,
-metadata setting and whether a filter narrows what is captured. Whether the
-auto-created `default` network still exists is reported explicitly.
+Network-segmentation evidence for one project: every VPC network with its subnet
+mode (legacy / auto / custom), routing mode, peerings and subnet count; and every
+subnet with its CIDR, Private Google Access, and VPC flow logs — enabled or not,
+and when enabled the aggregation interval, sampling rate, metadata setting and
+any capture filter. Whether the auto-created `default` network still exists is
+reported explicitly.
+
+The legacy/auto/custom rule is Prowler's, and it is a presence test rather than a
+boolean read: `autoCreateSubnetworks` absent entirely means a legacy (pre-subnet)
+network, present-and-true means auto mode, present-and-false custom. Verified
+against google-cloud-compute, whose `to_dict()` omits unset optional fields, so
+the presence test survives the REST-to-GAPIC move.
 
 Ported from Prowler's GCP compute service (prowler/providers/gcp/services/
-compute/compute_service.py, Apache-2.0) and its network checks:
-compute_network_not_legacy, compute_network_default_in_use and
-compute_subnet_flow_logs_enabled. Prowler's Network model projects
-name/id/subnet_mode and its Subnet model name/id/network/region/flow_logs,
-because those three checks need no more; routing mode, peerings, CIDR ranges,
-purpose, stack type, Private Google Access and the flow-log *parameters* all come
-from the same two list responses.
-
-The legacy/auto/custom rule is Prowler's, and it is a presence test, not a
-boolean read: `autoCreateSubnetworks` absent entirely means a legacy (pre-subnet)
-network, present-and-true means auto mode, present-and-false means custom mode.
-Verified against google-cloud-compute — GAPIC `to_dict()` omits unset optional
-fields, so the presence test survives the REST-to-GAPIC move.
+compute/compute_service.py, Apache-2.0) and its network checks.
 
 Departures from the Prowler original:
-- **GAPIC client, not discovery.** compute_v1 rather than
-  googleapiclient.discovery, per the category's preference.
-- **No per-region fanout.** Prowler lists regions then lists subnets in each.
-  `subnetworks.aggregatedList` returns every region's subnets in one paged call.
+- **No per-region fanout.** `subnetworks.aggregatedList` returns every region's
+  subnets in one paged call.
 - **Flow logs are read from logConfig, not the legacy flag.** Prowler reads the
-  deprecated top-level `enableFlowLogs`; the field the API actually maintains is
-  `logConfig.enable`. This prefers `logConfig.enable` and falls back to
-  `enableFlowLogs`, and reports the flow-log parameters Prowler drops — a subnet
-  logging at 0.1% sampling is not the same evidence as one logging at 100%.
-
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+  deprecated top-level `enableFlowLogs`; the field the API maintains is
+  `logConfig.enable`. This prefers that and falls back, and reports the flow-log
+  parameters Prowler drops — a subnet logging at 0.1% sampling is not the same
+  evidence as one logging at 100%.
 """
 
 import logging
@@ -65,8 +54,7 @@ from gcp_common import (  # noqa: E402
 logger = logging.getLogger("gcp_vpc_network_configuration")
 
 # The auto-created network every new project gets: auto mode, one subnet per
-# region, and permissive default-allow firewall rules. Its continued existence is
-# Prowler's compute_network_default_in_use finding.
+# region, permissive default-allow rules — Prowler's compute_network_default_in_use.
 DEFAULT_NETWORK_NAME = "default"
 
 _SUBNET_MODE_LEGACY = "legacy"
@@ -74,14 +62,13 @@ _SUBNET_MODE_AUTO = "auto"
 _SUBNET_MODE_CUSTOM = "custom"
 
 
-# --- pure transforms (operate on Network/Subnetwork to_dict() or REST dicts) ---
+# --- pure transforms ---
 
 def subnet_mode(network: dict) -> str:
     """Prowler's legacy / auto / custom classification.
 
-    A presence test, not a boolean read: a legacy network (created before
-    subnets existed) has no `autoCreateSubnetworks` field at all, so `False` and
-    "absent" mean genuinely different things and cannot be collapsed.
+    A presence test, not a boolean read: a legacy network has no
+    `autoCreateSubnetworks` field at all, so absent and `False` differ.
     """
     for key in ("autoCreateSubnetworks", "auto_create_subnetworks"):
         if key in network:
@@ -104,8 +91,7 @@ def network_record(network: dict) -> dict:
         "custom_mode": mode == _SUBNET_MODE_CUSTOM,
         "legacy": mode == _SUBNET_MODE_LEGACY,
         "is_default_network": name == DEFAULT_NETWORK_NAME,
-        # Only a legacy network has a network-wide IPv4 range; on a subnet-mode
-        # network the ranges live on the subnets.
+        # Only a legacy network has a network-wide IPv4 range.
         "legacy_ipv4_range": first(network, "IPv4Range", "I_pv4_range", "ipv4_range"),
         "routing_mode": first(
             first(network, "routingConfig", "routing_config") or {},
@@ -136,8 +122,7 @@ def subnet_record(subnet: dict) -> dict:
     """Normalize one subnet into an evidence record.
 
     `logConfig.enable` is the field the API maintains; `enableFlowLogs` is the
-    deprecated top-level flag Prowler reads. Preferring logConfig and falling
-    back keeps the answer right on both old and new responses.
+    deprecated top-level flag Prowler reads, kept here as a fallback.
     """
     log_config = first(subnet, "logConfig", "log_config") or {}
     log_config_enable = first(log_config, "enable")
@@ -158,8 +143,7 @@ def subnet_record(subnet: dict) -> dict:
         "role": first(subnet, "role"),
         "stack_type": first(subnet, "stackType", "stack_type"),
         "state": first(subnet, "state"),
-        # Lets a VM with no external IP reach Google APIs — the setting that makes
-        # a private subnet usable without giving its instances public addresses.
+        # Lets a VM with no external IP reach Google APIs.
         "private_google_access": bool(
             first(subnet, "privateIpGoogleAccess", "private_ip_google_access")
         ),
@@ -187,9 +171,8 @@ def summarize(
     flow_logs = sum(1 for s in subnets if s["flow_logs_enabled"])
     private_access = sum(1 for s in subnets if s["private_google_access"])
     return {
-        # False when compute.googleapis.com is not enabled on this project
-        # (recorded in metadata.skipped_calls) or a list call failed —
-        # distinguishing "no networks" from "could not look".
+        # False when compute.googleapis.com is disabled or a list call failed —
+        # "could not look", not "no networks".
         "compute_api_readable": api_readable,
         "total_networks": len(networks),
         "default_network_present": any(n["is_default_network"] for n in networks),
@@ -215,8 +198,7 @@ def summarize(
                 if s["flow_logs_enabled"] and s["flow_log_aggregation_interval"]
             }
         ),
-        # The lowest sampling rate in use: one subnet at 0.1% is the weak link in
-        # an otherwise fully-logged VPC.
+        # One subnet at 0.1% is the weak link in an otherwise fully-logged VPC.
         "lowest_flow_log_sampling": min(
             (
                 s["flow_log_sampling"]
@@ -230,7 +212,7 @@ def summarize(
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def collect_networks(project, creds, collector: Collector) -> list[dict] | None:
     """Every VPC network in the project, or None when Compute could not be listed."""
@@ -257,7 +239,6 @@ def collect_subnets(project, creds, collector: Collector) -> list[dict] | None:
     def _list():
         client = compute_v1.SubnetworksClient(credentials=creds)
         out = []
-        # aggregatedList covers every region in one paged call.
         for _region, scoped in client.aggregated_list(project=project):
             for subnet in getattr(scoped, "subnetworks", []) or []:
                 out.append(subnet_record(compute_v1.Subnetwork.to_dict(subnet)))
@@ -315,9 +296,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

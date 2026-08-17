@@ -2,41 +2,30 @@
 """
 KSI-IAM-03 / KSI-IAM-04 / KSI-SVC-06: GCP IAM Service Accounts & Keys
 
-For each service account in one project: its key inventory split by key type,
-the project-level roles it holds, and who can impersonate it.
+For each service account in one project: its key inventory split by key type, the
+project-level roles it holds, and who can impersonate it.
 
-The finding this evidence exists to surface is the **user-managed key that never
-rotates**. A system-managed key is created, rotated and destroyed by Google; a
-user-managed key is a downloaded private key with a ~10-year validity that lives
-wherever someone put it. So every key carries its type, origin, age, and
-remaining validity, and the summary counts the keys past a 90-day rotation age
-(the CIS interval Prowler checks).
-
-Ported from Prowler's GCP IAM service (prowler/providers/gcp/services/iam/
-iam_service.py, Apache-2.0), whose ServiceAccount projects name/email/
-display_name/uniqueId/disabled and whose Key projects name/origin/type/
-valid_after/valid_before. The privilege half comes from the checks that pair that
-service with Cloud Resource Manager bindings — iam_sa_no_administrative_privileges
-(owner/editor/*admin* held by a service account) and
-iam_no_service_roles_at_project_level (serviceAccountUser /
-serviceAccountTokenCreator granted project-wide).
-
-Departures from the Prowler original:
-- **GAPIC clients, not discovery.** iam_admin_v1 and resourcemanager_v3 instead of
-  googleapiclient.discovery, per the category's preference.
-- **SA-level IAM policy is read per account.** Prowler infers impersonation from
-  project-level bindings only; the binding that actually grants "act as this one
-  service account" lives on the service account resource, so it is read there.
-- **Human members are counted, not enumerated.** A project binding lists its
-  serviceAccount: members (the subject of this evidence set) and the count of
-  everything else. A user/group inventory is a different evidence set, and this
-  file should not quietly become one.
+The finding this exists to surface is the **user-managed key that never rotates**.
+A system-managed key is created, rotated and destroyed by Google; a user-managed
+key is a downloaded private key with a ~10-year validity living wherever someone
+put it. Every key carries its type, origin, age and remaining validity, and the
+summary counts keys past the 90-day CIS rotation age.
 
 Key material is never copied: `list_service_account_keys` can carry
 public_key_data, and only the key's identity and validity window are projected.
 
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+Ported from Prowler's GCP IAM service (prowler/providers/gcp/services/iam/
+iam_service.py, Apache-2.0); the privilege half comes from the checks pairing it
+with Cloud Resource Manager bindings.
+
+Departures from the Prowler original:
+- **SA-level IAM policy is read per account.** Prowler infers impersonation from
+  project-level bindings only, but the binding that grants "act as this one
+  service account" lives on the service account resource.
+- **Human members are counted, not enumerated.** A project binding lists its
+  serviceAccount: members — the subject of this evidence set — and counts
+  everything else. A user inventory is a different evidence set, and this file
+  should not quietly become one.
 """
 
 import logging
@@ -68,8 +57,7 @@ logger = logging.getLogger("gcp_iam_service_accounts")
 # against. A validator can pick a different threshold from the per-key age_days.
 _ROTATION_AGE_DAYS = 90
 
-# Primitive (pre-IAM) roles. Broad by construction — `roles/owner` and
-# `roles/editor` are write-capable across every service in the project.
+# Primitive (pre-IAM) roles; owner and editor are write-capable project-wide.
 _PRIMITIVE_ROLES = frozenset({"roles/owner", "roles/editor", "roles/viewer"})
 _WRITE_PRIMITIVE_ROLES = frozenset({"roles/owner", "roles/editor"})
 
@@ -80,7 +68,7 @@ _IMPERSONATION_ROLES = frozenset(
 )
 
 
-# --- pure transforms (operate on to_dict() output; unit-tested from fixtures) ---
+# --- pure transforms ---
 
 def parse_timestamp(value) -> datetime | None:
     """RFC3339 timestamp string → aware datetime, or None when absent/odd."""
@@ -101,9 +89,8 @@ def is_over_broad_role(role: str) -> bool:
 def key_record(key: dict, now: datetime) -> dict:
     """Normalize one service-account key into an evidence record.
 
-    USER_MANAGED is the key that matters: it exists because someone downloaded a
-    private key, and nothing rotates it. `valid_before_time` far in the future
-    (9999) is the API's way of saying the key never expires.
+    A `valid_before_time` in the year 9999 is the API's way of saying the key
+    never expires.
     """
     valid_after = parse_timestamp(dig_any(key, "valid_after_time"))
     valid_before = parse_timestamp(dig_any(key, "valid_before_time"))
@@ -162,7 +149,6 @@ def service_account_record(
         "primitive_project_roles": [r for r in project_roles if r in _PRIMITIVE_ROLES],
         "over_broad_project_roles": [r for r in project_roles if is_over_broad_role(r)],
         "has_over_broad_project_role": any(is_over_broad_role(r) for r in project_roles),
-        # Who can act as this service account (bindings on the account itself).
         "iam_policy_bindings": sa_bindings,
         "impersonation_members": impersonators,
         "impersonable": bool(impersonators),
@@ -225,14 +211,13 @@ def summarize(accounts: list[dict], project_bindings: list[dict]) -> dict:
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def policy_bindings(policy) -> list[dict]:
     """google.iam.v1.Policy → sorted {role, members} dicts.
 
-    An IAM policy comes back as a raw protobuf rather than a proto-plus message,
-    so it has no to_dict(); reading the two fields that matter beats pulling in
-    json_format. Conditional bindings collapse to their role here — the condition
+    An IAM policy comes back as a raw protobuf, not a proto-plus message, so it
+    has no to_dict(). Conditional bindings collapse to their role — the condition
     expression is not part of this evidence set.
     """
     return sorted(
@@ -256,8 +241,8 @@ def collect_service_accounts(
 ) -> list[dict]:
     from google.cloud import iam_admin_v1
 
-    # One client for the whole run: keys and the IAM policy are read per service
-    # account, and a fresh client per call would open a gRPC channel per call.
+    # One client for the whole run: keys and the policy are read per service
+    # account, and a fresh client would open a gRPC channel per call.
     client = collector.guard(
         "iam.client", lambda: iam_admin_v1.IAMClient(credentials=creds)
     )
@@ -337,9 +322,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)

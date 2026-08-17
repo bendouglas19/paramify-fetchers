@@ -5,48 +5,29 @@ GCP Compute Engine Instance Configuration
 Per-instance hardening posture for every VM in one project: Shielded VM (secure
 boot, vTPM, integrity monitoring), Confidential Computing, OS Login, serial-port
 access, IP forwarding, block-project-ssh-keys, the attached service account and
-its OAuth scopes, public-IP presence, and deletion protection. Plus the
-project-wide defaults those instance settings inherit from
-(`commonInstanceMetadata`), so an instance that simply doesn't override OS Login
-can still be read correctly.
-
-Ported from Prowler's GCP compute service (prowler/providers/gcp/services/
-compute/compute_service.py, Apache-2.0) and its per-instance checks:
-compute_instance_shielded_vm_enabled, _confidential_computing_enabled,
-_serial_ports_in_use, _block_project_wide_ssh_keys_disabled,
-_ip_forwarding_is_enabled, _public_ip, _deletion_protection_enabled,
-_default_service_account_in_use, _default_service_account_in_use_with_full_api_access,
-_single_network_interface, _on_host_maintenance_migrate, _preemptible_vm_disabled,
-_automatic_restart_enabled, and the project-level compute_project_os_login_enabled
-/ _os_login_2fa_enabled.
-
-Departures from the Prowler original:
-- **GAPIC client, not discovery.** Prowler builds `compute` v1 through
-  googleapiclient.discovery; google-cloud-compute is the stable GAPIC client, so
-  per the category's preference this uses compute_v1.
-- **No per-zone fanout.** Prowler lists zones then lists instances in each, one
-  threaded call per zone. `instances.aggregatedList` returns every zone's
-  instances in one paged call.
-- **Shielded VM secure boot is reported too.** Prowler's Instance model carries
-  only vTPM and integrity monitoring (its check tests those two), but the same
-  `shieldedInstanceConfig` block carries `enableSecureBoot`, which is the third
-  leg of Shielded VM. `shielded_vm_enabled` keeps Prowler's definition (vTPM AND
-  integrity monitoring) so the two are comparable.
-- **OS Login is resolved, not assumed project-wide.** Prowler reads OS Login only
-  from the project's `commonInstanceMetadata`. An instance's own
-  `enable-oslogin` metadata overrides that, so the effective per-instance value
-  is computed and `os_login_source` records which level decided it.
+its OAuth scopes, public-IP presence and deletion protection — plus the
+project-wide defaults those settings inherit from, so an instance that simply
+does not override OS Login is still read correctly.
 
 Instance metadata is read key by key on purpose: the same block carries
 `startup-script` and `ssh-keys`, which must never land in evidence. Only the
-documented hardening keys are ever copied out, and SSH keys are reduced to a
-presence flag.
+documented hardening keys are copied, and SSH keys reduce to a presence flag.
 
-Disk-level encryption is deliberately out of scope — `gcp_persistent_disk_encryption_status`
-is that evidence set.
+Ported from Prowler's GCP compute service (prowler/providers/gcp/services/
+compute/compute_service.py, Apache-2.0) and its per-instance checks. Disk
+encryption is out of scope — gcp_persistent_disk_encryption_status covers it.
 
-Single-project per invocation; fanout across projects happens at the runner
-layer (see fetcher.yaml: supports_targets: true).
+Departures from the Prowler original:
+- **No per-zone fanout.** Prowler lists zones then instances in each, one
+  threaded call per zone; `instances.aggregatedList` returns every zone in one
+  paged call.
+- **Shielded VM secure boot is reported too.** Prowler's model carries only vTPM
+  and integrity monitoring, but the same `shieldedInstanceConfig` block carries
+  `enableSecureBoot`, the third leg. `shielded_vm_enabled` keeps Prowler's
+  two-field definition so the two stay comparable.
+- **OS Login is resolved, not assumed project-wide.** An instance's own
+  `enable-oslogin` metadata overrides the project default, so the effective value
+  is computed and `os_login_source` records which level decided it.
 """
 
 import logging
@@ -74,22 +55,19 @@ from gcp_common import (  # noqa: E402
 
 logger = logging.getLogger("gcp_compute_instance_configuration")
 
-# The suffix of the Compute Engine default service account. Every project gets
-# one, it is a project Editor by default, and Prowler's
-# compute_instance_default_service_account_in_use flags any instance running as it.
+# Suffix of the Compute Engine default service account: every project gets one,
+# and it is a project Editor by default.
 DEFAULT_COMPUTE_SA_SUFFIX = "-compute@developer.gserviceaccount.com"
 
-# The scope that grants an instance every API the service account can reach.
-# Paired with the default service account it is the classic finding.
+# The scope that grants an instance every API its service account can reach.
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
-# Instances GKE creates for its node pools are named `gke-*`. Prowler exempts
-# them from the default-SA-with-full-access check because GKE requires that
-# combination; `gcp_gke_cluster_configuration` is where node identity is judged.
+# GKE node-pool instances are named `gke-*`. Prowler exempts them from the
+# default-SA-with-full-access check because GKE requires that combination;
+# node identity is judged by `gcp_gke_cluster_configuration`.
 GKE_INSTANCE_PREFIX = "gke-"
 
-# Metadata keys this fetcher reads. Nothing else is copied out of the metadata
-# block — see the module docstring.
+# The only metadata keys this fetcher reads — see the module docstring.
 OS_LOGIN_KEY = "enable-oslogin"
 OS_LOGIN_2FA_KEY = "enable-oslogin-2fa"
 SERIAL_PORT_KEY = "serial-port-enable"
@@ -97,23 +75,20 @@ BLOCK_PROJECT_SSH_KEYS_KEY = "block-project-ssh-keys"
 SSH_KEYS_KEYS = ("ssh-keys", "sshKeys")
 
 
-# --- pure transforms (operate on Instance.to_dict() / REST dicts; unit-tested) ---
+# --- pure transforms ---
 
 def metadata_enabled(value) -> bool:
     """True for the values GCP accepts as "on" in a metadata entry.
 
-    Metadata values are always strings; Prowler's serial-port check accepts "1"
-    and "true", its OS Login and block-project-ssh-keys checks accept "true"
-    case-insensitively. One truthy rule covers all of them.
+    Metadata values are always strings; this one truthy set covers every spelling
+    Prowler's per-check comparisons accept ("1", "true", case-insensitively).
     """
     return str(value).strip().lower() in ("true", "1", "y", "yes")
 
 
 def metadata_items(metadata: dict | None) -> dict:
-    """{key: value} from a Compute metadata block's `items` list.
-
-    Callers only ever look up the documented hardening keys — this is a lookup
-    table, not something that gets copied into the evidence.
+    """{key: value} over a Compute metadata block's `items` — a lookup table for
+    the documented hardening keys, never copied into the evidence.
     """
     out: dict = {}
     for item in first(metadata, "items") or []:
@@ -126,10 +101,8 @@ def metadata_items(metadata: dict | None) -> dict:
 def project_record(project: dict | None) -> dict:
     """Project-wide defaults from compute projects.get.
 
-    A failed or absent call leaves the block present with everything off, rather
-    than missing: "OS Login is not set project-wide" and "we could not read the
-    project" must not look the same, and the latter is already recorded in
-    metadata.api_failures.
+    A failed or absent call still yields the block with everything off; what tells
+    it apart from a genuinely unset project is metadata.api_failures.
     """
     common = metadata_items(first(project, "commonInstanceMetadata", "common_instance_metadata"))
     return {
@@ -139,8 +112,7 @@ def project_record(project: dict | None) -> dict:
             project, "defaultServiceAccount", "default_service_account"
         ),
         "default_network_tier": first(project, "defaultNetworkTier", "default_network_tier"),
-        # Project-wide SSH keys are the shared credential block-project-ssh-keys
-        # exists to shut out; only presence is recorded, never the keys.
+        # Presence only, never the keys themselves.
         "project_wide_ssh_keys_present": any(k in common for k in SSH_KEYS_KEYS),
     }
 
@@ -162,10 +134,9 @@ def service_account_record(service_account: dict) -> dict:
 def network_interface_record(interface: dict) -> dict:
     """Normalize one NIC.
 
-    A public IP is an accessConfig carrying a natIP. `nat_i_p` is the GAPIC
-    `to_dict()` spelling (verified against google-cloud-compute) and `natIP` the
-    REST one; `type_` likewise. Only presence is recorded — the address itself is
-    not posture.
+    A public IP is an accessConfig carrying a natIP, recorded as presence only.
+    `nat_i_p` is the GAPIC `to_dict()` spelling (verified against
+    google-cloud-compute), `natIP` the REST one; `type_` likewise.
     """
     access_configs = first(interface, "accessConfigs", "access_configs") or []
     return {
@@ -221,14 +192,12 @@ def instance_record(instance: dict, project_defaults: dict) -> dict:
         "status": first(instance, "status"),
         "creation_timestamp": first(instance, "creationTimestamp", "creation_timestamp"),
         "network_tags": network_tags,
-        # An instance GKE manages; its posture is judged by the GKE evidence set.
         "gke_managed": gke_managed,
         # --- Shielded VM ---
         "secure_boot": bool(first(shielded, "enableSecureBoot", "enable_secure_boot")),
         "vtpm": vtpm,
         "integrity_monitoring": integrity,
-        # Prowler's definition, kept so the two are comparable: vTPM AND integrity
-        # monitoring. Secure boot is reported separately above.
+        # Prowler's two-field definition, kept comparable; secure boot is separate.
         "shielded_vm_enabled": vtpm and integrity,
         # --- Confidential Computing ---
         "confidential_computing": bool(
@@ -243,8 +212,7 @@ def instance_record(instance: dict, project_defaults: dict) -> dict:
             if os_login_override is not None
             else bool(project_defaults.get("os_login_enabled"))
         ),
-        # Which level decided the value above: an instance that never sets the key
-        # inherits the project default (which is "off" when the project is silent).
+        # The inherited project default is "off" when the project is silent.
         "os_login_source": "instance" if os_login_override is not None else "project",
         "os_login_2fa_enabled": (
             metadata_enabled(os_login_2fa_override)
@@ -267,8 +235,7 @@ def instance_record(instance: dict, project_defaults: dict) -> dict:
             sa["default_compute_service_account"] for sa in service_accounts
         ),
         "has_full_api_access_scope": any(sa["full_api_access"] for sa in service_accounts),
-        # Prowler's compute_instance_default_service_account_in_use_with_full_api_access,
-        # gke-* exemption included.
+        # Prowler's default-SA-with-full-API-access check, gke-* exemption included.
         "default_service_account_with_full_api_access": (
             not gke_managed
             and any(
@@ -294,11 +261,9 @@ def summarize(
     shielded = sum(1 for i in instances if i["shielded_vm_enabled"])
     os_login = sum(1 for i in instances if i["os_login_enabled"])
     return {
-        # False when compute.googleapis.com is not enabled on this project
-        # (recorded in metadata.skipped_calls) or the list call failed —
-        # distinguishing "no instances" from "could not look".
+        # False when compute.googleapis.com is disabled (see metadata.skipped_calls)
+        # or the list call failed — "no instances" must not read as "could not look".
         "compute_api_readable": api_readable,
-        # Project-wide defaults every instance above inherits from.
         "project_os_login_enabled": bool(project_defaults.get("os_login_enabled")),
         "project_os_login_2fa_enabled": bool(project_defaults.get("os_login_2fa_enabled")),
         "project_default_service_account": project_defaults.get("default_service_account"),
@@ -353,7 +318,7 @@ def summarize(
     }
 
 
-# --- collection (lazy google imports; not exercised by the fixture tests) ---
+# --- collection ---
 
 def collect_project_defaults(project, creds, collector: Collector) -> dict:
     """Project-wide instance metadata (OS Login defaults, default service account)."""
@@ -377,8 +342,7 @@ def collect_instances(
     def _list():
         client = compute_v1.InstancesClient(credentials=creds)
         out = []
-        # aggregatedList covers every zone in one paged call; zones with no
-        # instances come back with an empty scoped list.
+        # One paged call covers every zone; empty zones return an empty scoped list.
         for _zone, scoped in client.aggregated_list(project=project):
             for instance in getattr(scoped, "instances", []) or []:
                 out.append(
@@ -435,9 +399,6 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        # Reported before any success log line: the runner takes the TAIL of
-        # stderr as metadata.error when the status file is empty, so an "Evidence
-        # saved" INFO line last would become the reported failure reason.
         reason, code = collector.failure_report()
         logger.error("%s", reason)
         write_status(reason, code)
