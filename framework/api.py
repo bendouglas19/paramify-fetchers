@@ -38,7 +38,24 @@ from packaging.utils import canonicalize_name
 from framework.config_loader import discover_fetchers, discover_platforms
 from framework.contract import ConfigField, Secret, TargetField, effective_secrets
 from framework.envelope import is_enveloped, wrap_outputs
+from framework.paramify_auth import (
+    BASE_URL_ENV,
+    READ_TOKEN_ENV,
+    UPLOAD_TOKEN_ENV,
+    describe_base_url,
+    resolve_base_url,
+    resolve_upload_token,
+)
 from framework.runner import manifest_loader
+
+
+def _missing_token_error() -> str:
+    """One wording for the missing-token error, since three call sites raise it."""
+    return (
+        f"{UPLOAD_TOKEN_ENV} is not set (or {READ_TOKEN_ENV} as a fallback). "
+        f"Set it in the environment by any means — export, .env, secret manager, "
+        f"CI secret — or run `paramify doctor <manifest>` to check before a run."
+    )
 
 _STDERR_TAIL_CHARS = 4000
 
@@ -307,7 +324,13 @@ def _check_python_packages(names: List[str], pins: Dict[str, str]) -> List[dict]
     return out
 
 
-def doctor(root: Path, manifest_path: Optional[Path] = None) -> dict:
+def doctor(
+    root: Path,
+    manifest_path: Optional[Path] = None,
+    *,
+    upload_config: Optional[Path] = None,
+    require_upload: bool = False,
+) -> dict:
     """Preflight check for running fetchers here.
 
     Reports the Python version, the external CLIs and pip distributions the
@@ -321,6 +344,10 @@ def doctor(root: Path, manifest_path: Optional[Path] = None) -> dict:
     packages must be present and its secret env vars set. Without a manifest,
     missing dependencies are informational (you may only ever run some
     categories), so `ok` reflects the Python check alone.
+
+    Upload readiness is always reported but only counts toward `ok` when
+    `require_upload` is set, since collecting evidence without uploading it is a
+    legitimate workflow that should not fail a preflight.
     """
     py = sys.version_info
     python = {
@@ -412,6 +439,12 @@ def doctor(root: Path, manifest_path: Optional[Path] = None) -> dict:
             "ok": all(p["ok"] for p in checked),
         })
 
+    # Upload readiness is always reported and gated only on request. The
+    # complaint this answers is discovery — reaching the upload step after a long
+    # collection to be told the token is missing — and reporting fixes that
+    # without breaking collect-only runs, which legitimately need no token.
+    upload = upload_readiness(root, config_path=upload_config)
+
     ok = python["ok"]
     if tools_required:
         tools_ok = all(t["present"] for t in tools)
@@ -419,6 +452,8 @@ def doctor(root: Path, manifest_path: Optional[Path] = None) -> dict:
         ok = ok and tools_ok and packages_ok and (
             manifest_report["ok"] if manifest_report else True
         )
+    if require_upload:
+        ok = ok and upload["ok"]
 
     return {
         "python": python,
@@ -427,7 +462,60 @@ def doctor(root: Path, manifest_path: Optional[Path] = None) -> dict:
         "packages": packages,
         "tools_required": tools_required,
         "manifest": manifest_report,
+        "upload": upload,
+        "upload_required": require_upload,
         "ok": ok,
+    }
+
+
+def upload_readiness(root: Path, config_path: Optional[Path] = None) -> dict:
+    """Can this environment upload? Token presence and the destination URL.
+
+    Deliberately does NOT touch the network or need a run directory — it answers
+    "will the upload step work" before there is anything to upload, which is the
+    whole point. `upload_preflight` is the heavier check that also validates a
+    specific run directory.
+
+    The destination is reported as loudly as the token, because pointing at
+    stage when you meant production (or the reverse) fails silently: the upload
+    succeeds, into the wrong workspace.
+    """
+    config: dict = {}
+    if config_path is not None:
+        try:
+            loaded = yaml.safe_load(Path(config_path).read_text())
+            config = loaded if isinstance(loaded, dict) else {}
+        except (OSError, yaml.YAMLError) as exc:
+            return {
+                "ok": False,
+                "token_present": False,
+                "token_source": None,
+                "base_url": None,
+                "base_url_source": None,
+                "base_url_label": None,
+                "errors": [f"Could not read uploader config {config_path}: {exc}"],
+            }
+
+    paramify_cfg = config.get("paramify") or {}
+    base_url, base_url_source = resolve_base_url(paramify_cfg.get("base_url"))
+    token, token_source = resolve_upload_token()
+
+    errors: List[str] = []
+    if not token:
+        errors.append(_missing_token_error())
+    if not base_url.lower().startswith("https://"):
+        errors.append(
+            f"{BASE_URL_ENV} must be https to protect the API token (got {base_url!r})"
+        )
+
+    return {
+        "ok": not errors,
+        "token_present": bool(token),
+        "token_source": token_source,
+        "base_url": base_url,
+        "base_url_source": base_url_source,
+        "base_url_label": describe_base_url(base_url),
+        "errors": errors,
     }
 
 
@@ -803,11 +891,7 @@ def upload_preflight(
     uploader.load_dotenv()
     config = uploader.load_config(str(config_path)) if config_path else {}
     paramify_cfg = config.get("paramify") or {}
-    base_url = (
-        paramify_cfg.get("base_url")
-        or os.environ.get("PARAMIFY_API_BASE_URL")
-        or uploader.DEFAULT_BASE_URL
-    )
+    base_url, base_url_source = resolve_base_url(paramify_cfg.get("base_url"))
 
     run_path = Path(run_dir)
     errors: List[str] = []
@@ -823,16 +907,20 @@ def upload_preflight(
     if url_error:
         errors.append(url_error)
 
-    token_present = bool(os.environ.get("PARAMIFY_UPLOAD_API_TOKEN"))
+    token, token_source = resolve_upload_token()
+    token_present = bool(token)
     if not token_present and not dry_run:
-        errors.append("PARAMIFY_UPLOAD_API_TOKEN is not set")
+        errors.append(_missing_token_error())
 
     return {
         "ok": not errors,
         "run_dir": str(run_path),
         "base_url": base_url,
+        "base_url_source": base_url_source,
+        "base_url_label": describe_base_url(base_url),
         "file_count": file_count,
         "token_present": token_present,
+        "token_source": token_source,
         "dry_run": dry_run,
         "errors": errors,
     }
@@ -895,11 +983,7 @@ def scripts_sync_preflight(
     uploader.load_dotenv()
     config = uploader.load_config(str(config_path)) if config_path else {}
     paramify_cfg = config.get("paramify") or {}
-    base_url = (
-        paramify_cfg.get("base_url")
-        or os.environ.get("PARAMIFY_API_BASE_URL")
-        or uploader.DEFAULT_BASE_URL
-    )
+    base_url, base_url_source = resolve_base_url(paramify_cfg.get("base_url"))
 
     errors: List[str] = []
     fetcher_count = 0
@@ -916,17 +1000,21 @@ def scripts_sync_preflight(
     if url_error:
         errors.append(url_error)
 
-    token_present = bool(os.environ.get("PARAMIFY_UPLOAD_API_TOKEN"))
+    token, token_source = resolve_upload_token()
+    token_present = bool(token)
     # A token is required to write; dry-run still wants one to diff the tenant,
     # but tolerates its absence (it then reports every fetcher as a create).
     if not token_present and not dry_run:
-        errors.append("PARAMIFY_UPLOAD_API_TOKEN is not set")
+        errors.append(_missing_token_error())
 
     return {
         "ok": not errors,
         "base_url": base_url,
+        "base_url_source": base_url_source,
+        "base_url_label": describe_base_url(base_url),
         "fetcher_count": fetcher_count,
         "token_present": token_present,
+        "token_source": token_source,
         "dry_run": dry_run,
         "errors": errors,
     }

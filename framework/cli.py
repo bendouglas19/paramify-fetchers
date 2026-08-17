@@ -359,15 +359,28 @@ def doctor_cmd(
     manifest: Optional[str] = typer.Argument(
         None, help="Manifest to check secret env vars for (optional)"
     ),
+    upload_config: Optional[str] = typer.Option(
+        None, "--upload-config", help="Uploader config YAML, to resolve its base_url"
+    ),
+    require_upload: bool = typer.Option(
+        False, "--require-upload", help="Fail if the run could not be uploaded"
+    ),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON"),
 ):
     """Preflight: Python, required CLIs and packages, and (with a manifest) secrets.
 
     Passing a manifest narrows every check to the categories it actually uses, so
-    a GitLab-only run is never told to install the aws CLI.
+    a GitLab-only run is never told to install the aws CLI. Upload readiness (API
+    token and destination URL) is always reported; --require-upload makes it count
+    toward the exit code.
     """
     root = api.find_repo_root()
-    rep = api.doctor(root, Path(manifest) if manifest else None)
+    rep = api.doctor(
+        root,
+        Path(manifest) if manifest else None,
+        upload_config=Path(upload_config) if upload_config else None,
+        require_upload=require_upload,
+    )
     if json_out:
         typer.echo(json.dumps(rep, indent=2))
         raise typer.Exit(0 if rep["ok"] else 1)
@@ -406,6 +419,28 @@ def doctor_cmd(
                     f"installed, needs {pkg['required']}"
                 )
         typer.echo("  fix: pip install -r requirements.txt")
+
+    up = rep.get("upload")
+    if up:
+        typer.echo("\nUpload:")
+        src = f" (from {up['token_source']})" if up["token_source"] else ""
+        if up["token_present"]:
+            typer.echo(f"  {ok_mark} API token set{src}")
+        else:
+            typer.echo(
+                f"  {bad_mark} API token not set — "
+                f"{api.UPLOAD_TOKEN_ENV} (or {api.READ_TOKEN_ENV})"
+            )
+        # Shown whether or not the token resolved: the destination is the other
+        # half of "am I about to do the right thing", and stage-vs-production is
+        # invisible in the run output once it succeeds.
+        origin = (
+            "default" if up["base_url_source"] == "default"
+            else f"from {up['base_url_source']}"
+        )
+        typer.echo(f"  → {up['base_url_label']}: {up['base_url']}  ({origin})")
+        if not rep.get("upload_required") and not up["ok"]:
+            typer.echo("  (informational — collecting without uploading is fine)")
 
     if rep["manifest"]:
         m = rep["manifest"]

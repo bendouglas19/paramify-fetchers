@@ -31,9 +31,21 @@ import requests
 import yaml
 from dotenv import load_dotenv
 
+# This file is also runnable directly (`python uploaders/paramify_evidence/uploader.py`)
+# from any cwd, where only its own directory lands on sys.path. Its position in the
+# repo is fixed, so derive the root rather than duplicating the token-resolution
+# rule locally — duplicating it is what let the uploader and the fetchers disagree.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from framework.paramify_auth import (  # noqa: E402
+    READ_TOKEN_ENV,
+    UPLOAD_TOKEN_ENV,
+    resolve_base_url,
+    resolve_upload_token,
+)
+
 logger = logging.getLogger("paramify_evidence_uploader")
 
-DEFAULT_BASE_URL = "https://app.paramify.com/api/v0"
 _REQUEST_TIMEOUT = 30
 _ENVELOPE_KEYS = {"schema_version", "metadata", "payload"}
 
@@ -244,7 +256,7 @@ def upload_run(
     load_dotenv()
     config = config or {}
     paramify_cfg = config.get("paramify") or {}
-    base_url = paramify_cfg.get("base_url") or base_url or os.environ.get("PARAMIFY_API_BASE_URL") or DEFAULT_BASE_URL
+    base_url, _ = resolve_base_url(paramify_cfg.get("base_url") or base_url)
 
     url_error = _base_url_error(base_url)
     if url_error:
@@ -265,9 +277,12 @@ def upload_run(
         logger.error(msg)
         raise ValueError(msg)
 
-    token = token or os.environ.get("PARAMIFY_UPLOAD_API_TOKEN")
+    if not token:
+        token, _ = resolve_upload_token()
     if not token and not dry_run:
-        msg = "PARAMIFY_UPLOAD_API_TOKEN is not set"
+        msg = (
+            f"{UPLOAD_TOKEN_ENV} is not set (or {READ_TOKEN_ENV} as a fallback)"
+        )
         logger.error(msg)
         raise ValueError(msg)
 

@@ -99,6 +99,68 @@ def test_doctor_with_credential_free_demo_manifest():
 
 
 # --------------------------------------------------------------------------- #
+# Doctor: dependency checks are scoped to the categories a manifest uses, so a
+# run is never told to install something it will not touch.
+# --------------------------------------------------------------------------- #
+
+def _doctor_json(tmp_path, manifest_body: str, *args) -> dict:
+    path = tmp_path / "m.yaml"
+    path.write_text(manifest_body)
+    result = runner.invoke(app, ["doctor", str(path), "--json", *args])
+    return json.loads(result.output)
+
+
+def test_doctor_scopes_dependencies_to_the_manifests_categories(tmp_path):
+    """An azure-only manifest checks azure packages and demands no CLI at all."""
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n    - use: azure_defender_plans\n")
+    assert rep["categories"] == ["azure"]
+    assert rep["tools"] == [], "azure is pure-SDK; no binary should be required"
+    assert [g["category"] for g in rep["packages"]] == ["azure"]
+
+
+def test_doctor_does_not_demand_cloud_deps_for_an_unrelated_category(tmp_path):
+    """The regression this guards: a GitLab run being told to install the aws CLI."""
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n    - use: gitlab_project_summary\n")
+    assert rep["categories"] == ["gitlab"]
+    assert rep["tools"] == []
+    assert rep["packages"] == []
+
+
+def test_doctor_requires_the_declared_tools_for_a_bash_category(tmp_path):
+    """k8s reaches EKS through `aws eks update-kubeconfig`, so aws counts too."""
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n    - use: k8s_eks_microservice_segmentation\n")
+    assert {t["name"] for t in rep["tools"]} == {"aws", "kubectl", "jq"}
+
+
+def test_doctor_reports_upload_readiness_without_gating_on_it(monkeypatch, tmp_path):
+    """Collecting without uploading is legitimate, so a missing token informs only."""
+    monkeypatch.delenv("PARAMIFY_UPLOAD_API_TOKEN", raising=False)
+    monkeypatch.delenv("PARAMIFY_API_TOKEN", raising=False)
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n    - use: azure_defender_plans\n")
+    assert rep["upload"]["token_present"] is False
+    assert rep["upload"]["ok"] is False
+    assert rep["ok"] is True, "a missing upload token must not fail a collect-only preflight"
+
+
+def test_doctor_require_upload_gates_on_the_token(monkeypatch, tmp_path):
+    monkeypatch.delenv("PARAMIFY_UPLOAD_API_TOKEN", raising=False)
+    monkeypatch.delenv("PARAMIFY_API_TOKEN", raising=False)
+    rep = _doctor_json(
+        tmp_path, "run:\n  fetchers:\n    - use: azure_defender_plans\n", "--require-upload"
+    )
+    assert rep["ok"] is False
+
+
+def test_doctor_reports_the_upload_destination(monkeypatch, tmp_path):
+    """Stage-vs-production is silent once an upload succeeds, so surface it first."""
+    monkeypatch.setenv("PARAMIFY_UPLOAD_API_TOKEN", "tok")
+    monkeypatch.setenv("PARAMIFY_API_BASE_URL", "https://stage.paramify.com/api/v0")
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n    - use: azure_defender_plans\n")
+    assert rep["upload"]["base_url_label"] == "stage"
+    assert rep["upload"]["base_url_source"] == "PARAMIFY_API_BASE_URL"
+
+
+# --------------------------------------------------------------------------- #
 # Parity invariant: every api function the TUI calls maps to a CLI command.
 # Derived from the TUI SOURCE so it can't drift into a tautology.
 # --------------------------------------------------------------------------- #
