@@ -33,7 +33,6 @@ from framework.contract import (
 )
 from framework.runner.executor import _apply_config, _build_env, run_entry
 
-
 # --------------------------------------------------------------------------- #
 # Builders
 # --------------------------------------------------------------------------- #
@@ -192,6 +191,92 @@ def test_build_env_per_target_secret_without_target_raises(tmp_path):
     fetcher = make_fetcher(tmp_path, secrets=[Secret(name="tok", env="TOK", per_target=True)])
     with pytest.raises(RuntimeError, match="per_target secret 'tok'"):
         _build_env(fetcher, ManifestEntry(use="x"), None, tmp_path)
+
+
+# --- optional secrets: the ambient-identity case ---------------------------- #
+# A cloud category's credential chain prefers links that hand over no secret at
+# all (IRSA, workload identity, managed identity) while also accepting static
+# keys. `required=False` is how a fetcher advertises the static keys without
+# breaking the deployments that supply none.
+
+def test_build_env_optional_secret_omitted_is_not_injected(tmp_path):
+    """Omitting an optional secret is not an error, and injects nothing — the
+    fetcher's credential chain is left to fall through to ambient identity."""
+    fetcher = make_fetcher(
+        tmp_path,
+        secrets=[Secret(name="client_secret", env="AZURE_CLIENT_SECRET", required=False)],
+    )
+    env = _build_env(fetcher, ManifestEntry(use="x"), None, tmp_path)
+    assert "AZURE_CLIENT_SECRET" not in env
+
+
+def test_build_env_optional_secret_supplied_is_injected_and_masked(tmp_path, monkeypatch):
+    """Supplied, an optional secret behaves exactly like a required one — resolved
+    under its declared name and registered for masking out of captured output."""
+    monkeypatch.setenv("SRC_SP_SECRET", "sp-value")
+    fetcher = make_fetcher(
+        tmp_path,
+        secrets=[Secret(name="client_secret", env="AZURE_CLIENT_SECRET", required=False)],
+    )
+    entry = ManifestEntry(use="x", secrets={"client_secret": "${env:SRC_SP_SECRET}"})
+    sink = set()
+    env = _build_env(fetcher, entry, None, tmp_path, secret_sink=sink)
+    assert env["AZURE_CLIENT_SECRET"] == "sp-value"
+    assert "sp-value" in sink
+
+
+def test_build_env_optional_per_target_secret_without_target_does_not_raise(tmp_path):
+    """The per_target branch honours `required` too, so a fetcher can declare an
+    optional per-target credential and still run with no targets."""
+    fetcher = make_fetcher(
+        tmp_path,
+        secrets=[Secret(name="tok", env="TOK", per_target=True, required=False)],
+    )
+    env = _build_env(fetcher, ManifestEntry(use="x"), None, tmp_path)
+    assert "TOK" not in env
+
+
+def test_build_env_required_secret_still_raises_alongside_an_optional_one(tmp_path):
+    """Adding optional secrets must not weaken the fail-fast on required ones."""
+    fetcher = make_fetcher(
+        tmp_path,
+        secrets=[
+            Secret(name="client_secret", env="AZURE_CLIENT_SECRET", required=False),
+            Secret(name="api_token", env="API_TOKEN"),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="missing secret 'api_token'"):
+        _build_env(fetcher, ManifestEntry(use="x"), None, tmp_path)
+
+
+# --- category-declared secrets ---------------------------------------------- #
+
+def test_build_env_inherits_secrets_declared_on_the_category(tmp_path, monkeypatch):
+    """A category declares shared credentials once; every fetcher in it resolves
+    them without repeating the declaration in its own fetcher.yaml."""
+    monkeypatch.setenv("SRC_SP_SECRET", "from-category")
+    spec = PlatformSpec(
+        category="testcat",
+        secrets=[Secret(name="client_secret", env="AZURE_CLIENT_SECRET", required=False)],
+    )
+    fetcher = make_fetcher(tmp_path, secrets=[])
+    entry = ManifestEntry(use="x", secrets={"client_secret": "${env:SRC_SP_SECRET}"})
+    env = _build_env(fetcher, entry, None, tmp_path, platform_spec=spec)
+    assert env["AZURE_CLIENT_SECRET"] == "from-category"
+
+
+def test_fetcher_secret_overrides_the_category_declaration_on_a_name_clash(tmp_path, monkeypatch):
+    """Per-fetcher wins, mirroring how config merges platform -> fetcher."""
+    monkeypatch.setenv("SRC_SP_SECRET", "v")
+    spec = PlatformSpec(
+        category="testcat",
+        secrets=[Secret(name="tok", env="CATEGORY_ENV", required=False)],
+    )
+    fetcher = make_fetcher(tmp_path, secrets=[Secret(name="tok", env="FETCHER_ENV")])
+    entry = ManifestEntry(use="x", secrets={"tok": "${env:SRC_SP_SECRET}"})
+    env = _build_env(fetcher, entry, None, tmp_path, platform_spec=spec)
+    assert env["FETCHER_ENV"] == "v"
+    assert "CATEGORY_ENV" not in env
 
 
 def test_build_env_target_field_injected_and_required_missing_raises(tmp_path):

@@ -19,6 +19,21 @@
         }
       }
     },
+    "secrets": {
+      "type": "array",
+      "description": "Credentials shared by every fetcher in the category, declared once here instead of repeated in each fetcher.yaml. A per-fetcher secret of the same name wins.",
+      "items": {
+        "type": "object",
+        "required": ["name", "env"],
+        "properties": {
+          "name": { "type": "string" },
+          "env":  { "type": "string" },
+          "required": { "type": "boolean", "default": true },
+          "description": { "type": "string" },
+          "per_target": { "type": "boolean", "default": false }
+        }
+      }
+    },
     "auth": {
       "type": "object",
       "properties": {

@@ -79,11 +79,22 @@ def discover_fetchers(repo_root: Path) -> Dict[str, Fetcher]:
     return fetchers
 
 
-def _parse_fetcher(data: dict, path: Path) -> Fetcher:
-    secrets = [
-        Secret(name=s["name"], env=s["env"], per_target=s.get("per_target", False))
-        for s in data.get("secrets", [])
+def _parse_secrets(raw) -> list:
+    """Parse a `secrets:` block — the same shape in fetcher.yaml and a category file."""
+    return [
+        Secret(
+            name=s["name"],
+            env=s["env"],
+            per_target=s.get("per_target", False),
+            required=s.get("required", True),
+            description=s.get("description"),
+        )
+        for s in (raw or [])
     ]
+
+
+def _parse_fetcher(data: dict, path: Path) -> Fetcher:
+    secrets = _parse_secrets(data.get("secrets"))
 
     target_schema = {}
     for field_name, spec in (data.get("target_schema") or {}).items():
@@ -156,6 +167,7 @@ def discover_platforms(repo_root: Path) -> Dict[str, PlatformSpec]:
         platforms[category] = PlatformSpec(
             category=category,
             config_schema=_parse_config_schema(data.get("config_schema")),
+            secrets=_parse_secrets(data.get("secrets")),
             passthrough_env=list(auth.get("passthrough_env") or []),
             description=data.get("description"),
         )

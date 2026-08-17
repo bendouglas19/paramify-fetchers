@@ -45,6 +45,12 @@
         "properties": {
           "name": { "type": "string" },
           "env":  { "type": "string" },
+          "required": {
+            "type": "boolean",
+            "default": true,
+            "description": "False declares a credential the fetcher CAN use but does not need — the ambient-identity case, where a credential chain also accepts static keys. An optional secret the manifest omits is simply not injected."
+          },
+          "description": { "type": "string", "description": "What this credential is and when to supply it. Shown in `paramify describe` and the TUI." },
           "per_target": {
             "type": "boolean",
             "default": false,
