@@ -12,7 +12,9 @@ Encryption at rest:
 | `gcp_persistent_disk_encryption_status` | Persistent disks + snapshots: CMEK vs Google-managed | `compute.disks.aggregatedList`, `compute.snapshots.list` |
 | `gcp_cloud_storage_encryption_status` | Buckets: CMEK vs Google-managed + data-protection posture | `storage.buckets.list` |
 | `gcp_cloud_sql_encryption_status` | Cloud SQL: CMEK vs Google-managed + backup config | `sqladmin.instances.list` |
-| `gcp_kms_key_rotation` | KMS keys: rotation, algorithm, protection level (SOFTWARE/HSM), location | `cloudkms.{locations,keyRings,cryptoKeys}.list` |
+| `gcp_kms_key_configuration` | KMS key rings and keys across every location: purpose, protection level (SOFTWARE/HSM/EXTERNAL), rotation period vs the 90-day interval, primary version state, IAM on key and ring | `cloudkms.{locations,keyRings,cryptoKeys}.list` |
+| `gcp_bigquery_dataset_configuration` | Datasets: default CMEK, ACL with public grants named per entry, default table expiration, location | `bigquery.datasets.{list,get}` |
+| `gcp_secret_manager_configuration` | Secrets: replication policy, per-replica CMEK, rotation schedule and whether overdue, expiry, version state counts, who can read | `secretmanager.secrets.{list,getIamPolicy}`, `versions.list` |
 
 Platform posture:
 
@@ -20,16 +22,38 @@ Platform posture:
 |---------|----------|---------|
 | `gcp_gke_cluster_configuration` | GKE clusters: private nodes/endpoint, network policy, legacy ABAC, Workload Identity, shielded nodes, etcd CMEK, release channel, per node pool auto-upgrade/repair + boot-disk CMEK | `container.clusters.list` |
 | `gcp_cloud_logging_configuration` | Log sinks (destination, filter, include_children), log buckets (retention, locked, CMEK), log-router settings, log metrics paired with alert policies | `logging.{sinks,buckets,settings,metrics}`, `monitoring.alertPolicies.list`, `cloudresourcemanager.{projects,folders}.get` |
-| `gcp_iam_service_accounts` | Service accounts: user- vs system-managed keys with age/expiry, project roles (primitive/admin), who can impersonate each account | `iam.serviceAccounts.{list,keys.list,getIamPolicy}`, `cloudresourcemanager.projects.getIamPolicy` |
+| `gcp_compute_instance_configuration` | Instances: Shielded VM, Confidential Computing, OS Login + 2FA, serial port, IP forwarding, attached service account and scopes, public IP, deletion protection | `compute.instances.aggregatedList`, `compute.projects.get` |
+| `gcp_vpc_network_configuration` | Networks: subnet mode, routing mode, peerings, whether the auto-created `default` network survives; subnets with Private Google Access and flow-log settings | `compute.{networks,subnetworks}.list` |
+| `gcp_firewall_rules` | Rules: direction, allow/deny protocol and port ranges, source/destination ranges, target tags and service accounts, priority, logging — derives internet-to-admin-port exposure | `compute.firewalls.list` |
+| `gcp_load_balancer_tls_configuration` | HTTPS/SSL proxies and their SSL policies: minimum TLS version, profile, resolved ciphers, and the effective floor for a proxy running Google's permissive default | `compute.target{Https,Ssl}Proxies.list`, `compute.sslPolicies.list` |
+| `gcp_dns_configuration` | Managed zones: DNSSEC state and KSK/ZSK algorithms, visibility, query logging, private/forwarding/peering topology, plus DNS policies | `dns.{managedZones,policies}.list` |
+| `gcp_cloud_sql_network_configuration` | Cloud SQL boundary: public IP presence, authorized networks, SSL/TLS requirement and minimum version, private connectivity, per-engine security flags | `sqladmin.instances.list` |
+| `gcp_cloud_sql_backup_configuration` | Cloud SQL recovery: automated backups and window, per-engine PITR, retention counts and transaction-log days, regional vs zonal, replicas, deletion protection | `sqladmin.instances.list` |
 
-> **Status:** the three encryption-at-rest fetchers are verified against a live
-> project and ship now. `gcp_kms_key_rotation` is written and unit-tested but
-> **held back until one green live-tenant re-run** (its first run hit a
-> `list_locations` bug, since fixed); the rows/sections referencing it below apply
-> once it ships. The three platform-posture fetchers are unit-tested against
-> fixtures and smoke-tested with deliberately-bogus credentials, but have **not
-> had a live-tenant run** — treat their permission list below as unconfirmed and
-> reconcile it against the first real run (any 403 is a permission to add).
+Identity and access:
+
+| Fetcher | Evidence | GCP API |
+|---------|----------|---------|
+| `gcp_iam_service_accounts` | Service accounts: user- vs system-managed keys with age/expiry, project roles (primitive/admin), who can impersonate each account | `iam.serviceAccounts.{list,keys.list,getIamPolicy}`, `cloudresourcemanager.projects.getIamPolicy` |
+| `gcp_iam_policy_bindings` | The project policy read by role and by principal: primitive roles, service accounts with admin grants, `allUsers`/`allAuthenticatedUsers`, out-of-domain and cross-project members, conditional bindings, plus audit configs and their exemptions | `cloudresourcemanager.projects.getIamPolicy` (policy version 3) |
+| `gcp_iam_custom_roles` | Project (and readable org) custom roles: launch stage, deleted state, full permission list classified into escalation paths — `*.setIamPolicy`, `serviceAccounts.actAs`, token signing, `roles.update`, key creation | `iam.{projects,organizations}.roles.list` |
+| `gcp_api_keys_inventory` | API keys: creation and update time, age against the 90-day interval, API-service restrictions (flagging the `cloudapis.googleapis.com` wildcard) and referrer/IP/app restrictions. No key string is read | `apikeys.projects.locations.keys.list` |
+
+> **Status:** all 19 fetchers have been run against a live project and exit 0.
+> The CMEK-vs-Google-managed contrast that the validators depend on is confirmed
+> for Cloud Storage, persistent disks, BigQuery, Secret Manager and Cloud SQL, as
+> are the finding paths for open firewall rules, weak TLS proxies, default
+> service accounts, privilege-escalating custom roles, never-expiring
+> service-account keys and unrestricted API keys.
+>
+> Two caveats remain. **The least-privilege permission list below is still
+> unverified** — the live run used an owner-level account, not the custom role,
+> so treat the table as a best determination and reconcile it against a real
+> least-privilege run (any 403 is a permission to add). And a few fields have
+> only ever returned their negative case, because the test project has no
+> positive one to report: GKE private nodes, private control plane, master
+> authorized networks, Binary Authorization, etcd CMEK and boot-disk CMEK, plus
+> Cloud SQL minimum TLS version and database security flags.
 
 ## The one thing to get right
 
@@ -63,14 +87,14 @@ bucket, a user-managed key's age), not facts that are true of every project.
    no GKE records "API not enabled" as evidence (`metadata.skipped_calls`,
    `summary.gke_api_readable: false`) and still exits 0, because GCP answers a
    never-enabled service with a 403 rather than an empty list.
-2. **Python deps.** The encryption-at-rest fetchers use `google-cloud-compute`,
-   `google-cloud-storage` and `google-api-python-client` (Cloud SQL Admin has no
-   stable GAPIC client), which the top-level `requirements.txt` already carries;
-   `google-cloud-kms` lands with the KMS fetcher. The platform-posture fetchers
-   add five more GAPIC clients — `google-cloud-container`,
-   `google-cloud-logging`, `google-cloud-monitoring`, `google-cloud-iam` and
-   `google-cloud-resource-manager` — which must be in `requirements.txt` before
-   they can run. `google-auth` comes transitively.
+2. **Python deps.** The top-level `requirements.txt` carries every client the
+   category needs — `pip install -r requirements.txt` is enough. Cloud SQL Admin
+   and Cloud DNS have no stable GAPIC client, so they go through the discovery
+   client (`google-api-python-client`); `google-auth` comes transitively. One
+   name to watch: the Secret Manager distribution is hyphenated
+   (`google-cloud-secret-manager`) while its import is
+   `google.cloud.secretmanager`, so `pip install google-cloud-secretmanager`
+   fails with "no matching distribution".
 
 ## Credential setup (ADC — no key files)
 
@@ -195,20 +219,25 @@ GCP fetchers declare **no secrets** — ADC flows through the credential chain, 
 the manifest. Fanout is per project; `environment` labels each project's evidence.
 
 ```bash
-paramify manifest add gcp_kms_key_rotation
-paramify manifest add-target gcp_kms_key_rotation project=my-prod-project environment=prod
+paramify manifest add gcp_kms_key_configuration
+paramify manifest add-target gcp_kms_key_configuration project=my-prod-project environment=prod
 paramify validate manifest.yaml
 paramify run manifest.yaml
 ```
 
-Two ready-to-edit manifests, split by theme rather than by wiring — merge them
+Five ready-to-edit manifests, split by theme rather than by wiring — merge them
 into one run if you prefer:
 
 - [`examples/gcp_data_at_rest.yaml`](../../examples/gcp_data_at_rest.yaml) — the
-  three encryption-at-rest fetchers (with the KMS entry commented out until it is
-  verified).
+  encryption-at-rest fetchers.
 - [`examples/gcp_platform_posture.yaml`](../../examples/gcp_platform_posture.yaml)
   — GKE cluster configuration, Cloud Logging configuration, IAM service accounts.
+- [`examples/gcp_compute_posture.yaml`](../../examples/gcp_compute_posture.yaml)
+  — instances, firewall rules, VPC networks, load-balancer TLS.
+- [`examples/gcp_data_platform.yaml`](../../examples/gcp_data_platform.yaml)
+  — BigQuery, Secret Manager, Cloud SQL network and backup configuration.
+- [`examples/gcp_identity_and_keys.yaml`](../../examples/gcp_identity_and_keys.yaml)
+  — IAM policy bindings, custom roles, KMS keys, DNS, API keys.
 
 ## Per-fetcher env vars
 

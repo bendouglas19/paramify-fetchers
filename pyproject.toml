@@ -63,6 +63,28 @@ azure = [
     # Exact: PolicyClient's new home publishes only pre-releases.
     "azure-mgmt-resource-policy==1.0.0b3",
 ]
+# GCP category (fetchers/gcp/*). Auth is Application Default Credentials, so
+# google-auth arrives transitively and there is no key file to install. Majors
+# are left open, unlike Azure: the google-cloud-* clients have not moved evidence
+# fields under us the way azure-mgmt did. Cloud SQL Admin and Cloud DNS have no
+# stable GAPIC client and go through google-api-python-client. Keep in step with
+# requirements.txt. Out of `all` for the same reason as Azure — twelve clients
+# only matter if you run GCP fetchers.
+gcp = [
+    "google-cloud-compute",
+    "google-cloud-storage",
+    "google-api-python-client",
+    "google-cloud-container",
+    "google-cloud-resource-manager",
+    "google-cloud-iam",
+    "google-cloud-logging",
+    "google-cloud-monitoring",
+    "google-cloud-bigquery",
+    # Distribution is hyphenated; the import is `google.cloud.secretmanager`.
+    "google-cloud-secret-manager",
+    "google-cloud-kms",
+    "google-cloud-api-keys",
+]
 # Convenience: every front-end + dev tooling in one install.
 all = ["textual>=8,<9", "checkov", "pytest", "ruff", "mypy"]
 
