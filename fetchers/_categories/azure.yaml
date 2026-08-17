@@ -34,6 +34,39 @@ description: >
 # The runner strips ambient env by default; these opt the credential chain back
 # in. They only take effect when actually set in the runner's environment, so
 # listing them is safe.
+# The service-principal path, declared so it is visible in `paramify describe`
+# and the TUI instead of the category reporting that it needs nothing. All three
+# are optional: supply them together to authenticate with a stored credential, or
+# omit all three and DefaultAzureCredential falls through to workload identity
+# federation, managed identity, or a cached `az login` — none of which hand over
+# a secret.
+#
+# They remain in passthrough_env below, so exporting them in the runner's
+# environment still works exactly as before; declaring them additionally lets a
+# manifest name them as ${env:...} refs, which is what makes the runner resolve
+# them from any source and mask them out of captured output.
+secrets:
+  - name: tenant_id
+    env: AZURE_TENANT_ID
+    required: false
+    description: >
+      Entra tenant (GUID). Required for the service-principal and
+      workload-identity-federation paths; not a secret, but supplied alongside
+      the client credentials.
+  - name: client_id
+    env: AZURE_CLIENT_ID
+    required: false
+    description: >
+      Application (client) id of the service principal or user-assigned managed
+      identity. Not a secret; identifies which principal to authenticate as.
+  - name: client_secret
+    env: AZURE_CLIENT_SECRET
+    required: false
+    description: >
+      Service-principal client secret — the only stored credential Azure needs.
+      Provide with tenant_id and client_id, or omit all three to use an ambient
+      identity instead.
+
 auth:
   passthrough_env:
     - AZURE_TENANT_ID

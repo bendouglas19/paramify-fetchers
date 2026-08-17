@@ -11,9 +11,38 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class Secret:
+    """A credential the fetcher reads from the environment at run time.
+
+    `required=False` declares a credential the fetcher CAN use but does not need.
+    That is the ambient-identity case: the AWS, Azure, GCP and k8s categories all
+    authenticate through a credential chain whose preferred links — IRSA, workload
+    identity, managed identity — hand over no secret at all, while the same chain
+    also accepts static keys. Declaring those keys optional is what lets a fetcher
+    advertise "you may supply these" without breaking the deployments that supply
+    none.
+    """
     name: str
     env: str
     per_target: bool = False
+    required: bool = True
+    description: Optional[str] = None
+
+
+def effective_secrets(fetcher, platform_spec=None) -> List["Secret"]:
+    """The secrets a fetcher actually takes: category-declared, then its own.
+
+    Per-fetcher wins on a name clash, matching how `_apply_config` merges
+    config (platform defaults <- per-fetcher). Both the describe/TUI surface and
+    the runner resolve through here so what the UI advertises and what the runner
+    demands cannot drift apart.
+    """
+    merged: Dict[str, "Secret"] = {}
+    if platform_spec is not None:
+        for s in platform_spec.secrets:
+            merged[s.name] = s
+    for s in fetcher.secrets:
+        merged[s.name] = s
+    return list(merged.values())
 
 
 @dataclass
@@ -86,11 +115,18 @@ class Fetcher:
 class PlatformSpec:
     """Code-side declaration for a category, from fetchers/_categories/<name>.yaml.
 
-    Holds config shared across every fetcher in the category plus the default
-    auth passthrough list. Empty/absent category files yield an empty spec.
+    Holds config and secrets shared across every fetcher in the category plus the
+    default auth passthrough list. Empty/absent category files yield an empty spec.
+
+    `secrets` exists so a category whose credentials are the same for every
+    fetcher declares them once. Azure's service principal is three env vars used
+    identically by all 27 of its fetchers; repeating that in 27 fetcher.yaml files
+    is duplication that drifts. Per-fetcher secrets still win on a name clash,
+    mirroring how config_schema already merges.
     """
     category: str
     config_schema: Dict[str, ConfigField] = field(default_factory=dict)
+    secrets: List["Secret"] = field(default_factory=list)
     passthrough_env: List[str] = field(default_factory=list)
     description: Optional[str] = None
 

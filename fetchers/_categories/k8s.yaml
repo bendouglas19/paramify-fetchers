@@ -11,7 +11,33 @@ description: >
 # (profile/region) and ambient (IRSA / instance role / SSO) paths work. They only
 # take effect when actually set in the runner's environment, so listing them is
 # safe. Profile/region are NOT secrets — they are non-sensitive selectors, and
-# modeling them as required secrets would break the ambient in-cluster path.
+# they stay out of the secrets block below for that reason.
+
+# The static-key path, declared so it is visible in `paramify describe` and the
+# TUI. Optional, which is what lets them be declared at all: modeling them as
+# REQUIRED secrets would break the ambient in-cluster path, where EKS IRSA or an
+# instance role supplies the credentials and none of these are set. Same three
+# as the aws category, because these fetchers authenticate to EKS the same way.
+secrets:
+  - name: access_key_id
+    env: AWS_ACCESS_KEY_ID
+    required: false
+    description: >
+      Access key id (AKIA… long-lived, ASIA… temporary). Not itself secret, but
+      supplied as one unit with secret_access_key.
+  - name: secret_access_key
+    env: AWS_SECRET_ACCESS_KEY
+    required: false
+    description: >
+      The stored credential half of the key pair. Provide with access_key_id, or
+      omit both to reach EKS through IRSA, Pod Identity or an instance role.
+  - name: session_token
+    env: AWS_SESSION_TOKEN
+    required: false
+    description: >
+      Required in addition to the pair when the credentials are temporary (STS /
+      assume-role / SSO-exported, access key beginning ASIA).
+
 auth:
   passthrough_env:
     # Explicit identity/region selection (set by the runner, or ambient).

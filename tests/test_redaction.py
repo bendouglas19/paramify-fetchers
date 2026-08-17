@@ -20,7 +20,6 @@ from framework.contract import (
 from framework.envelope import build_metadata
 from framework.runner.executor import _is_sensitive_env_name, _redact, run_entry
 
-
 # --------------------------------------------------------------------------- #
 # Builders
 # --------------------------------------------------------------------------- #

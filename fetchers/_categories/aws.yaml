@@ -11,6 +11,40 @@ description: >
 # in so the ambient path works locally and in-cluster. They only take effect when
 # actually set in the runner's environment, so listing them is safe; a target's
 # profile/region still override the ambient values when provided.
+# The static-key path, declared so it is visible in `paramify describe` and the
+# TUI instead of the category reporting that it needs nothing. All three are
+# optional: supply the pair to authenticate with stored keys, or omit them and
+# the credential chain falls through to an EC2 instance role, EKS IRSA / Pod
+# Identity, an ECS task role, SSO, or a ~/.aws profile — none of which hand over
+# a secret. Prefer a role where possible; these exist for local dev and runners
+# outside AWS.
+#
+# They remain in passthrough_env below, so exporting them still works exactly as
+# before; declaring them additionally lets a manifest name them as ${env:...}
+# refs, which is what makes the runner resolve them from any source and mask
+# them out of captured output.
+secrets:
+  - name: access_key_id
+    env: AWS_ACCESS_KEY_ID
+    required: false
+    description: >
+      Access key id (AKIA… for a long-lived key, ASIA… for a temporary one). Not
+      itself secret, but supplied as one unit with secret_access_key.
+  - name: secret_access_key
+    env: AWS_SECRET_ACCESS_KEY
+    required: false
+    description: >
+      The stored credential half of the key pair. Provide with access_key_id, or
+      omit both to use an instance role, IRSA, an ECS task role, SSO or a
+      profile.
+  - name: session_token
+    env: AWS_SESSION_TOKEN
+    required: false
+    description: >
+      Required in addition to the pair when the credentials are temporary (STS /
+      assume-role / SSO-exported, access key beginning ASIA). Omit for a
+      long-lived key pair.
+
 auth:
   passthrough_env:
     # Explicit identity/region selection (set by the runner from a target, or

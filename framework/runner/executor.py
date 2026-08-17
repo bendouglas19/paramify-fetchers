@@ -29,6 +29,7 @@ from framework.contract import (
     PlatformConfig,
     PlatformSpec,
     TargetInstance,
+    effective_secrets,
 )
 from framework.secret_resolver import SecretResolutionError, resolve
 
@@ -211,32 +212,38 @@ def _build_env(
 
     _apply_config(env, fetcher, platform_spec, platform_cfg, entry, secret_sink)
 
-    for secret in fetcher.secrets:
+    # An optional secret the manifest omits is simply not injected: the fetcher's
+    # credential chain falls through to ambient identity (IRSA, workload identity,
+    # managed identity). Omitting a REQUIRED one is still a hard error before the
+    # fetcher runs, which is the fail-fast the ambient categories otherwise lack.
+    for secret in effective_secrets(fetcher, platform_spec):
         if secret.per_target:
             if target is None:
+                if not secret.required:
+                    continue
                 raise RuntimeError(
                     f"{fetcher.name}: per_target secret '{secret.name}' "
                     f"declared but no target was provided"
                 )
             ref = target.secrets.get(secret.name)
             if ref is None:
+                if not secret.required:
+                    continue
                 raise RuntimeError(
                     f"{fetcher.name}: target is missing per_target secret '{secret.name}'"
                 )
-            resolved = resolve(ref)
-            env[secret.env] = resolved
-            if secret_sink is not None:
-                secret_sink.add(resolved)
         else:
             ref = entry.secrets.get(secret.name)
             if ref is None:
+                if not secret.required:
+                    continue
                 raise RuntimeError(
                     f"{fetcher.name}: manifest entry is missing secret '{secret.name}'"
                 )
-            resolved = resolve(ref)
-            env[secret.env] = resolved
-            if secret_sink is not None:
-                secret_sink.add(resolved)
+        resolved = resolve(ref)
+        env[secret.env] = resolved
+        if secret_sink is not None:
+            secret_sink.add(resolved)
 
     if target is not None:
         for field_name, field_spec in fetcher.target_schema.items():

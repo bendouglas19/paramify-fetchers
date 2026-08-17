@@ -31,7 +31,7 @@ from urllib.parse import urlparse
 import yaml
 
 from framework.config_loader import discover_fetchers, discover_platforms
-from framework.contract import ConfigField, Secret, TargetField
+from framework.contract import ConfigField, Secret, TargetField, effective_secrets
 from framework.envelope import is_enveloped, wrap_outputs
 from framework.runner import manifest_loader
 
@@ -74,9 +74,9 @@ def _secret_descriptor(s: Secret) -> dict:
         "name": s.name,
         "kind": "secret",
         "type": "string",
-        "required": True,
+        "required": s.required,
         "default": None,
-        "description": None,
+        "description": s.description,
         "env": s.env,
         "per_target": s.per_target,
     }
@@ -94,7 +94,7 @@ def _target_descriptor(f: TargetField) -> dict:
     }
 
 
-def _fetcher_descriptor(f) -> dict:
+def _fetcher_descriptor(f, platform_spec=None) -> dict:
     return {
         "name": f.name,
         "version": f.version,
@@ -102,7 +102,9 @@ def _fetcher_descriptor(f) -> dict:
         "category": f.category,
         "supports_targets": f.supports_targets,
         "config": [_config_descriptor(c) for c in f.config_schema.values()],
-        "secrets": [_secret_descriptor(s) for s in f.secrets],
+        # Category-declared secrets are part of what this fetcher takes, so the
+        # describe/TUI view shows them exactly as the runner will resolve them.
+        "secrets": [_secret_descriptor(s) for s in effective_secrets(f, platform_spec)],
         "target_schema": [_target_descriptor(t) for t in f.target_schema.values()],
     }
 
@@ -137,6 +139,7 @@ def catalog(root: Path) -> dict:
         if spec is not None:
             platform_block = {
                 "config": [_config_descriptor(c) for c in spec.config_schema.values()],
+                "secrets": [_secret_descriptor(s) for s in spec.secrets],
                 "passthrough_env": list(spec.passthrough_env),
             }
         categories.append({
@@ -144,7 +147,7 @@ def catalog(root: Path) -> dict:
             "description": spec.description if spec else None,
             "platform": platform_block,
             "fetchers": [
-                _fetcher_descriptor(f)
+                _fetcher_descriptor(f, spec)
                 for f in sorted(by_category[name], key=lambda x: x.name)
             ],
         })
