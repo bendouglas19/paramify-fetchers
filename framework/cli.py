@@ -12,7 +12,7 @@ Read / discover:
   paramify catalog [--json]                    # categories -> fetchers -> fields
   paramify describe <fetcher> [--json]
   paramify ksi [--json]                        # FedRAMP 20x KSI coverage
-  paramify doctor [manifest] [--json]          # preflight: python, CLIs, secrets
+  paramify doctor [manifest] [--probe] [--json]  # preflight: deps, secrets, upload
   paramify manifests [--json]                  # discovered run manifests
   paramify runs [--output-dir DIR] [--json]    # past runs under an output dir
   paramify evidence <path> [--json]            # read one evidence file
