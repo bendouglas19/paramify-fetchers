@@ -323,22 +323,24 @@ paramify-fetchers/
 │       ├── run_manifest_schema.json
 │       └── envelope_schema.json
 │
-├── fetchers/                         # 122 fetchers across 10 categories
+├── fetchers/                         # 172 fetchers across 13 categories
 │   ├── _categories/                  # platform-wide config + auth per category
 │   │   ├── okta.yaml
 │   │   ├── aws.yaml
-│   │   └── ...                       # (+ azure/ssllabs/wiz stubs — no ported fetchers)
+│   │   └── ...                       # (+ ssllabs/wiz stubs — no ported fetchers)
 │   ├── _template/                    # starter directory for new fetchers
 │   ├── aws/                          # 80 bash (largest category; fanout per region/profile)
+│   ├── azure/                        # 27 Python, official SDKs (DefaultAzureCredential; fanout per subscription)
+│   ├── gcp/                          # 19 Python, official clients (ADC; fanout per project)
 │   ├── datadog/                      # 13 Python (SIEM, logs, infra, APM, incidents)
 │   ├── okta/                         # 8 (7 Python KSI wrappers + 1 bash); _shared/okta_iam_core.py
 │   ├── sentinelone/                  # 5 single-target Python
 │   ├── knowbe4/                      # 4 bash
+│   ├── gitlab/                       # 4 fanout-capable Python (e.g. ci_cd_pipeline_config)
 │   ├── k8s/                          # 3 bash (aws-cli + kubectl)
 │   ├── rippling/                     # 3 single-target Python
-│   ├── gitlab/                       # 3 fanout-capable Python (e.g. ci_cd_pipeline_config)
-│   ├── checkov/                      # 2 bash IaC scanners (terraform + kubernetes)
-│   └── demo/                         # 1 credential-free synthetic demo (demo_hello)
+│   ├── paramify/                     # 3 Python FedRAMP 20x VER reports (fanout per program); _shared/ver_common.py
+│   └── checkov/                      # 2 bash IaC scanners (terraform + kubernetes)
 │
 ├── comparators/                      # scaffold only (_template/); no comparator ported, runner doesn't honor depends_on
 │
@@ -415,9 +417,9 @@ The current approach parses JSON output with regex to determine pass/fail. Most 
 ## Current state of the work
 
 **This section is the kept-current account of what's ported and what's in
-progress.** Snapshot: 122 fetchers across 10 categories (aws, datadog, okta,
-sentinelone, knowbe4, gitlab, k8s, rippling, checkov, demo); the AWS port is
-complete (80/80). The pieces that make this run:
+progress.** Snapshot: 172 fetchers across 13 categories (aws, azure, gcp,
+datadog, okta, sentinelone, knowbe4, gitlab, k8s, rippling, paramify, checkov,
+demo); the AWS port is complete (80/80). The pieces that make this run:
 
 - **Facade + three front-ends** (`framework/api.py`) — all discovery, manifest editing, validate, and run go through one facade; the human CLI, the `--json` AI CLI, and the Textual TUI (`paramify tui`) all call only the facade
 - **Fetcher schema** (`framework/schemas/fetcher_schema.json`) — supports fanout: `supports_targets`, `target_schema`, `per_target` secrets, `output.aggregation`. Extended additively from the original minimal version.

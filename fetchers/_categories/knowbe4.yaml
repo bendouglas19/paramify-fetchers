@@ -1,3 +1,8 @@
+description: >-
+  KnowBe4 security-awareness training. Campaign completion for all users, for
+  high-risk groups, and for developers, plus a per-module summary. The groups and
+  campaigns to measure are named in config; one API key and base URL per tenant.
+
 # KnowBe4 fetchers are bash + curl against the KnowBe4 REST API, with jq shaping
 # the response into evidence. No ambient identity: each fetcher declares its own
 # api_key secret, so there is no passthrough_env block.

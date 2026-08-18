@@ -167,7 +167,9 @@ class EvidencePage(Vertical):
 
     @staticmethod
     def _format(path: str, ev: dict) -> str:
-        payload = json.dumps(ev.get("payload"), indent=2, default=str)
+        # ensure_ascii=False for the same reason the CLI's evidence view does it:
+        # \u2014 in place of the characters the tenant actually uses is unreadable.
+        payload = json.dumps(ev.get("payload"), indent=2, default=str, ensure_ascii=False)
         if not ev.get("enveloped"):
             return f"{Path(path).name}   (raw — not enveloped)\n\n{payload}"
 

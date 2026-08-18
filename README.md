@@ -4,7 +4,7 @@
 [![CI](https://github.com/paramify/paramify-fetchers/actions/workflows/ci.yml/badge.svg)](https://github.com/paramify/paramify-fetchers/actions/workflows/ci.yml)
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-1467ff.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-1467ff.svg)](pyproject.toml)
-[![Version](https://img.shields.io/badge/version-0.3.1--beta-1467ff.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.0--beta-1467ff.svg)](CHANGELOG.md)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/paramify/paramify-fetchers)
 
 Fetchers are small scripts that collect compliance evidence from your infrastructure and write it to disk as JSON. A separate uploader stage pushes that evidence to Paramify. This repo contains the fetchers, the runner that executes them, and the uploader — the fetchers themselves never talk to Paramify directly.
@@ -108,6 +108,13 @@ manifest, runs it, and reviews evidence — all without leaving the keyboard:
 > paramify evidence evidence/run-*/demo_hello.json   # inspect the enveloped result
 > ```
 
+The recordings on this page were made against a larger set of synthetic fetchers
+than the repo ships, so a run of your own will be shorter than the one on film —
+`examples/demo.yaml` collects once and exits clean. What the frames show of the
+runner, the envelope and each command's output is exactly what you get.
+
+![A run, and the evidence it wrote](docs/demo/firstrun.gif)
+
 ---
 
 ## Drive it with an AI agent
@@ -135,7 +142,7 @@ scaffold a new fetcher, wire it into a manifest, or propose a validator directly
 The same operations, run by hand. `paramify catalog` lists the catalog and
 `paramify describe <fetcher>` shows exactly what any one fetcher needs:
 
-![Browsing the fetcher catalog with the paramify CLI](docs/demo/catalog.gif)
+![Browsing the catalog and reading a fetcher's contract](docs/demo/catalog.gif)
 
 A typical run, step by step:
 
@@ -290,11 +297,12 @@ Two flags worth knowing:
 config are still missing until the manifest is runnable.
 
 Nothing ships at `./manifest.yaml`, so the one you build there is yours — commit
-it or don't, as you prefer. For a worked reference see
+it or don't, as you prefer. `paramify manifest new <name>` starts one under
+`manifests/`. For a worked reference see
 [`example_manifest.yaml`](example_manifest.yaml); [`examples/`](examples/) holds
 smaller per-scenario samples.
 
-![Building a run manifest step by step with paramify manifest](docs/demo/manifest.gif)
+![Building a run manifest, then preflighting it with paramify doctor](docs/demo/doctor.gif)
 
 ```bash
 paramify manifest init [--output-dir DIR]            # start a manifest at -f/--file

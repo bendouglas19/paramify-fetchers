@@ -41,7 +41,7 @@ emit `{metadata:{profile,region,...}, results:[...]}`, Okta/GitLab/Rippling emit
 a bare dict with no metadata, SentinelOne tucks `api_failures` in the body. A
 file pulled out of its run directory is unattributable. The envelope makes every
 file self-describing and gives the uploader **one shape** to consume instead of
-107 ad-hoc ones.
+one ad-hoc shape per fetcher.
 
 ---
 
@@ -77,14 +77,15 @@ fetcher writes it. Fetchers do not change.**
 Rationale:
 - The runner already knows every metadata field — it computes the same values for
   `_run_metadata.json` (name, version, target, run_id, timestamps, exit_code).
-- **Zero fetcher changes.** Wrapping in each of the 122 fetchers would be 122 edits
-  and would grow with every new port. One implementation point instead.
+- **Zero fetcher changes.** Wrapping inside each fetcher would be an edit per fetcher
+  (122 of them when this was decided) and would grow with every new port. One
+  implementation point instead.
 - Keeps the v0.x interim clause true: fetchers still write raw evidence dicts;
   the framework adds the envelope. A fetcher can later emit its own envelope and
   the runner detects it (already-enveloped → don't double-wrap).
 
 Alternative (each fetcher emits its own envelope) matches the contract literally
-but costs the 107 edits and re-touches finished work. Defer that until/unless a
+but costs an edit in every fetcher and re-touches finished work. Defer that until/unless a
 fetcher needs payload-level control the runner can't provide.
 
 ### Runner behavior
@@ -151,8 +152,8 @@ def wrap_outputs(result, fetcher, run_id, run_dir):
   a secret spanning a newline in the *live* stream only (the persisted copy
   re-joins and masks it). **Fetchers must still never print secret values** —
   `error` is customer-visible (it ships inside the uploaded envelope).
-- **Non-JSON outputs** (`output.type: csv|html`) — out of scope for v0.x; all 107
-  current fetchers are JSON. Later: a payload-by-reference variant (`payload_path`
+- **Non-JSON outputs** (`output.type: csv|html`) — out of scope for v0.x; every
+  current fetcher is JSON. Later: a payload-by-reference variant (`payload_path`
   + `content_type`) rather than inlining. Note it, don't build it.
 - **Comparators** — when they land, they read *payload* of prior envelopes, not the
   bare file. (No comparator exists yet, so nothing breaks now.)
