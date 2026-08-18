@@ -1,0 +1,38 @@
+name: demo_encryption_at_rest
+version: 0.1.0
+description: >
+  Synthetic encryption-at-rest posture for a set of make-believe accounts, so a
+  fanout run can be watched end to end with no credentials. Not real evidence.
+category: demo
+
+supports_targets: true
+
+target_schema:
+  account:
+    type: string
+    required: true
+    env: DEMO_ACCOUNT
+    description: >
+      Name of the synthetic account to report on. Any value works; the three the
+      shipped demo manifest lists (demo-prod-1, demo-prod-2, demo-sandbox) have
+      hand-written posture, anything else gets a generic clean result.
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: demo_encryption_at_rest.json
+  aggregation: per_target
+
+# The whole point of the demo: no secrets, no credentials, no network.
+secrets: []
+
+evidence_set:
+  reference_id: EVD-DEMO-ENCRYPTION-AT-REST
+  name: Demo — Synthetic Encryption at Rest
+  instructions: >
+    Script: fetcher.py. Emits a fixed synthetic volume/bucket inventory for the
+    account named in DEMO_ACCOUNT. Requires no credentials or network access.
+    For trying the pipeline only.
