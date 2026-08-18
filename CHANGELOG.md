@@ -10,8 +10,110 @@ schemas and the `paramify` CLI — not the internal code.
 
 ## [Unreleased]
 
+## [0.4.0-beta] - 2026-08-18
+
+### Breaking
+
+- **KnowBe4 group- and campaign-scoped fetchers now require config.** The group
+  and campaign names these three fetchers match on were hardcoded to one tenant
+  (see *Fixed* below); they now come from `config_schema` and are **required**, so
+  a manifest that ran them before will now fail `paramify validate` — and the run
+  — until the values are wired:
+
+  | Fetcher | New required config |
+  |---|---|
+  | `knowbe4_high_risk_training` | `high_risk_groups`, `role_specific_campaigns` |
+  | `knowbe4_developer_specific_training` | `developer_groups`, `developer_campaigns` |
+  | `knowbe4_security_awareness_training` | `security_awareness_campaigns` |
+
+  Each takes a comma-separated list of names exactly as they read in your tenant,
+  set with `paramify manifest set-config <fetcher> <key>=<value>` or through the
+  matching `KNOWBE4_*` env var. `retraining_interval_days` was added at the same
+  time but defaults to 365 and needs nothing. `paramify doctor <manifest>` names
+  any that are still missing.
+- **KnowBe4 evidence changed shape.** A metric the fetcher could not measure is
+  now `null` rather than `0`, and `training_module_summary` for an empty tenant is
+  `{}` rather than `null`; a new `results.config_resolution` block records what was
+  requested, what matched, and what the tenant actually has. **Re-check any
+  validator or query that asserts on those fields** — one written against
+  `"completion_rate": 0` will no longer match, which is the point: `0` used to mean
+  both "measured, and it is zero" and "could not measure", and only the first of
+  those is a finding.
+
 ### Added
 
+- **Azure — 27 fetchers (new category).** Identity and access (Entra ID MFA,
+  privileged roles, conditional access), compute and AKS posture, storage and
+  database encryption at rest, Key Vault, App Service, monitoring and backup.
+  Python against the official `azure-mgmt-*` SDKs — no `az` CLI at runtime — and
+  authentication is `DefaultAzureCredential`, so a managed identity, a service
+  principal or a cached `az login` all work and none of them is a key file.
+  Fanned out per subscription. Installs with `pip install -e '.[azure]'` (23
+  packages), deliberately **not** folded into `[all]`: it is heavier than
+  everything else here combined and only matters if you run Azure. Majors are
+  pinned, because six breaking changes across `azure-mgmt` majors each produced
+  wrong or empty evidence rather than an error. Credential setup, and the
+  tenant-vs-subscription scoping that the Entra fetchers need, are documented in
+  the six themed example manifests
+  ([`examples/azure_identity_and_access.yaml`](examples/azure_identity_and_access.yaml)
+  and siblings); the category has no `README.md` of its own yet.
+- **GCP — 19 fetchers (new category).** Compute and GKE posture, IAM and service
+  accounts, KMS, Cloud Storage and Cloud SQL encryption at rest, BigQuery, logging
+  and monitoring, DNS. Python against the official `google-cloud-*` clients, no
+  `gcloud` at runtime, authenticating through Application Default Credentials —
+  again no key file. Fanned out per project; a target that omits `project` collects
+  from the ADC default ("collect where deployed"). `pip install -e '.[gcp]'` (12
+  packages), also out of `[all]`. Credential setup in
+  [`fetchers/gcp/README.md`](fetchers/gcp/README.md).
+- **Paramify — 3 FedRAMP 20x VER report fetchers (new category).** Accepted
+  Vulnerability Info (VER-RPT-AVI), the Vulnerability Detail Report, and the
+  historical VER-activity snapshot, generated from Paramify issue data and fanned
+  out per program. Shared logic lives in `fetchers/paramify/_shared/ver_common.py`.
+  Report-period and workspace-wide knobs (`cert_package_uri`, `api_base_url`,
+  `http_timeout`) are category config under `platforms.paramify.config` rather than
+  per-target secrets, so one value per workspace is set once.
+- **Optional secrets — `required: false` on a declared secret.** The ambient
+  identity case: aws, azure, gcp and k8s all authenticate through a credential
+  chain whose preferred links (an instance role, EKS IRSA or Pod Identity, a
+  managed identity, workload identity, SSO, a cached CLI login) hand over no
+  secret at all, while the same chain also accepts static keys. Every declared
+  secret used to be mandatory, so those keys could not be declared without
+  breaking the deployments that supply none — which meant `paramify describe` and
+  the TUI reported that an AWS fetcher needed no credentials whatsoever. They are
+  now declared and marked optional: advertised, resolvable from a `${env:...}` ref
+  like any other secret (so the runner masks them out of captured output), and
+  simply not injected when a manifest omits them.
+- **Category-level `secrets:`** in `fetchers/_categories/<name>.yaml` — credentials
+  shared by every fetcher in a category, declared once instead of repeated. Azure's
+  service principal is three env vars used identically by all 27 of its fetchers.
+  A per-fetcher secret of the same name still wins, mirroring how `config_schema`
+  already merges; `contract.effective_secrets()` is the one place both the
+  describe/TUI surface and the runner resolve through, so what is advertised and
+  what is demanded cannot drift apart. `secrets[].description` was added alongside,
+  and is what explains *why* an optional credential is optional.
+- **`$FETCHER_STATUS_FILE` — an explicit channel for why a collection failed.**
+  A fetcher that fails writes `{"error": "...", "code": "..."}` there and the runner
+  puts it in the envelope as `metadata.error` / `metadata.error_code` (a new
+  optional envelope field; the envelope stays additive, so `schema_version` is
+  still 1.0). Previously `metadata.error` was the tail of stderr, which assumes the
+  last thing a fetcher logged is why it failed — false for the 16 fetchers whose
+  final line is "Evidence saved to …", so a failed collection reported a success
+  message as its failure reason. The stderr tail remains the fallback, so nothing
+  had to migrate. Paramify surfaces that field to whoever is triaging. (#24)
+- **The demo program — five credential-free fetchers and the one manifest the repo
+  ships.** `demo_hello` alone proved that the pipeline runs and nothing else; none
+  of the shapes a real evidence program meets were reachable without credentials.
+  `manifests/demo.yaml` is now tracked and runs `demo_hello`, `demo_vuln_scan` (four
+  stages with a configurable pause, so a run streams), `demo_encryption_at_rest`
+  (fanout over three accounts), `demo_audit_logging` (fanout where one account
+  cannot read one of its regions: it writes the partial evidence it did get, exits
+  non-zero, and reports why through `$FETCHER_STATUS_FILE`) and `demo_access_review`
+  (one required secret and one optional one). Every payload is fixed and obviously
+  synthetic, nothing reaches a network, and the whole category runs on the standard
+  library. The run ends **partial** on purpose — a green demo never shows what a
+  healthy failure looks like. `tests/test_demo_program.py` runs it in CI, the only
+  category that can be, and [`fetchers/demo/README.md`](fetchers/demo/README.md)
+  explains what each one is for.
 - `paramify programs` — a new command group over the Paramify workspace.
   `programs list` shows each program's readable name next to its project UUID;
   `programs target` selects programs (interactively, by name/id, or `--all`) and
@@ -67,6 +169,27 @@ schemas and the `paramify` CLI — not the internal code.
 
 ### Changed
 
+- **`paramify describe` shows each field's env var and description.** Both schemas
+  said a field's `description` was shown there; it was not, so the two things
+  needed to wire a field into a manifest — the env var it arrives in, and what it
+  is for — were only readable by opening `fetcher.yaml`. It is also the only place
+  an optional secret explains why it is optional.
+- **`paramify evidence` and the TUI's evidence viewer print what the tenant wrote.**
+  Both rendered their JSON with the default `ensure_ascii`, so an em dash in a
+  failure reason came back as `\u2014` and any accented name was unreadable and
+  unsearchable. The files on disk are unchanged.
+- **The README's demo GIFs were re-recorded**, and there are four now: the
+  zero-credential first run, building a manifest and preflighting it with `doctor`,
+  the catalog and a fetcher's contract, and the TUI. The old three were rendered the
+  day before the TUI's design language changed and two weeks before its Paramify
+  tab was rebuilt, and predate azure/gcp/paramify entirely. `docs/demo/render.sh`
+  now records inside a throwaway git worktree, so what the camera sees is what a
+  fresh clone sees rather than the recorder's own manifests and run history — which
+  is both reproducible and the only reliable way to keep real tenant names out of a
+  public README. Everything on camera is the demo program, so anyone can re-record.
+- **gitlab, knowbe4, okta and sentinelone categories now have a `description`.**
+  Four of thirteen listed as a bare name in `paramify catalog`, which is the one
+  place someone browsing decides whether a category is what they want.
 - The `tui` extra pins `textual>=8,<9` (was `>=1.0,<2.0`). The old range was not
   what anyone ran, and focus / `Input` behaviour differs enough across those lines
   that the TUI is not the same app on 1.x. `tests/test_tui_keys.py` (new) drives
@@ -77,13 +200,6 @@ schemas and the `paramify` CLI — not the internal code.
   field back to the shortcut keys — an `Input` consumes every printable key) and
   the Run tab shows `enter/ctrl+r`, since focus opens on the ▶ Run button and
   `enter` presses it.
-- **Paramify VER fetchers**: `report_from` / `report_to` / `api_base_url` /
-  `http_timeout` moved out of `secrets[]`. Every declared secret is mandatory, so
-  declaring optional knobs there made them required, contradicting their
-  documented defaults. `cert_package_uri`, `api_base_url` and `http_timeout` are
-  now category config (`fetchers/_categories/paramify.yaml`) — one value per
-  workspace, set once under `platforms.paramify.config` instead of copied onto
-  every target.
 - Each VER report's `_summary` now carries a `collection` block (status + the
   API-failure ledger). `/issues` is the only call these fetchers make, so a
   failure yields empty report arrays; without this a failed report was
@@ -124,6 +240,17 @@ schemas and the `paramify` CLI — not the internal code.
 
 ### Fixed
 
+- **`paramify validate` no longer demands credentials the runner does not need.**
+  An optional secret could not pass validation: the runner skips one a manifest
+  omits, but validate demanded every declared secret regardless — so as soon as the
+  aws, azure and k8s categories declared their static keys (above), every manifest
+  naming one of their fetchers would have failed preflight while running perfectly
+  well. Validate also read a fetcher's own `secrets` rather than
+  `effective_secrets`, so a category-declared credential was not checked at all and
+  a manifest genuinely missing a required one passed validate and died in the run.
+  Both halves are the same fix: resolve secrets the way the runner does, then skip
+  the optional ones. No existing manifest newly fails — every category-level secret
+  shipped today is optional.
 - **KnowBe4**: the three group- and campaign-scoped fetchers no longer report an
   unresolved config as a failing control. The group and campaign titles they match
   on were hardcoded to one tenant, so pointed anywhere else they emitted
@@ -323,7 +450,8 @@ change before 1.0 (see [`docs/versioning.md`](docs/versioning.md)).
 - TUI restyled — border titles, status pills, denser controls, and hatched empty
   states.
 
-[Unreleased]: https://github.com/paramify/paramify-fetchers/compare/v0.3.1-beta...HEAD
+[Unreleased]: https://github.com/paramify/paramify-fetchers/compare/v0.4.0-beta...HEAD
+[0.4.0-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.3.1-beta...v0.4.0-beta
 [0.3.1-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.3.0-beta...v0.3.1-beta
 [0.3.0-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.2.1-beta...v0.3.0-beta
 [0.2.1-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.2.0-beta...v0.2.1-beta
