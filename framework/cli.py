@@ -54,6 +54,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import textwrap
 from datetime import datetime
 from pathlib import Path
 from typing import List, NoReturn, Optional
@@ -315,7 +316,22 @@ def describe_cmd(
             for fld in fields:
                 req = "required" if fld.get("required") else "optional"
                 extra = f" default={fld['default']}" if fld.get("default") is not None else ""
-                typer.echo(f"    - {fld['name']} ({fld['type']}, {req}){extra}")
+                env = f"  env={fld['env']}" if fld.get("env") else ""
+                typer.echo(f"    - {fld['name']} ({fld['type']}, {req}){extra}{env}")
+                # The env var and the description are what someone needs to wire
+                # this field into a manifest, and the schemas say describe shows
+                # them. Wrapped rather than truncated: a secret's description is
+                # where "optional" is explained, and half of that is no use.
+                if fld.get("description"):
+                    for line in textwrap.wrap(
+                        " ".join(fld["description"].split()), width=76,
+                        initial_indent=" " * 8, subsequent_indent=" " * 8,
+                        # Identifiers -- env vars, account names, fetcher names --
+                        # are most of what these descriptions name; splitting them
+                        # at a hyphen or a width boundary makes them unsearchable.
+                        break_on_hyphens=False, break_long_words=False,
+                    ):
+                        typer.echo(line)
 
 
 @app.command("ksi")
