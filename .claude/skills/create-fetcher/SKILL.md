@@ -74,8 +74,14 @@ Read these before building (skim, don't summarize back):
 **Ask the user (batch into ONE `AskUserQuestion`, ≤3 questions):**
 1. **Auth model** — a long-lived token/key the fetcher reads from env (→ one
    `secrets[]` entry per var), OR an ambient cloud credential chain like
-   `aws`/`az` login (→ `secrets: []`, and the identity vars go in the category's
-   `auth.passthrough_env`)?
+   `aws`/`az` login / IRSA / workload identity / a managed identity?
+   For the ambient case the static-key vars are still **declared**, as
+   `required: false` secrets on the *category* file — that is how `describe` and
+   the TUI can advertise "you may supply these" without breaking the deployments
+   that supply none (see `fetchers/_categories/aws.yaml`). They stay in
+   `auth.passthrough_env` as well, so exporting them keeps working. Declaring
+   them mandatory is the mistake: it fails `paramify validate` for every manifest
+   that authenticates through a role.
 2. **Fanout** — one account/tenant (single), or run once per target — per
    project/region/subscription (→ `supports_targets: true`, `target_schema`,
    `aggregation: per_target`)?
@@ -100,10 +106,24 @@ single confirmation before building.
 
 ## Phase 3 — Build
 
-1. **New category?** Create `fetchers/_categories/<category>.yaml` (description;
-   `auth.passthrough_env` for ambient-credential tools; shared `config_schema`).
+1. **New category?** Create `fetchers/_categories/<category>.yaml`:
+   - `description` — shown as the category's line in `paramify catalog`; a
+     category without one lists as a bare name.
+   - `requires:` — the external binaries (`tools:`) and pip distributions
+     (`python_packages:`) its fetchers need. **Not optional:**
+     `paramify doctor` preflights from this, and `tests/test_category_requires.py`
+     fails the suite for anything a fetcher imports or shells out to that is not
+     declared here. Versions stay in `requirements.txt`; name only the
+     distributions here.
+   - `auth.passthrough_env` for ambient-credential tools, and `secrets:` for
+     credentials every fetcher in the category shares (declared once here rather
+     than repeated per fetcher — mark the ambient static-key pair
+     `required: false`).
+   - shared `config_schema` for knobs set once per category.
+
    If multiple fetchers will share code, make `fetchers/<category>/_shared/`.
-   Add new Python deps to top-level `requirements.txt`.
+   Add new Python deps to top-level `requirements.txt` **and** to the category's
+   `requires.python_packages`.
 
 2. **Scaffold:** `cp -r fetchers/_template fetchers/<category>/<short_name>`.
    Lean ports ship just `fetcher.yaml` + the entry script — drop the template's

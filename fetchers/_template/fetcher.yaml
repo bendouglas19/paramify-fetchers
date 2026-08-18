@@ -19,4 +19,25 @@ output:
 secrets:
   - name: api_token
     env: <UPPER_SNAKE_ENV_VAR>
+    description: <what this credential is, and where to get it>
   # Add one entry per env var the fetcher (or its shared modules) reads.
+  #
+  # `required` defaults to true. Set it to false for a credential the fetcher CAN
+  # use but does not need — the ambient-identity case, where an instance role,
+  # IRSA, a managed identity or an SSO login supplies the credentials and none of
+  # these vars is set. An optional secret a manifest omits is simply not injected;
+  # a REQUIRED one that a manifest omits fails `paramify validate`:
+  #
+  #   - name: access_key_id
+  #     env: AWS_ACCESS_KEY_ID
+  #     required: false
+  #     description: Static key pair; omit to use the ambient credential chain.
+  #
+  # Credentials shared by EVERY fetcher in the category belong in
+  # fetchers/_categories/<category>.yaml under `secrets:` instead of here, so they
+  # are declared once. A per-fetcher secret of the same name wins.
+  #
+  # Whatever this fetcher needs installed -- a CLI it shells out to, an SDK it
+  # imports -- must be declared in that category file's `requires:` block, or
+  # `paramify doctor` will report a clean preflight for a run that then fails, and
+  # tests/test_category_requires.py will fail the suite.

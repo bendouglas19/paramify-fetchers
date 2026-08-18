@@ -21,6 +21,22 @@ from dotenv import load_dotenv
 logger = logging.getLogger("<category>_<short_name>")
 
 
+def report_failure(reason: str, code: str | None = None) -> None:
+    """Report why this run failed; the runner puts it in the envelope's metadata.error.
+
+    Call this on every path that returns non-zero. Without it the runner falls back
+    to the tail of stderr, which is whatever you logged last — and for most fetchers
+    that is the "Evidence saved" line, i.e. a success message reported as the reason
+    for a failure. `code` is a machine-readable category (auth_failed,
+    not_authorized, not_enabled, target_unreachable, rate_limited, bad_config,
+    partial_failure). See docs/fetcher_contract.md § Output.
+    """
+    path = os.environ.get("FETCHER_STATUS_FILE")
+    if not path:
+        return
+    Path(path).write_text(json.dumps({"error": reason} | ({"code": code} if code else {})))
+
+
 def main():
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -42,6 +58,14 @@ def main():
 
     logger.info("Evidence saved to %s", output_path)
 
+    # Exit code is the ONLY failure signal the runner reads — it never looks inside
+    # the payload. Non-zero for any failed call or precondition, and say why:
+    #
+    #     if api_failures:
+    #         report_failure(f"{len(api_failures)} API calls failed", "partial_failure")
+    #         return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

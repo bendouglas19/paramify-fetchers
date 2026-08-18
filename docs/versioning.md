@@ -31,7 +31,7 @@ edited by hand in their own files and are called out in the changelog.
 
 | Axis | Where it lives | Scheme | Today |
 |---|---|---|---|
-| **Tool version** | git tag / GitHub Release (and `pyproject.toml`) | SemVer, applied to the contract | `0.2.0` |
+| **Tool version** | git tag / GitHub Release (and `pyproject.toml`) | SemVer, applied to the contract | `0.4.0` |
 | **Envelope `schema_version`** | `framework/envelope.py` → every evidence file's `schema_version` | SemVer, additive-only | `1.0` |
 | **Per-fetcher `version`** | each `fetcher.yaml` | SemVer per fetcher | `0.x` (v0.x ports) |
 
