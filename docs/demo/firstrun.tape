@@ -10,8 +10,8 @@ Output docs/demo/firstrun.gif
 Set Shell "bash"
 Set FontFamily "JetBrainsMono Nerd Font"
 Set FontSize 16
-Set Width 1240
-Set Height 540
+Set Width 1320
+Set Height 600
 Set Padding 20
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 50ms

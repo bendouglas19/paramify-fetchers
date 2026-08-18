@@ -40,6 +40,17 @@ if ! git diff --quiet HEAD -- fetchers framework manifests; then
   echo "         the recording is of HEAD and will NOT include them." >&2
 fi
 
+# Two concurrent renders would share $DEMO_WORKTREE, and the first to finish
+# deletes it out from under the second -- whose fetcher then dies on a cwd that no
+# longer exists, and the traceback is what gets recorded. The path is fixed rather
+# than per-PID on purpose (it appears on camera in the runner's output, so it has to
+# be the same every time), which makes refusing to start the only safe answer.
+if [ -e "$DEMO_WORKTREE" ]; then
+  echo "$DEMO_WORKTREE already exists — another render may be running." >&2
+  echo "If not: rm -rf $DEMO_WORKTREE && git worktree prune" >&2
+  exit 1
+fi
+
 cleanup() {
   git worktree remove --force "$DEMO_WORKTREE" 2>/dev/null || rm -rf "$DEMO_WORKTREE"
   git worktree prune
@@ -47,7 +58,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-rm -rf "$DEMO_WORKTREE"
 git worktree prune
 git worktree add --detach --quiet "$DEMO_WORKTREE" HEAD
 echo "==> recording in $DEMO_WORKTREE (worktree of $(git rev-parse --short HEAD))"

@@ -12,8 +12,8 @@ Output docs/demo/doctor.gif
 Set Shell "bash"
 Set FontFamily "JetBrainsMono Nerd Font"
 Set FontSize 16
-Set Width 1240
-Set Height 700
+Set Width 1320
+Set Height 770
 Set Padding 20
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 32ms

@@ -12,8 +12,8 @@ Output docs/demo/tui.gif
 Set Shell "bash"
 Set FontFamily "JetBrainsMono Nerd Font"
 Set FontSize 15
-Set Width 1280
-Set Height 800
+Set Width 1360
+Set Height 860
 Set Padding 14
 Set Theme "TokyoNight"
 Set TypingSpeed 90ms

@@ -11,8 +11,8 @@ Output docs/demo/catalog.gif
 Set Shell "bash"
 Set FontFamily "JetBrainsMono Nerd Font"
 Set FontSize 16
-Set Width 1240
-Set Height 860
+Set Width 1320
+Set Height 930
 Set Padding 20
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 50ms
