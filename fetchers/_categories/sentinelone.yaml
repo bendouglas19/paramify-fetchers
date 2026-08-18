@@ -1,0 +1,6 @@
+# SentinelOne fetchers are python (requests) against the SentinelOne management
+# API. One API token and management URL per tenant; no ambient identity.
+description: >-
+  SentinelOne endpoint protection. Agent inventory and health, XDR asset
+  inventory, cloud detection rules, console user configuration, and the activity
+  log. One API token and management URL per tenant.

@@ -1,3 +1,8 @@
+description: >-
+  Okta identity posture. Authenticator and MFA policy, account lifecycle,
+  least-privilege and just-in-time authorization, non-user accounts, and
+  suspicious-activity handling. One API token and org URL per tenant.
+
 # Mostly python (requests) against the Okta API; one bash fetcher
 # (authenticators) uses curl + jq, so both are needed whenever the category runs.
 requires:
