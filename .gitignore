@@ -45,8 +45,25 @@ venv/
 # --- TUI design preview renders (regenerable; open locally) ---
 *_mock.svg
 
-# --- VHS demo recordings: scratch dir is throwaway; the .tape/.gif ARE committed ---
+# --- VHS demo recordings ---
+# The .gif files ARE committed — they are what the README embeds. Everything used to
+# produce them is local: the tapes, the render script, and the synthetic `demo`
+# fetchers and manifest they record against. Keeping them out means a clean clone
+# cannot re-render the GIFs; whoever records them needs these files locally.
 docs/demo/.scratch/
+docs/demo/*.tape
+docs/demo/render.sh
+docs/demo/README.md
+manifests/demo.yaml
+tests/test_demo_program.py
+fetchers/demo/README.md
+fetchers/demo/access_review/
+fetchers/demo/audit_logging/
+fetchers/demo/encryption_at_rest/
+fetchers/demo/vuln_scan/
+
+# --- Claude Code agent worktrees (tool-generated; each is its own git repo) ---
+.claude/worktrees/
 
 # --- macOS / editors ---
 .DS_Store

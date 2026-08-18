@@ -1,7 +1,4 @@
-# Demo category — credential-free fetchers that emit synthetic evidence, so you
-# can exercise the whole run → envelope pipeline with no cloud account: a single
-# fetcher, a fanout, a fanout with one deliberately failing target, a slow one
-# that streams progress, and one that takes a credential. Not real evidence;
-# safe to delete. Runs on the standard library alone, so there is nothing for
-# `paramify doctor` to require.
+# Demo category — a single credential-free fetcher that emits synthetic
+# evidence, so you can exercise the whole run → envelope pipeline with no cloud
+# account. Not real evidence; safe to delete.
 description: Synthetic evidence for trying the pipeline with no credentials.

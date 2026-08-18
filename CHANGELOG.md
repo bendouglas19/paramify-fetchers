@@ -100,20 +100,6 @@ schemas and the `paramify` CLI — not the internal code.
   final line is "Evidence saved to …", so a failed collection reported a success
   message as its failure reason. The stderr tail remains the fallback, so nothing
   had to migrate. Paramify surfaces that field to whoever is triaging. (#24)
-- **The demo program — five credential-free fetchers and the one manifest the repo
-  ships.** `demo_hello` alone proved that the pipeline runs and nothing else; none
-  of the shapes a real evidence program meets were reachable without credentials.
-  `manifests/demo.yaml` is now tracked and runs `demo_hello`, `demo_vuln_scan` (four
-  stages with a configurable pause, so a run streams), `demo_encryption_at_rest`
-  (fanout over three accounts), `demo_audit_logging` (fanout where one account
-  cannot read one of its regions: it writes the partial evidence it did get, exits
-  non-zero, and reports why through `$FETCHER_STATUS_FILE`) and `demo_access_review`
-  (one required secret and one optional one). Every payload is fixed and obviously
-  synthetic, nothing reaches a network, and the whole category runs on the standard
-  library. The run ends **partial** on purpose — a green demo never shows what a
-  healthy failure looks like. `tests/test_demo_program.py` runs it in CI, the only
-  category that can be, and [`fetchers/demo/README.md`](fetchers/demo/README.md)
-  explains what each one is for.
 - `paramify programs` — a new command group over the Paramify workspace.
   `programs list` shows each program's readable name next to its project UUID;
   `programs target` selects programs (interactively, by name/id, or `--all`) and
@@ -178,15 +164,15 @@ schemas and the `paramify` CLI — not the internal code.
   Both rendered their JSON with the default `ensure_ascii`, so an em dash in a
   failure reason came back as `\u2014` and any accented name was unreadable and
   unsearchable. The files on disk are unchanged.
-- **The README's demo GIFs were re-recorded**, and there are four now: the
-  zero-credential first run, building a manifest and preflighting it with `doctor`,
-  the catalog and a fetcher's contract, and the TUI. The old three were rendered the
-  day before the TUI's design language changed and two weeks before its Paramify
-  tab was rebuilt, and predate azure/gcp/paramify entirely. `docs/demo/render.sh`
-  now records inside a throwaway git worktree, so what the camera sees is what a
-  fresh clone sees rather than the recorder's own manifests and run history — which
-  is both reproducible and the only reliable way to keep real tenant names out of a
-  public README. Everything on camera is the demo program, so anyone can re-record.
+- **The README's demo GIFs were re-recorded**, and there are four now: a run and the
+  evidence it wrote, building a manifest and preflighting it with `doctor`, the
+  catalog and a fetcher's contract, and the TUI. The old three were rendered the day
+  before the TUI's design language changed and two weeks before its Paramify tab was
+  rebuilt, and predate azure/gcp/paramify entirely — `tui.gif` showed an application
+  that no longer exists. They now also show the CLI's color. The recordings are made
+  against a larger set of synthetic fetchers than the repo ships, so a run of your
+  own is shorter than the one on film; what the frames show of the runner, the
+  envelope and each command's output is what you get.
 - **gitlab, knowbe4, okta and sentinelone categories now have a `description`.**
   Four of thirteen listed as a bare name in `paramify catalog`, which is the one
   place someone browsing decides whether a category is what they want.
