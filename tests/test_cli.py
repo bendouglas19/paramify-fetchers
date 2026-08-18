@@ -99,6 +99,149 @@ def test_doctor_with_credential_free_demo_manifest():
 
 
 # --------------------------------------------------------------------------- #
+# Doctor: dependency checks are scoped to the categories a manifest uses, so a
+# run is never told to install something it will not touch.
+# --------------------------------------------------------------------------- #
+
+def _doctor_json(tmp_path, manifest_body: str, *args) -> dict:
+    path = tmp_path / "m.yaml"
+    path.write_text(manifest_body)
+    result = runner.invoke(app, ["doctor", str(path), "--json", *args])
+    return json.loads(result.output)
+
+
+def test_doctor_scopes_dependencies_to_the_manifests_categories(tmp_path):
+    """An azure-only manifest checks azure packages and demands no CLI at all."""
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n    - use: azure_defender_plans\n")
+    assert rep["categories"] == ["azure"]
+    assert rep["tools"] == [], "azure is pure-SDK; no binary should be required"
+    assert [g["category"] for g in rep["packages"]] == ["azure"]
+
+
+def test_doctor_does_not_demand_cloud_deps_for_an_unrelated_category(tmp_path):
+    """The regression this guards: a GitLab run being told to install the aws CLI."""
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n    - use: gitlab_project_summary\n")
+    assert rep["categories"] == ["gitlab"]
+    assert rep["tools"] == []
+    assert rep["packages"] == []
+
+
+def test_doctor_requires_the_declared_tools_for_a_bash_category(tmp_path):
+    """k8s reaches EKS through `aws eks update-kubeconfig`, so aws counts too."""
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n    - use: k8s_eks_microservice_segmentation\n")
+    assert {t["name"] for t in rep["tools"]} == {"aws", "kubectl", "jq"}
+
+
+# The demo category needs nothing installed, which is the point: these two assert
+# on the whole-report `ok`, so an azure manifest would have them measuring whether
+# the Azure SDKs happen to be present. CI installs only the core dependencies.
+DEMO_MANIFEST = "run:\n  fetchers:\n    - use: demo_hello\n"
+
+
+def test_doctor_reports_upload_readiness_without_gating_on_it(monkeypatch, tmp_path):
+    """Collecting without uploading is legitimate, so a missing token informs only."""
+    monkeypatch.delenv("PARAMIFY_UPLOAD_API_TOKEN", raising=False)
+    monkeypatch.delenv("PARAMIFY_API_TOKEN", raising=False)
+    rep = _doctor_json(tmp_path, DEMO_MANIFEST)
+    assert rep["upload"]["token_present"] is False
+    assert rep["upload"]["ok"] is False
+    assert rep["ok"] is True, "a missing upload token must not fail a collect-only preflight"
+
+
+def test_doctor_require_upload_gates_on_the_token(monkeypatch, tmp_path):
+    monkeypatch.delenv("PARAMIFY_UPLOAD_API_TOKEN", raising=False)
+    monkeypatch.delenv("PARAMIFY_API_TOKEN", raising=False)
+    rep = _doctor_json(tmp_path, DEMO_MANIFEST, "--require-upload")
+    assert rep["ok"] is False
+    assert rep["upload"]["ok"] is False, "the token is why it failed, not a missing dep"
+
+
+def test_doctor_reports_the_upload_destination(monkeypatch, tmp_path):
+    """Stage-vs-production is silent once an upload succeeds, so surface it first."""
+    monkeypatch.setenv("PARAMIFY_UPLOAD_API_TOKEN", "tok")
+    monkeypatch.setenv("PARAMIFY_API_BASE_URL", "https://stage.paramify.com/api/v0")
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n    - use: azure_defender_plans\n")
+    assert rep["upload"]["base_url_label"] == "stage"
+    assert rep["upload"]["base_url_source"] == "PARAMIFY_API_BASE_URL"
+
+
+# --------------------------------------------------------------------------- #
+# Doctor: a manifest is preflighted for runnability, not just for set env vars.
+# The gap these close is a green doctor followed by a failed run — a typo'd
+# fetcher name, an unset required field, or a secret whose value is unusable.
+# --------------------------------------------------------------------------- #
+
+OKTA_MANIFEST = (
+    "run:\n"
+    "  fetchers:\n"
+    "    - use: okta_phishing_resistant_mfa\n"
+    "      secrets:\n"
+    "        api_token: ${env:OKTA_API_TOKEN}\n"
+    "        org_url: ${env:OKTA_ORG_URL}\n"
+)
+
+
+def test_doctor_rejects_a_manifest_the_runner_would_refuse(tmp_path):
+    """A misspelled `use:` has no secrets to scan, so presence checking read clean."""
+    rep = _doctor_json(
+        tmp_path, "run:\n  fetchers:\n    - use: okta_phishing_resistent_mfa\n"
+    )
+    assert rep["manifest"]["valid"] is False
+    assert any("unknown fetcher" in e for e in rep["manifest"]["errors"])
+    assert rep["manifest"]["fetchers"][0]["known"] is False
+    assert rep["ok"] is False, "doctor must not pass a manifest the run will refuse"
+
+
+def test_doctor_reports_a_missing_required_target_field(tmp_path):
+    """gitlab_project_summary supports_targets with a required field: no targets[] = no run."""
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n    - use: gitlab_project_summary\n")
+    assert rep["manifest"]["valid"] is False
+    assert any("targets" in e for e in rep["manifest"]["errors"])
+
+
+def test_doctor_reports_an_unparseable_manifest_instead_of_raising(tmp_path):
+    """Malformed YAML is a finding, not a traceback out of the CLI."""
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n   - use: [oops\n")
+    assert rep["manifest"]["valid"] is False
+    assert any("could not read" in e for e in rep["manifest"]["errors"])
+    assert rep["ok"] is False
+
+
+def test_doctor_counts_a_whitespace_only_secret_as_missing(monkeypatch, tmp_path):
+    """The worst case for a presence check: set, so nothing looks wrong; unusable."""
+    monkeypatch.setenv("OKTA_API_TOKEN", "   ")
+    monkeypatch.setenv("OKTA_ORG_URL", "https://dev-123.okta.com")
+    rep = _doctor_json(tmp_path, OKTA_MANIFEST)
+    assert rep["manifest"]["secrets_ok"] is False
+    assert rep["manifest"]["fetchers"][0]["missing"] == ["OKTA_API_TOKEN"]
+
+
+def test_doctor_warns_about_unusable_secret_values_without_failing(monkeypatch, tmp_path):
+    """Quotes and a scheme-less URL are copy-paste artifacts: report, do not gate.
+
+    They stay advisory because a legitimate value can look odd, and the whole
+    point of these is that they are guesses about intent.
+    """
+    monkeypatch.setenv("OKTA_API_TOKEN", '"abc123"')
+    monkeypatch.setenv("OKTA_ORG_URL", "dev-123.okta.com\n")
+    rep = _doctor_json(tmp_path, OKTA_MANIFEST)
+    warnings = rep["manifest"]["warnings"]
+    assert any("wrapped in \" quotes" in w for w in warnings)
+    assert any("whitespace" in w for w in warnings)
+    assert any("no http(s):// scheme" in w for w in warnings)
+    assert rep["manifest"]["secrets_ok"] is True
+    assert rep["manifest"]["ok"] is True, "value-shape guesses must not gate the exit code"
+
+
+def test_doctor_confirms_a_valid_manifest_out_loud(tmp_path):
+    """Silence on validity would read as 'not checked'."""
+    path = tmp_path / "m.yaml"
+    path.write_text("run:\n  fetchers:\n    - use: demo_hello\n")
+    result = runner.invoke(app, ["doctor", str(path)])
+    assert "Manifest valid" in result.output
+
+
+# --------------------------------------------------------------------------- #
 # Parity invariant: every api function the TUI calls maps to a CLI command.
 # Derived from the TUI SOURCE so it can't drift into a tautology.
 # --------------------------------------------------------------------------- #

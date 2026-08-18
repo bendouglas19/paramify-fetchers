@@ -12,7 +12,7 @@ Read / discover:
   paramify catalog [--json]                    # categories -> fetchers -> fields
   paramify describe <fetcher> [--json]
   paramify ksi [--json]                        # FedRAMP 20x KSI coverage
-  paramify doctor [manifest] [--json]          # preflight: python, CLIs, secrets
+  paramify doctor [manifest] [--probe] [--json]  # preflight: deps, manifest, upload
   paramify manifests [--json]                  # discovered run manifests
   paramify runs [--output-dir DIR] [--json]    # past runs under an output dir
   paramify evidence <path> [--json]            # read one evidence file
@@ -60,7 +60,7 @@ from typing import List, NoReturn, Optional
 
 import typer
 
-from framework import api
+from framework import api, paramify_auth
 
 _DEFAULT_MANIFEST = "manifest.yaml"
 
@@ -359,11 +359,34 @@ def doctor_cmd(
     manifest: Optional[str] = typer.Argument(
         None, help="Manifest to check secret env vars for (optional)"
     ),
+    upload_config: Optional[str] = typer.Option(
+        None, "--upload-config", help="Uploader config YAML, to resolve its base_url"
+    ),
+    require_upload: bool = typer.Option(
+        False, "--require-upload", help="Fail if the run could not be uploaded"
+    ),
+    probe: bool = typer.Option(
+        False, "--probe", help="Authenticate to each cloud category and report the identity"
+    ),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON"),
 ):
-    """Preflight: Python version, required CLIs on PATH, and (with a manifest) secrets."""
+    """Preflight: Python, CLIs and packages, and (with a manifest) validity + secrets.
+
+    Passing a manifest narrows every check to the categories it actually uses, so
+    a GitLab-only run is never told to install the aws CLI, and validates it the
+    way the runner does — an unknown fetcher name or a missing required config key
+    fails here rather than at run time. Upload readiness (API token and
+    destination URL) is always reported; --require-upload makes it count toward
+    the exit code.
+    """
     root = api.find_repo_root()
-    rep = api.doctor(root, Path(manifest) if manifest else None)
+    rep = api.doctor(
+        root,
+        Path(manifest) if manifest else None,
+        upload_config=Path(upload_config) if upload_config else None,
+        require_upload=require_upload,
+        probe=probe,
+    )
     if json_out:
         typer.echo(json.dumps(rep, indent=2))
         raise typer.Exit(0 if rep["ok"] else 1)
@@ -382,18 +405,103 @@ def doctor_cmd(
         if not rep["tools_required"]:
             typer.echo("  (informational — you only need the CLIs for categories you run)")
 
+    for grp in rep.get("packages") or []:
+        # Only the problems are listed by name: a healthy category is a one-line
+        # count, since 23 green azure packages is noise, not information.
+        bad = [p for p in grp["packages"] if not p["ok"]]
+        if not bad:
+            typer.echo(
+                f"\n{ok_mark} {grp['category']} packages: "
+                f"{len(grp['packages'])} installed and within pins"
+            )
+            continue
+        typer.echo(f"\n{bad_mark} {grp['category']} packages:")
+        for pkg in bad:
+            if pkg["status"] == "missing":
+                typer.echo(f"  {bad_mark} {pkg['name']:42s} not installed")
+            else:
+                typer.echo(
+                    f"  {bad_mark} {pkg['name']:42s} {pkg['installed']} "
+                    f"installed, needs {pkg['required']}"
+                )
+        typer.echo("  fix: pip install -r requirements.txt")
+
+    if rep.get("probes"):
+        typer.echo("\nCredentials (live):")
+        for pr in rep["probes"]:
+            if pr["ok"]:
+                typer.echo(f"  {ok_mark} {pr['category']:6s} {pr['identity']}")
+                # The detail line is the point of the probe: credentials that
+                # authenticate against the wrong account produce a clean run
+                # full of empty evidence.
+                bits = [f"{k}={v}" for k, v in (pr["detail"] or {}).items() if v]
+                if bits:
+                    typer.echo(f"           {'  '.join(bits)}")
+            else:
+                typer.echo(f"  {bad_mark} {pr['category']:6s} {pr['error']}")
+
+    up = rep.get("upload")
+    if up:
+        typer.echo("\nUpload:")
+        src = f" (from {up['token_source']})" if up["token_source"] else ""
+        if up["token_present"]:
+            typer.echo(f"  {ok_mark} API token set{src}")
+        else:
+            typer.echo(
+                f"  {bad_mark} API token not set — "
+                f"{api.UPLOAD_TOKEN_ENV} (or {api.READ_TOKEN_ENV})"
+            )
+        # Shown whether or not the token resolved: the destination is the other
+        # half of "am I about to do the right thing", and stage-vs-production is
+        # invisible in the run output once it succeeds.
+        origin = (
+            "default" if up["base_url_source"] == "default"
+            else f"from {up['base_url_source']}"
+        )
+        typer.echo(f"  → {up['base_url_label']}: {up['base_url']}  ({origin})")
+        if not rep.get("upload_required") and not up["ok"]:
+            typer.echo("  (informational — collecting without uploading is fine)")
+
     if rep["manifest"]:
         m = rep["manifest"]
-        typer.echo(f"\nManifest secrets ({m['path']}):")
+        # Validity before secrets: an unknown fetcher name or an unset required
+        # config key is what makes the run fail, and no amount of secret listing
+        # shows it.
+        if m["errors"]:
+            typer.echo(f"\nManifest ({m['path']}):")
+            for err in m["errors"]:
+                typer.echo(f"  {bad_mark} {err}")
+        else:
+            n = len(m["fetchers"])
+            typer.echo(
+                f"\n{ok_mark} Manifest valid ({m['path']}): "
+                f"{n} entr{'y' if n == 1 else 'ies'}"
+            )
+
+        if m["fetchers"]:
+            typer.echo(f"\nManifest secrets ({m['path']}):")
         for fr in m["fetchers"]:
-            if not fr["env_refs"]:
+            if not fr["known"]:
+                typer.echo(f"  {bad_mark} {fr['use']}  unknown fetcher — see above")
+            elif not fr["env_refs"]:
                 typer.echo(f"  {ok_mark} {fr['use']}  (no secrets)")
             elif fr["ok"]:
                 typer.echo(f"  {ok_mark} {fr['use']}  ({', '.join(fr['env_refs'])})")
             else:
                 typer.echo(f"  {bad_mark} {fr['use']}  missing: {', '.join(fr['missing'])}")
+            # Advisory: set, but shaped like a value that will fail at the API.
+            for warn in fr["warnings"]:
+                typer.echo(f"  ⚠️  {warn}")
 
-    typer.echo(f"\n{'All good.' if rep['ok'] else 'Issues found — see above.'}")
+    if not rep["ok"]:
+        typer.echo("\nIssues found — see above.")
+    elif any(not pr["ok"] for pr in rep.get("probes") or []):
+        # The checks that gate the exit code passed, but a live credential did
+        # not answer. Saying "All good" over the top of that is how a preflight
+        # teaches people to stop reading it.
+        typer.echo("\nChecks passed, but a live credential check failed — see above.")
+    else:
+        typer.echo("\nAll good.")
     raise typer.Exit(0 if rep["ok"] else 1)
 
 
@@ -538,6 +646,17 @@ def run_cmd(
         else:
             _err(f"Setup failed: {e}")
         raise typer.Exit(1)
+    # Said before the run, not after: collection can take a long time, and
+    # discovering the upload token is missing at the end of it is the complaint
+    # this answers. Advisory only — collecting without uploading is legitimate.
+    if not json_out:
+        readiness = api.upload_readiness(root)
+        if not readiness["token_present"]:
+            typer.echo(
+                f"Note: no Paramify API token set, so `paramify upload` will need one "
+                f"({api.UPLOAD_TOKEN_ENV}). Collecting anyway.\n"
+            )
+
     try:
         summary = api.run(
             m, root,
@@ -587,6 +706,16 @@ def upload_cmd(
         else:
             _err(f"Upload setup failed: {e}")
         raise typer.Exit(1)
+    # A missing token is the one preflight failure a person can fix on the spot,
+    # and by here they have already paid for a full collection. Ask, rather than
+    # making them quit, export, and re-run. --json and CI never reach this: a
+    # prompt there hangs the job instead of failing it.
+    if not preflight["ok"] and not preflight["token_present"] and not json_out:
+        if paramify_auth.prompt_for_token(preflight["base_url"]) is not None:
+            preflight = api.upload_preflight(
+                resolved_run_dir, root, config_path, dry_run=dry_run
+            )
+
     if not preflight["ok"]:
         if json_out:
             typer.echo(json.dumps(preflight, indent=2, default=str))
@@ -594,6 +723,11 @@ def upload_cmd(
             for err in preflight["errors"]:
                 _err(f"  ERROR  {err}")
         raise typer.Exit(1)
+
+    if not json_out:
+        typer.echo(
+            f"Uploading to {preflight['base_url_label']}: {preflight['base_url']}"
+        )
 
     try:
         summary = api.upload_run(

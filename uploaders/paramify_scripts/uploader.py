@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import logging
 import os
 import sys
@@ -41,9 +40,20 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 
+# Also runnable directly from any cwd, where only its own directory lands on
+# sys.path. Position in the repo is fixed, so derive the root rather than
+# duplicating the token-resolution rule locally.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from framework.paramify_auth import (  # noqa: E402
+    READ_TOKEN_ENV,
+    UPLOAD_TOKEN_ENV,
+    resolve_base_url,
+    resolve_upload_token,
+)
+
 logger = logging.getLogger("paramify_scripts_uploader")
 
-DEFAULT_BASE_URL = "https://app.paramify.com/api/v0"
 _REQUEST_TIMEOUT = 30
 _MARKER_KEY = "paramify-fetcher"
 
@@ -255,19 +265,17 @@ def sync_scripts(
     load_dotenv()
     config = config or {}
     paramify_cfg = config.get("paramify") or {}
-    base_url = (
-        paramify_cfg.get("base_url") or base_url
-        or os.environ.get("PARAMIFY_API_BASE_URL") or DEFAULT_BASE_URL
-    )
+    base_url, _ = resolve_base_url(paramify_cfg.get("base_url") or base_url)
     url_error = _base_url_error(base_url)
     if url_error:
         logger.error(url_error)
         raise ValueError(url_error)
 
     overrides = config.get("overrides") or {}
-    token = token or os.environ.get("PARAMIFY_UPLOAD_API_TOKEN")
+    if not token:
+        token, _ = resolve_upload_token()
     if not token and not dry_run:
-        msg = "PARAMIFY_UPLOAD_API_TOKEN is not set"
+        msg = f"{UPLOAD_TOKEN_ENV} is not set (or {READ_TOKEN_ENV} as a fallback)"
         logger.error(msg)
         raise ValueError(msg)
 

@@ -171,7 +171,7 @@ paramify list                  # discovered fetchers (flat)
 paramify catalog               # categories → fetchers → editable fields
 paramify describe <fetcher>    # one fetcher's config / secrets / target fields
 paramify ksi                   # FedRAMP 20x KSI coverage
-paramify doctor   [manifest]   # preflight: Python, required CLIs, manifest secrets
+paramify doctor   [manifest]   # preflight: Python, CLIs/packages, manifest, upload
 paramify manifests             # discovered run manifests (manifests/*.yaml)
 paramify validate <manifest>   # validate a manifest without running
 paramify run      <manifest>   # run it
@@ -219,12 +219,25 @@ Both subcommands need `PARAMIFY_API_TOKEN` with read scope and accept `--json`
 > subcommands.
 
 Before a real run, `paramify doctor <manifest>` preflights the environment —
-Python, the CLIs each category needs, and whether the manifest's secret env vars
-are set — and exits non-zero if anything's missing, so it drops straight into CI:
+Python, the CLIs and pip packages each category needs, whether the manifest can
+run at all, whether its secret env vars hold usable values, and whether an upload
+would work — and exits non-zero if anything's missing, so it drops straight into
+CI:
 
 ```text
 $ paramify doctor examples/minimal_run.yaml
 ✅ Python 3.11.9 (need ≥ 3.10)
+
+Required CLIs:
+  ✅ curl     /usr/bin/curl  (okta)
+  ✅ jq       /opt/homebrew/bin/jq  (okta)
+
+Upload:
+  ❌ API token not set — PARAMIFY_UPLOAD_API_TOKEN (or PARAMIFY_API_TOKEN)
+  → production: https://app.paramify.com/api/v0  (default)
+  (informational — collecting without uploading is fine)
+
+✅ Manifest valid (examples/minimal_run.yaml): 2 entries
 
 Manifest secrets (examples/minimal_run.yaml):
   ❌ okta_phishing_resistant_mfa  missing: OKTA_API_TOKEN, OKTA_ORG_URL
@@ -232,6 +245,43 @@ Manifest secrets (examples/minimal_run.yaml):
 
 Issues found — see above.
 ```
+
+Passing a manifest scopes every dependency check to the categories it actually
+uses, so a GitLab-only run is never told to install the aws CLI or the Azure
+SDKs. Each category declares what it needs in
+`fetchers/_categories/<name>.yaml`; version pins come from `requirements.txt`.
+The declarations are themselves tested (`tests/test_category_requires.py`) — an
+import or a shelled-out binary that nothing declares fails the suite, because
+doctor's report is only as good as what the category files say.
+
+The manifest is validated exactly the way `paramify validate` does it, so a
+misspelled fetcher name, a missing required config key, or an unmapped declared
+secret fails here rather than at run time — none of which a secret-presence check
+can see, since a secret the manifest never mapped leaves nothing to check.
+
+Secret *values* are checked, not just their presence. A whitespace-only value
+counts as missing (it reads as set and fails at the API), and values that look
+like copy-paste artifacts — surrounding quotes, a trailing newline from
+`$(cat file)`, a `*_URL` with no scheme — are reported as warnings that never
+affect the exit code, since a legitimate value can look odd:
+
+```text
+Manifest secrets (manifest.yaml):
+  ✅ okta_phishing_resistant_mfa  (OKTA_API_TOKEN, OKTA_ORG_URL)
+  ⚠️  OKTA_ORG_URL: name reads as a URL but the value has no http(s):// scheme
+```
+
+Two flags worth knowing:
+
+- `--probe` authenticates against each cloud category and prints which identity
+  answered (caller ARN, Azure principal and subscription, GCP account and
+  project). Without it doctor only checks that variables are *set* — which says
+  nothing for the ambient credential chains, where the working path sets no
+  variable at all. It makes network calls, so it is opt-in, and a failed probe
+  is reported without failing the command.
+- `--require-upload` makes a missing API token fail the exit code. By default
+  upload readiness is reported but not gated, since collecting without
+  uploading is a legitimate workflow.
 
 ### Building a manifest
 

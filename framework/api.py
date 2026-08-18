@@ -24,16 +24,39 @@ import re
 import shutil
 import sys
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 import yaml
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.utils import canonicalize_name
 
 from framework.config_loader import discover_fetchers, discover_platforms
 from framework.contract import ConfigField, Secret, TargetField, effective_secrets
 from framework.envelope import is_enveloped, wrap_outputs
+from framework.paramify_auth import (
+    BASE_URL_ENV,
+    READ_TOKEN_ENV,
+    UPLOAD_TOKEN_ENV,
+    describe_base_url,
+    resolve_base_url,
+    resolve_upload_token,
+)
+from framework.probe import probe_categories
 from framework.runner import manifest_loader
+
+
+def _missing_token_error() -> str:
+    """One wording for the missing-token error, since three call sites raise it."""
+    return (
+        f"{UPLOAD_TOKEN_ENV} is not set (or {READ_TOKEN_ENV} as a fallback). "
+        f"Set it in the environment by any means — export, .env, secret manager, "
+        f"CI secret — or run `paramify doctor <manifest>` to check before a run."
+    )
 
 _STDERR_TAIL_CHARS = 4000
 
@@ -242,28 +265,147 @@ def ksi_coverage(root: Path) -> dict:
 # Doctor — preflight environment check
 # --------------------------------------------------------------------------- #
 
-# External CLIs a category's fetchers shell out to. Categories not listed here
-# are pure-Python/HTTP fetchers that need no external tool. (AWS fetcher.sh files
-# declare "Required tools: aws, jq"; k8s uses kubectl; checkov clones + scans.)
-CATEGORY_TOOLS = {
-    "aws": ["aws", "jq"],
-    "k8s": ["kubectl"],
-    "checkov": ["checkov", "git"],
-}
-
 _ENV_REF = re.compile(r"\$\{env:([^}]+)\}")
 
+# Suffixes whose value should look like a URL. Okta's org URL is the recurring
+# case: the fetcher pastes it straight into a request, so a bare hostname fails
+# at the first call with a message about the scheme, not about the variable.
+_URLISH_SUFFIXES = ("_URL", "_URI", "_ENDPOINT")
 
-def doctor(root: Path, manifest_path: Optional[Path] = None) -> dict:
+
+def _secret_value_present(name: str) -> bool:
+    """Is this env var set to something usable?
+
+    Whitespace-only counts as unset. It reads as set to a presence check and
+    then fails at the API, which is the worst of both: doctor says go, the run
+    fails on auth, and the variable *is* in the environment so nothing looks
+    wrong.
+    """
+    return bool((os.environ.get(name) or "").strip())
+
+
+def _secret_value_warnings(name: str) -> List[str]:
+    """Advisory complaints about a secret's *value* shape.
+
+    These never gate the exit code. Each one is a copy-paste artifact that
+    passes a presence check and fails at the API, but a legitimate value can
+    look odd, and a preflight that cries wolf stops being read. Only values with
+    content reach here; empty and whitespace-only are reported as missing.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return []
+    out: List[str] = []
+    if raw != raw.strip():
+        out.append(
+            f"{name}: value has leading/trailing whitespace "
+            "(a trailing newline from `$(cat file)` is the usual cause)"
+        )
+    value = raw.strip()
+    if len(value) > 1 and value[0] == value[-1] and value[0] in "\"'":
+        out.append(
+            f"{name}: value is wrapped in {value[0]} quotes — the quotes are part "
+            "of the value, since nothing re-parses it as shell"
+        )
+    if name.upper().endswith(_URLISH_SUFFIXES) and not value.lower().startswith(
+        ("http://", "https://")
+    ):
+        out.append(f"{name}: name reads as a URL but the value has no http(s):// scheme")
+    return out
+
+
+def _requirement_pins(root: Path) -> Dict[str, str]:
+    """Map distribution name -> version specifier, from the top-level requirements.txt.
+
+    requirements.txt stays the single source of truth for versions; a category
+    file names only which distributions are its own. Unparseable or unpinned
+    lines are skipped rather than raising — doctor degrades to a presence check
+    rather than failing over a requirements-file quirk.
+    """
+    pins: Dict[str, str] = {}
+    req = root / "requirements.txt"
+    if not req.exists():
+        return pins
+    for line in req.read_text().splitlines():
+        line = line.split("#")[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        try:
+            parsed = Requirement(line)
+        except Exception:
+            continue
+        pins[canonicalize_name(parsed.name)] = str(parsed.specifier)
+    return pins
+
+
+def _check_python_packages(names: List[str], pins: Dict[str, str]) -> List[dict]:
+    """Resolve each distribution to its installed version and check it against the pin.
+
+    Three outcomes worth distinguishing, because they need different fixes:
+    missing (pip install), version conflict (pip install -U, or a deliberate
+    downgrade), and satisfied. A conflict is not cosmetic for the SDK categories
+    — requirements.txt documents azure-mgmt majors that return wrong or empty
+    evidence instead of erroring, so a drifted pin is a silent evidence bug.
+    """
+    out = []
+    for name in names:
+        key = canonicalize_name(name)
+        spec = pins.get(key)
+        try:
+            found = pkg_version(name)
+        except PackageNotFoundError:
+            found = None
+        if found is None:
+            status = "missing"
+        elif spec and not SpecifierSet(spec).contains(found, prereleases=True):
+            status = "conflict"
+        else:
+            status = "ok"
+        out.append({
+            "name": name,
+            "installed": found,
+            "required": spec or None,
+            "status": status,
+            "ok": status == "ok",
+        })
+    return out
+
+
+def doctor(
+    root: Path,
+    manifest_path: Optional[Path] = None,
+    *,
+    upload_config: Optional[Path] = None,
+    require_upload: bool = False,
+    probe: bool = False,
+) -> dict:
     """Preflight check for running fetchers here.
 
-    Reports the Python version, whether the external CLIs the relevant categories
-    need are on PATH, and — if a manifest is given — which secret env vars it
-    references are actually set. Presentation-agnostic; the CLI and TUI render
-    this one model. `ok` is a go/no-go: Python must clear the floor, and when a
-    manifest is supplied its categories' tools must be present and its secret env
-    vars set. Without a manifest, missing tools are informational (you may run
-    only some categories), so `ok` reflects the Python check alone.
+    Reports the Python version, the external CLIs and pip distributions the
+    relevant categories declare in their `requires:` block, and — if a manifest is
+    given — whether that manifest is runnable at all (`validate`) and whether the
+    secret env vars it references hold usable values.
+    Presentation-agnostic; the CLI and TUI render this one model.
+
+    A manifest narrows every check to the categories it actually uses, so a
+    GitLab-only run is not told to install the aws CLI. `ok` is a go/no-go: Python
+    must clear the floor, and when a manifest is supplied it must validate, its
+    categories' tools and packages must be present, and its secret env vars must
+    be set. Without a manifest, missing dependencies are informational (you may
+    only ever run some categories), so `ok` reflects the Python check alone.
+
+    Value-shape complaints (a token with a trailing newline, a URL missing its
+    scheme) ride along in `manifest.warnings` and never gate `ok` — see
+    _secret_value_warnings.
+
+    Upload readiness is always reported but only counts toward `ok` when
+    `require_upload` is set, since collecting evidence without uploading it is a
+    legitimate workflow that should not fail a preflight.
+
+    `probe` additionally authenticates against each cloud category and reports
+    which identity answered. It is opt-in because it is the only part of doctor
+    that touches the network, and its results never gate `ok` — see
+    framework/probe.py.
     """
     py = sys.version_info
     python = {
@@ -273,12 +415,21 @@ def doctor(root: Path, manifest_path: Optional[Path] = None) -> dict:
     }
 
     fetchers = discover_fetchers(root)
+    platforms = discover_platforms(root)
     categories = sorted({f.category for f in fetchers.values() if f.category})
     tools_required = manifest_path is not None
 
     manifest_report = None
     if manifest_path is not None:
-        data = read_manifest(manifest_path)
+        errors: List[str] = []
+        try:
+            data = read_manifest(manifest_path)
+        except (OSError, yaml.YAMLError) as exc:
+            # A manifest that cannot be parsed is the preflight's answer, not a
+            # traceback out of the CLI.
+            data = {}
+            errors.append(f"could not read {manifest_path}: {exc}")
+
         entries = (data.get("run") or {}).get("fetchers") or []
         used_cats = sorted({
             c for c in (
@@ -291,8 +442,16 @@ def doctor(root: Path, manifest_path: Optional[Path] = None) -> dict:
         if used_cats:
             categories = used_cats
 
+        # The same checks the runner enforces, so doctor cannot pass a manifest
+        # the run will refuse. Scanning env refs alone can't see this class of
+        # problem: a typo'd `use:`, an unset required config key, or a declared
+        # secret the manifest never mapped leaves nothing to scan, so it read as
+        # a clean bill of health and failed at run time instead.
+        if not errors:
+            errors = validate(data, root, fetchers=fetchers, platforms=platforms)
+
         fetcher_reports = []
-        manifest_ok = True
+        secrets_ok = True
         for e in entries:
             refs: set = set()
             for v in (e.get("secrets") or {}).values():
@@ -300,48 +459,153 @@ def doctor(root: Path, manifest_path: Optional[Path] = None) -> dict:
             for t in e.get("targets") or []:
                 for v in (t.get("secrets") or {}).values():
                     refs |= set(_ENV_REF.findall(str(v)))
-            missing = sorted(r for r in refs if not os.environ.get(r))
-            manifest_ok = manifest_ok and not missing
+            missing = sorted(r for r in refs if not _secret_value_present(r))
+            warnings = [w for r in sorted(refs) for w in _secret_value_warnings(r)]
+            secrets_ok = secrets_ok and not missing
             fetcher_reports.append({
                 "use": e.get("use"),
+                # An unmatched `use` makes the rest of this entry's report
+                # meaningless — there is no contract to compare it against, so
+                # "no secrets" would read as a pass.
+                "known": e.get("use") in fetchers,
                 "env_refs": sorted(refs),
                 "missing": missing,
+                "warnings": warnings,
                 "ok": not missing,
             })
         manifest_report = {
             "path": str(manifest_path),
             "fetchers": fetcher_reports,
-            "ok": manifest_ok,
+            "errors": errors,
+            "valid": not errors,
+            "secrets_ok": secrets_ok,
+            "warnings": [w for fr in fetcher_reports for w in fr["warnings"]],
+            "ok": secrets_ok and not errors,
         }
+
+    def _tools_for(cat: str) -> List[str]:
+        spec = platforms.get(cat)
+        return spec.requires.tools if spec else []
 
     seen: set = set()
     tools = []
     for cat in categories:
-        for tool in CATEGORY_TOOLS.get(cat, []):
+        for tool in _tools_for(cat):
             if tool in seen:
                 continue
             seen.add(tool)
             resolved = shutil.which(tool)
             tools.append({
                 "name": tool,
-                "categories": [c for c in categories if tool in CATEGORY_TOOLS.get(c, [])],
+                "categories": [c for c in categories if tool in _tools_for(c)],
                 "present": resolved is not None,
                 "path": resolved,
             })
     tools.sort(key=lambda t: str(t["name"]))
 
+    # Package checks are per-category rather than flattened like tools: "azure is
+    # ready, gcp is not" is the actionable framing, and a single package can
+    # legitimately be required by two categories at different pins.
+    pins = _requirement_pins(root)
+    packages = []
+    for cat in categories:
+        spec = platforms.get(cat)
+        names = spec.requires.python_packages if spec else []
+        if not names:
+            continue
+        checked = _check_python_packages(names, pins)
+        packages.append({
+            "category": cat,
+            "packages": checked,
+            "missing": [p["name"] for p in checked if p["status"] == "missing"],
+            "conflicts": [p["name"] for p in checked if p["status"] == "conflict"],
+            "ok": all(p["ok"] for p in checked),
+        })
+
+    # Upload readiness is always reported and gated only on request. The
+    # complaint this answers is discovery — reaching the upload step after a long
+    # collection to be told the token is missing — and reporting fixes that
+    # without breaking collect-only runs, which legitimately need no token.
+    upload = upload_readiness(root, config_path=upload_config)
+
+    # Opt-in because, unlike every other check here, these make network calls.
+    # A failed probe is reported but never gates `ok`: it can fail for reasons
+    # that are not the operator's problem (an offline laptop, a blocked IMDS
+    # endpoint) and a preflight that cries wolf gets ignored.
+    probes = probe_categories(categories) if probe else []
+
     ok = python["ok"]
     if tools_required:
         tools_ok = all(t["present"] for t in tools)
-        ok = ok and tools_ok and (manifest_report["ok"] if manifest_report else True)
+        packages_ok = all(p["ok"] for p in packages)
+        ok = ok and tools_ok and packages_ok and (
+            manifest_report["ok"] if manifest_report else True
+        )
+    if require_upload:
+        ok = ok and upload["ok"]
 
     return {
         "python": python,
         "categories": categories,
         "tools": tools,
+        "packages": packages,
         "tools_required": tools_required,
         "manifest": manifest_report,
+        "upload": upload,
+        "upload_required": require_upload,
+        "probes": probes,
         "ok": ok,
+    }
+
+
+def upload_readiness(root: Path, config_path: Optional[Path] = None) -> dict:
+    """Can this environment upload? Token presence and the destination URL.
+
+    Deliberately does NOT touch the network or need a run directory — it answers
+    "will the upload step work" before there is anything to upload, which is the
+    whole point. `upload_preflight` is the heavier check that also validates a
+    specific run directory.
+
+    The destination is reported as loudly as the token, because pointing at
+    stage when you meant production (or the reverse) fails silently: the upload
+    succeeds, into the wrong workspace.
+    """
+    config: dict = {}
+    if config_path is not None:
+        try:
+            loaded = yaml.safe_load(Path(config_path).read_text())
+            config = loaded if isinstance(loaded, dict) else {}
+        except (OSError, yaml.YAMLError) as exc:
+            return {
+                "ok": False,
+                "token_present": False,
+                "token_source": None,
+                "base_url": None,
+                "base_url_source": None,
+                "base_url_label": None,
+                "errors": [f"Could not read uploader config {config_path}: {exc}"],
+            }
+
+    paramify_cfg = config.get("paramify") or {}
+    base_url, base_url_source = resolve_base_url(paramify_cfg.get("base_url"))
+    token, token_source = resolve_upload_token()
+
+    errors: List[str] = []
+    if not token:
+        errors.append(_missing_token_error())
+    if not base_url.lower().startswith("https://"):
+        errors.append(
+            f"{BASE_URL_ENV} must be https to protect the API token (got {base_url!r})"
+        )
+
+    return {
+        "ok": not errors,
+        "token_present": bool(token),
+        "token_source": token_source,
+        "base_url": base_url,
+        "base_url_source": base_url_source,
+        "base_url_label": describe_base_url(base_url),
+        "errors": errors,
     }
 
 
@@ -717,11 +981,7 @@ def upload_preflight(
     uploader.load_dotenv()
     config = uploader.load_config(str(config_path)) if config_path else {}
     paramify_cfg = config.get("paramify") or {}
-    base_url = (
-        paramify_cfg.get("base_url")
-        or os.environ.get("PARAMIFY_API_BASE_URL")
-        or uploader.DEFAULT_BASE_URL
-    )
+    base_url, base_url_source = resolve_base_url(paramify_cfg.get("base_url"))
 
     run_path = Path(run_dir)
     errors: List[str] = []
@@ -737,16 +997,20 @@ def upload_preflight(
     if url_error:
         errors.append(url_error)
 
-    token_present = bool(os.environ.get("PARAMIFY_UPLOAD_API_TOKEN"))
+    token, token_source = resolve_upload_token()
+    token_present = bool(token)
     if not token_present and not dry_run:
-        errors.append("PARAMIFY_UPLOAD_API_TOKEN is not set")
+        errors.append(_missing_token_error())
 
     return {
         "ok": not errors,
         "run_dir": str(run_path),
         "base_url": base_url,
+        "base_url_source": base_url_source,
+        "base_url_label": describe_base_url(base_url),
         "file_count": file_count,
         "token_present": token_present,
+        "token_source": token_source,
         "dry_run": dry_run,
         "errors": errors,
     }
@@ -809,11 +1073,7 @@ def scripts_sync_preflight(
     uploader.load_dotenv()
     config = uploader.load_config(str(config_path)) if config_path else {}
     paramify_cfg = config.get("paramify") or {}
-    base_url = (
-        paramify_cfg.get("base_url")
-        or os.environ.get("PARAMIFY_API_BASE_URL")
-        or uploader.DEFAULT_BASE_URL
-    )
+    base_url, base_url_source = resolve_base_url(paramify_cfg.get("base_url"))
 
     errors: List[str] = []
     fetcher_count = 0
@@ -830,17 +1090,21 @@ def scripts_sync_preflight(
     if url_error:
         errors.append(url_error)
 
-    token_present = bool(os.environ.get("PARAMIFY_UPLOAD_API_TOKEN"))
+    token, token_source = resolve_upload_token()
+    token_present = bool(token)
     # A token is required to write; dry-run still wants one to diff the tenant,
     # but tolerates its absence (it then reports every fetcher as a create).
     if not token_present and not dry_run:
-        errors.append("PARAMIFY_UPLOAD_API_TOKEN is not set")
+        errors.append(_missing_token_error())
 
     return {
         "ok": not errors,
         "base_url": base_url,
+        "base_url_source": base_url_source,
+        "base_url_label": describe_base_url(base_url),
         "fetcher_count": fetcher_count,
         "token_present": token_present,
+        "token_source": token_source,
         "dry_run": dry_run,
         "errors": errors,
     }

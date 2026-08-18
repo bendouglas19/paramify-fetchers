@@ -1,0 +1,7 @@
+# KnowBe4 fetchers are bash + curl against the KnowBe4 REST API, with jq shaping
+# the response into evidence. No ambient identity: each fetcher declares its own
+# api_key secret, so there is no passthrough_env block.
+requires:
+  tools:
+    - curl
+    - jq

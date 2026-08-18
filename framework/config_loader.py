@@ -16,6 +16,7 @@ from framework.contract import (
     EvidenceSet,
     Fetcher,
     PlatformSpec,
+    Requires,
     Secret,
     TargetField,
 )
@@ -164,11 +165,16 @@ def discover_platforms(repo_root: Path) -> Dict[str, PlatformSpec]:
             raise ValueError(f"{yaml_path}: schema validation failed:\n{detail}")
 
         auth = data.get("auth") or {}
+        requires = data.get("requires") or {}
         platforms[category] = PlatformSpec(
             category=category,
             config_schema=_parse_config_schema(data.get("config_schema")),
             secrets=_parse_secrets(data.get("secrets")),
             passthrough_env=list(auth.get("passthrough_env") or []),
+            requires=Requires(
+                tools=list(requires.get("tools") or []),
+                python_packages=list(requires.get("python_packages") or []),
+            ),
             description=data.get("description"),
         )
 

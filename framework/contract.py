@@ -112,6 +112,22 @@ class Fetcher:
 
 
 @dataclass
+class Requires:
+    """What must be installed for a category's fetchers to run at all.
+
+    `tools` are external binaries the bash fetchers shell out to, checked against
+    PATH. `python_packages` are distribution names the SDK-based fetchers import;
+    doctor checks both that they are installed and that the installed version
+    satisfies the pin in requirements.txt, which stays the single source of truth
+    for versions. Those pins are load-bearing — requirements.txt documents six
+    azure-mgmt majors that return wrong or empty evidence rather than erroring, so
+    an unpinned upgrade is a silent evidence regression rather than a crash.
+    """
+    tools: List[str] = field(default_factory=list)
+    python_packages: List[str] = field(default_factory=list)
+
+
+@dataclass
 class PlatformSpec:
     """Code-side declaration for a category, from fetchers/_categories/<name>.yaml.
 
@@ -128,6 +144,7 @@ class PlatformSpec:
     config_schema: Dict[str, ConfigField] = field(default_factory=dict)
     secrets: List["Secret"] = field(default_factory=list)
     passthrough_env: List[str] = field(default_factory=list)
+    requires: "Requires" = field(default_factory=lambda: Requires())
     description: Optional[str] = None
 
 

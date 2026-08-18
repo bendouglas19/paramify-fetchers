@@ -1,0 +1,6 @@
+# Mostly python (requests) against the Okta API; one bash fetcher
+# (authenticators) uses curl + jq, so both are needed whenever the category runs.
+requires:
+  tools:
+    - curl
+    - jq
