@@ -590,14 +590,18 @@ def evidence_cmd(
     if json_out:
         typer.echo(json.dumps(ev, indent=2, default=str))
         return
+    # ensure_ascii=False: this view is for a person reading their own evidence, and
+    # \u00e9 / \u2014 in place of the characters a tenant actually uses makes names
+    # unreadable and unsearchable. The file on disk is untouched either way.
     typer.echo(f"enveloped: {ev['enveloped']}")
     if ev["schema_version"]:
         typer.echo(f"schema_version: {ev['schema_version']}")
     if ev["metadata"]:
         typer.echo("metadata:")
-        typer.echo("  " + json.dumps(ev["metadata"], indent=2, default=str).replace("\n", "\n  "))
+        rendered = json.dumps(ev["metadata"], indent=2, default=str, ensure_ascii=False)
+        typer.echo("  " + rendered.replace("\n", "\n  "))
     typer.echo("payload:")
-    typer.echo(json.dumps(ev["payload"], indent=2, default=str))
+    typer.echo(json.dumps(ev["payload"], indent=2, default=str, ensure_ascii=False))
 
 
 # --------------------------------------------------------------------------- #
