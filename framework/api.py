@@ -267,6 +267,52 @@ def ksi_coverage(root: Path) -> dict:
 
 _ENV_REF = re.compile(r"\$\{env:([^}]+)\}")
 
+# Suffixes whose value should look like a URL. Okta's org URL is the recurring
+# case: the fetcher pastes it straight into a request, so a bare hostname fails
+# at the first call with a message about the scheme, not about the variable.
+_URLISH_SUFFIXES = ("_URL", "_URI", "_ENDPOINT")
+
+
+def _secret_value_present(name: str) -> bool:
+    """Is this env var set to something usable?
+
+    Whitespace-only counts as unset. It reads as set to a presence check and
+    then fails at the API, which is the worst of both: doctor says go, the run
+    fails on auth, and the variable *is* in the environment so nothing looks
+    wrong.
+    """
+    return bool((os.environ.get(name) or "").strip())
+
+
+def _secret_value_warnings(name: str) -> List[str]:
+    """Advisory complaints about a secret's *value* shape.
+
+    These never gate the exit code. Each one is a copy-paste artifact that
+    passes a presence check and fails at the API, but a legitimate value can
+    look odd, and a preflight that cries wolf stops being read. Only values with
+    content reach here; empty and whitespace-only are reported as missing.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return []
+    out: List[str] = []
+    if raw != raw.strip():
+        out.append(
+            f"{name}: value has leading/trailing whitespace "
+            "(a trailing newline from `$(cat file)` is the usual cause)"
+        )
+    value = raw.strip()
+    if len(value) > 1 and value[0] == value[-1] and value[0] in "\"'":
+        out.append(
+            f"{name}: value is wrapped in {value[0]} quotes — the quotes are part "
+            "of the value, since nothing re-parses it as shell"
+        )
+    if name.upper().endswith(_URLISH_SUFFIXES) and not value.lower().startswith(
+        ("http://", "https://")
+    ):
+        out.append(f"{name}: name reads as a URL but the value has no http(s):// scheme")
+    return out
+
 
 def _requirement_pins(root: Path) -> Dict[str, str]:
     """Map distribution name -> version specifier, from the top-level requirements.txt.
@@ -337,15 +383,20 @@ def doctor(
 
     Reports the Python version, the external CLIs and pip distributions the
     relevant categories declare in their `requires:` block, and — if a manifest is
-    given — which secret env vars it references are actually set.
+    given — whether that manifest is runnable at all (`validate`) and whether the
+    secret env vars it references hold usable values.
     Presentation-agnostic; the CLI and TUI render this one model.
 
     A manifest narrows every check to the categories it actually uses, so a
     GitLab-only run is not told to install the aws CLI. `ok` is a go/no-go: Python
-    must clear the floor, and when a manifest is supplied its categories' tools and
-    packages must be present and its secret env vars set. Without a manifest,
-    missing dependencies are informational (you may only ever run some
-    categories), so `ok` reflects the Python check alone.
+    must clear the floor, and when a manifest is supplied it must validate, its
+    categories' tools and packages must be present, and its secret env vars must
+    be set. Without a manifest, missing dependencies are informational (you may
+    only ever run some categories), so `ok` reflects the Python check alone.
+
+    Value-shape complaints (a token with a trailing newline, a URL missing its
+    scheme) ride along in `manifest.warnings` and never gate `ok` — see
+    _secret_value_warnings.
 
     Upload readiness is always reported but only counts toward `ok` when
     `require_upload` is set, since collecting evidence without uploading it is a
@@ -364,12 +415,21 @@ def doctor(
     }
 
     fetchers = discover_fetchers(root)
+    platforms = discover_platforms(root)
     categories = sorted({f.category for f in fetchers.values() if f.category})
     tools_required = manifest_path is not None
 
     manifest_report = None
     if manifest_path is not None:
-        data = read_manifest(manifest_path)
+        errors: List[str] = []
+        try:
+            data = read_manifest(manifest_path)
+        except (OSError, yaml.YAMLError) as exc:
+            # A manifest that cannot be parsed is the preflight's answer, not a
+            # traceback out of the CLI.
+            data = {}
+            errors.append(f"could not read {manifest_path}: {exc}")
+
         entries = (data.get("run") or {}).get("fetchers") or []
         used_cats = sorted({
             c for c in (
@@ -382,8 +442,16 @@ def doctor(
         if used_cats:
             categories = used_cats
 
+        # The same checks the runner enforces, so doctor cannot pass a manifest
+        # the run will refuse. Scanning env refs alone can't see this class of
+        # problem: a typo'd `use:`, an unset required config key, or a declared
+        # secret the manifest never mapped leaves nothing to scan, so it read as
+        # a clean bill of health and failed at run time instead.
+        if not errors:
+            errors = validate(data, root, fetchers=fetchers, platforms=platforms)
+
         fetcher_reports = []
-        manifest_ok = True
+        secrets_ok = True
         for e in entries:
             refs: set = set()
             for v in (e.get("secrets") or {}).values():
@@ -391,21 +459,29 @@ def doctor(
             for t in e.get("targets") or []:
                 for v in (t.get("secrets") or {}).values():
                     refs |= set(_ENV_REF.findall(str(v)))
-            missing = sorted(r for r in refs if not os.environ.get(r))
-            manifest_ok = manifest_ok and not missing
+            missing = sorted(r for r in refs if not _secret_value_present(r))
+            warnings = [w for r in sorted(refs) for w in _secret_value_warnings(r)]
+            secrets_ok = secrets_ok and not missing
             fetcher_reports.append({
                 "use": e.get("use"),
+                # An unmatched `use` makes the rest of this entry's report
+                # meaningless — there is no contract to compare it against, so
+                # "no secrets" would read as a pass.
+                "known": e.get("use") in fetchers,
                 "env_refs": sorted(refs),
                 "missing": missing,
+                "warnings": warnings,
                 "ok": not missing,
             })
         manifest_report = {
             "path": str(manifest_path),
             "fetchers": fetcher_reports,
-            "ok": manifest_ok,
+            "errors": errors,
+            "valid": not errors,
+            "secrets_ok": secrets_ok,
+            "warnings": [w for fr in fetcher_reports for w in fr["warnings"]],
+            "ok": secrets_ok and not errors,
         }
-
-    platforms = discover_platforms(root)
 
     def _tools_for(cat: str) -> List[str]:
         spec = platforms.get(cat)

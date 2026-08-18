@@ -12,7 +12,7 @@ Read / discover:
   paramify catalog [--json]                    # categories -> fetchers -> fields
   paramify describe <fetcher> [--json]
   paramify ksi [--json]                        # FedRAMP 20x KSI coverage
-  paramify doctor [manifest] [--probe] [--json]  # preflight: deps, secrets, upload
+  paramify doctor [manifest] [--probe] [--json]  # preflight: deps, manifest, upload
   paramify manifests [--json]                  # discovered run manifests
   paramify runs [--output-dir DIR] [--json]    # past runs under an output dir
   paramify evidence <path> [--json]            # read one evidence file
@@ -370,12 +370,14 @@ def doctor_cmd(
     ),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON"),
 ):
-    """Preflight: Python, required CLIs and packages, and (with a manifest) secrets.
+    """Preflight: Python, CLIs and packages, and (with a manifest) validity + secrets.
 
     Passing a manifest narrows every check to the categories it actually uses, so
-    a GitLab-only run is never told to install the aws CLI. Upload readiness (API
-    token and destination URL) is always reported; --require-upload makes it count
-    toward the exit code.
+    a GitLab-only run is never told to install the aws CLI, and validates it the
+    way the runner does — an unknown fetcher name or a missing required config key
+    fails here rather than at run time. Upload readiness (API token and
+    destination URL) is always reported; --require-upload makes it count toward
+    the exit code.
     """
     root = api.find_repo_root()
     rep = api.doctor(
@@ -462,14 +464,34 @@ def doctor_cmd(
 
     if rep["manifest"]:
         m = rep["manifest"]
-        typer.echo(f"\nManifest secrets ({m['path']}):")
+        # Validity before secrets: an unknown fetcher name or an unset required
+        # config key is what makes the run fail, and no amount of secret listing
+        # shows it.
+        if m["errors"]:
+            typer.echo(f"\nManifest ({m['path']}):")
+            for err in m["errors"]:
+                typer.echo(f"  {bad_mark} {err}")
+        else:
+            n = len(m["fetchers"])
+            typer.echo(
+                f"\n{ok_mark} Manifest valid ({m['path']}): "
+                f"{n} entr{'y' if n == 1 else 'ies'}"
+            )
+
+        if m["fetchers"]:
+            typer.echo(f"\nManifest secrets ({m['path']}):")
         for fr in m["fetchers"]:
-            if not fr["env_refs"]:
+            if not fr["known"]:
+                typer.echo(f"  {bad_mark} {fr['use']}  unknown fetcher — see above")
+            elif not fr["env_refs"]:
                 typer.echo(f"  {ok_mark} {fr['use']}  (no secrets)")
             elif fr["ok"]:
                 typer.echo(f"  {ok_mark} {fr['use']}  ({', '.join(fr['env_refs'])})")
             else:
                 typer.echo(f"  {bad_mark} {fr['use']}  missing: {', '.join(fr['missing'])}")
+            # Advisory: set, but shaped like a value that will fail at the API.
+            for warn in fr["warnings"]:
+                typer.echo(f"  ⚠️  {warn}")
 
     if not rep["ok"]:
         typer.echo("\nIssues found — see above.")

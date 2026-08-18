@@ -161,6 +161,82 @@ def test_doctor_reports_the_upload_destination(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Doctor: a manifest is preflighted for runnability, not just for set env vars.
+# The gap these close is a green doctor followed by a failed run — a typo'd
+# fetcher name, an unset required field, or a secret whose value is unusable.
+# --------------------------------------------------------------------------- #
+
+OKTA_MANIFEST = (
+    "run:\n"
+    "  fetchers:\n"
+    "    - use: okta_phishing_resistant_mfa\n"
+    "      secrets:\n"
+    "        api_token: ${env:OKTA_API_TOKEN}\n"
+    "        org_url: ${env:OKTA_ORG_URL}\n"
+)
+
+
+def test_doctor_rejects_a_manifest_the_runner_would_refuse(tmp_path):
+    """A misspelled `use:` has no secrets to scan, so presence checking read clean."""
+    rep = _doctor_json(
+        tmp_path, "run:\n  fetchers:\n    - use: okta_phishing_resistent_mfa\n"
+    )
+    assert rep["manifest"]["valid"] is False
+    assert any("unknown fetcher" in e for e in rep["manifest"]["errors"])
+    assert rep["manifest"]["fetchers"][0]["known"] is False
+    assert rep["ok"] is False, "doctor must not pass a manifest the run will refuse"
+
+
+def test_doctor_reports_a_missing_required_target_field(tmp_path):
+    """gitlab_project_summary supports_targets with a required field: no targets[] = no run."""
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n    - use: gitlab_project_summary\n")
+    assert rep["manifest"]["valid"] is False
+    assert any("targets" in e for e in rep["manifest"]["errors"])
+
+
+def test_doctor_reports_an_unparseable_manifest_instead_of_raising(tmp_path):
+    """Malformed YAML is a finding, not a traceback out of the CLI."""
+    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n   - use: [oops\n")
+    assert rep["manifest"]["valid"] is False
+    assert any("could not read" in e for e in rep["manifest"]["errors"])
+    assert rep["ok"] is False
+
+
+def test_doctor_counts_a_whitespace_only_secret_as_missing(monkeypatch, tmp_path):
+    """The worst case for a presence check: set, so nothing looks wrong; unusable."""
+    monkeypatch.setenv("OKTA_API_TOKEN", "   ")
+    monkeypatch.setenv("OKTA_ORG_URL", "https://dev-123.okta.com")
+    rep = _doctor_json(tmp_path, OKTA_MANIFEST)
+    assert rep["manifest"]["secrets_ok"] is False
+    assert rep["manifest"]["fetchers"][0]["missing"] == ["OKTA_API_TOKEN"]
+
+
+def test_doctor_warns_about_unusable_secret_values_without_failing(monkeypatch, tmp_path):
+    """Quotes and a scheme-less URL are copy-paste artifacts: report, do not gate.
+
+    They stay advisory because a legitimate value can look odd, and the whole
+    point of these is that they are guesses about intent.
+    """
+    monkeypatch.setenv("OKTA_API_TOKEN", '"abc123"')
+    monkeypatch.setenv("OKTA_ORG_URL", "dev-123.okta.com\n")
+    rep = _doctor_json(tmp_path, OKTA_MANIFEST)
+    warnings = rep["manifest"]["warnings"]
+    assert any("wrapped in \" quotes" in w for w in warnings)
+    assert any("whitespace" in w for w in warnings)
+    assert any("no http(s):// scheme" in w for w in warnings)
+    assert rep["manifest"]["secrets_ok"] is True
+    assert rep["manifest"]["ok"] is True, "value-shape guesses must not gate the exit code"
+
+
+def test_doctor_confirms_a_valid_manifest_out_loud(tmp_path):
+    """Silence on validity would read as 'not checked'."""
+    path = tmp_path / "m.yaml"
+    path.write_text("run:\n  fetchers:\n    - use: demo_hello\n")
+    result = runner.invoke(app, ["doctor", str(path)])
+    assert "Manifest valid" in result.output
+
+
+# --------------------------------------------------------------------------- #
 # Parity invariant: every api function the TUI calls maps to a CLI command.
 # Derived from the TUI SOURCE so it can't drift into a tautology.
 # --------------------------------------------------------------------------- #
