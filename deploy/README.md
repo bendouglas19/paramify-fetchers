@@ -179,7 +179,8 @@ Point the manifest at a fetcher whose creds are in your test
 secret. A fetcher that reaches a real tool and **fails with 401/DNS** still proves
 the secret plumbing works — exit 0 with empty data would be the bug. If upload
 ingestion rejects the file, try `artifact_payload: payload` in an uploader config
-(see `examples/upload.yaml`) — that's the open envelope-vs-payload question.
+(see `examples/upload.yaml`), which uploads the bare payload instead of the
+enveloped file.
 
 ## How to interact with a running container
 
@@ -215,14 +216,11 @@ You don't SSH in — use Docker:
 | Evidence not on host | Run from the repo root so `./evidence` maps correctly |
 | `unzip` / `bad CRC` during image build (aws-cli step) | Corrupted download of the ~50MB AWS CLI zip — common on fresh Docker Desktop installs. Retry the build; if it persists, `docker builder prune -f` then rebuild. The Dockerfile retries and tests the zip before installing. |
 
-## Before you hand this to customers
+## Running this in production
 
-- **Validate the upload against a real Paramify tenant.** The uploader has only
-  been mock-tested. Confirm the `base_url` and resolve whether ingestion wants
-  the enveloped file or the bare payload — set `artifact_payload: envelope|payload`
-  in an uploader config if needed (see `examples/upload.yaml`).
-- **Pin the source.** This image `COPY`s your working tree. For reproducible
-  customer images, build from a tagged commit.
-- **In-container cron is single-host.** It's fine for one machine; for production,
+- **Pin the source.** This image `COPY`s your working tree, so what you build is
+  whatever is checked out. Build from a tagged commit for an image you can
+  reproduce later.
+- **In-container cron is single-host.** It's fine for one machine; at scale,
   schedule the container with your platform's own scheduler (a managed cron / task
   scheduler) so each run is an isolated, ephemeral task.
