@@ -30,6 +30,40 @@ schemas and the `paramify` CLI — not the internal code.
   title, so per-program artifacts read as `… - Alpha Cloud Services` rather than
   a bare UUID. A UUID prefix stays in the filename because program names are not
   guaranteed unique.
+- **`requires:` on a category** — `fetchers/_categories/<name>.yaml` gains a
+  `requires:` block naming the external binaries and the pip distributions its
+  fetchers need, and `paramify doctor` checks them. With a manifest it checks only
+  the categories that manifest actually uses, so a GitLab-only run is never told
+  to install the aws CLI or 23 Azure SDKs. Version pins stay in
+  `requirements.txt`, which remains the single source of truth for versions; a
+  category file names only which distributions are its own. The declarations are
+  themselves tested (`tests/test_category_requires.py`): an import or a
+  shelled-out binary that nothing declares fails the suite, because doctor's
+  report is only as good as what the category files say.
+- **`paramify doctor --probe`** — authenticates against each cloud category
+  (`aws`, `k8s`, `azure`, `gcp`) and reports which identity answered: caller ARN
+  and account, Azure principal and subscriptions, GCP account and project.
+  Without it doctor can only see whether variables are *set*, which is nearly
+  meaningless for credential chains whose preferred links — IRSA, workload
+  identity, managed identity, a cached CLI login — set no variable at all, so
+  doctor reported a clean bill of health and the run failed on auth. It also
+  answers "as whom", the more common silent failure: credentials that work but
+  point at the wrong account produce a successful run full of empty evidence.
+  Opt-in because it is the only part of doctor that touches the network, each
+  probe runs in a subprocess under a hard timeout, and a failed probe is reported
+  without failing the command.
+- **`paramify doctor --require-upload`** — makes a missing API token count toward
+  the exit code. Upload readiness (token presence and the destination URL) is
+  always reported; gating is opt-in because collecting evidence without uploading
+  it is a legitimate workflow that should not fail a preflight.
+- **`paramify upload` asks for the API token** when none is set and it is safe to
+  ask — a real terminal at both ends, no CI, not `--json`. Reaching the upload
+  step means the collection is already paid for, and this is a failure a person
+  can fix on the spot rather than by re-running the whole thing. The value is used
+  for that run and written nowhere; persisting a credential is the user's call, so
+  it prints how instead of guessing at a file. `paramify run` says the same thing
+  up front, advisory only, so you learn it in the first second rather than the
+  last.
 
 ### Changed
 
@@ -65,6 +99,28 @@ schemas and the `paramify` CLI — not the internal code.
   `report_to` given as a bare date is expanded, with a date-only end reported as
   that day's last second (`2026-06-30` → `2026-06-30T23:59:59Z`) to match the
   window actually collected.
+- **`paramify doctor` preflights the manifest, not just the environment.** It now
+  runs the same validation `paramify validate` does, so it cannot pass a manifest
+  the runner will refuse: a misspelled `use:`, a missing required config key, a
+  `supports_targets` fetcher with no `targets[]`, or a declared secret the
+  manifest never mapped. Scanning env-var references could not see any of those —
+  a secret that was never mapped leaves nothing to scan, so it read as a clean
+  bill of health and failed at run time. A manifest that cannot be parsed is now
+  reported as a finding rather than raising a YAML traceback out of the CLI, and a
+  valid one says so out loud, since silence on validity reads as "not checked".
+- **Doctor checks secret *values*, not just that the variable exists.** A
+  whitespace-only value counts as missing: it reads as set to a presence check and
+  then fails at the API, with the variable visibly present so nothing looks wrong.
+  Values shaped like copy-paste artifacts — surrounding quotes, a trailing newline
+  from `$(cat file)`, a `*_URL` / `*_URI` / `*_ENDPOINT` with no scheme — are
+  reported as warnings that never affect the exit code, because a legitimate value
+  can look odd and a preflight that cries wolf stops being read.
+- **The Paramify API token and base URL resolve in one place**
+  (`framework/paramify_auth.py`), which both uploaders and doctor read, so the
+  answer to "which token, which workspace" cannot differ between the preflight and
+  the upload. The destination is labelled production / stage / self-hosted and
+  shown as loudly as the token: pointing at stage when you meant production does
+  not error, the upload just succeeds into the wrong workspace.
 
 ### Fixed
 
