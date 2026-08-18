@@ -10,12 +10,17 @@
 Output docs/demo/tui.gif
 
 Set Shell "bash"
+Set FontFamily "JetBrainsMono Nerd Font"
 Set FontSize 15
 Set Width 1280
 Set Height 800
 Set Padding 14
 Set Theme "TokyoNight"
 Set TypingSpeed 90ms
+Set WindowBar Colorful
+Set BorderRadius 10
+Set Margin 24
+Set MarginFill "#16161E"
 Set Framerate 15
 
 # --- hidden setup: venv, the throwaway worktree render.sh built, no real

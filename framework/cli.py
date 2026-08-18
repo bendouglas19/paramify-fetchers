@@ -52,6 +52,7 @@ Outputs land in <output_dir>/run-<timestamp>/ with a _run_metadata.json.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import textwrap
@@ -62,6 +63,7 @@ from typing import List, NoReturn, Optional
 import typer
 
 from framework import api, paramify_auth
+from framework import cli_style as style
 
 _DEFAULT_MANIFEST = "manifest.yaml"
 
@@ -96,6 +98,22 @@ programs_app = typer.Typer(
     help="List the workspace's programs and turn them into manifest targets.",
 )
 app.add_typer(programs_app, name="programs")
+
+
+@app.callback()
+def _root(ctx: typer.Context) -> None:
+    """Resolve color once for every subcommand.
+
+    click.echo already strips ANSI when stdout is not a tty, which is the right
+    default: it keeps `--json` machine-readable and CI logs free of escapes. These
+    two env vars override it in both directions, per the NO_COLOR / FORCE_COLOR
+    conventions — FORCE_COLOR is what lets `paramify evidence … | head` keep its
+    highlighting, which is how the README demos are recorded.
+    """
+    if os.environ.get("NO_COLOR"):
+        ctx.color = False
+    elif os.environ.get("FORCE_COLOR"):
+        ctx.color = True
 
 
 # --------------------------------------------------------------------------- #
@@ -193,22 +211,23 @@ def _human_run_printer():
     def on_event(ev: dict) -> None:
         kind = ev["event"]
         if kind == "run_start":
-            typer.echo(f"Run {ev['run_id']} → {ev['run_dir']}\n")
+            typer.echo(f"Run {style.head(ev['run_id'])} → {style.path(ev['run_dir'])}\n")
         elif kind == "fetcher_skip":
-            _err(f"  SKIP  {ev['fetcher']} ({ev['reason']})")
+            _err(f"  {style.mark('SKIP')}  {style.name(ev['fetcher'])} {style.dim('(' + ev['reason'] + ')')}")
         elif kind == "fetcher_start":
-            if ev["fanout"]:
-                typer.echo(f"  RUN   {ev['fetcher']}  ({ev['targets']} targets)")
-            else:
-                typer.echo(f"  RUN   {ev['fetcher']}")
+            targets = style.dim(f"  ({ev['targets']} targets)") if ev["fanout"] else ""
+            typer.echo(f"  {style.dim('RUN')}   {style.name(ev['fetcher'])}{targets}")
         elif kind == "fetcher_error":
-            _err(f"        runner error: {ev['error']}")
+            _err(f"        {style.fail('runner error')}: {ev['error']}")
         elif kind == "fetcher_result":
-            mark = "OK" if ev["exit_code"] == 0 else "FAIL"
+            m = "OK" if ev["exit_code"] == 0 else "FAIL"
+            detail = f"exit={ev['exit_code']} duration={ev['duration_sec']}s"
             target = f"  target={ev['target']}" if ev["target"] else ""
-            typer.echo(f"        [{mark}] exit={ev['exit_code']} duration={ev['duration_sec']}s{target}")
+            typer.echo(
+                f"        [{style.mark(m)}] {style.dim(detail)}{style.env(target)}"
+            )
         elif kind == "run_complete":
-            typer.echo(f"\n_run_metadata.json → {ev['metadata_path']}")
+            typer.echo(f"\n_run_metadata.json → {style.path(ev['metadata_path'])}")
         # log_line is intentionally not printed (matches prior non-streaming CLI)
     return on_event
 
@@ -233,7 +252,10 @@ def _human_upload_printer():
             ref = f"  set={ev['reference_id']}" if ev.get("reference_id") else ""
             reason = ev.get("reason") or ev.get("error")
             suffix = f"  {reason}" if reason else ""
-            typer.echo(f"        [{mark}] {ev.get('file', '?')}{ref}{suffix}")
+            typer.echo(
+                f"        [{style.mark(mark)}] {ev.get('file', '?')}"
+                f"{style.env(ref)}{style.dim(suffix)}"
+            )
         elif kind == "upload_complete":
             typer.echo(
                 "\nDone: "
@@ -268,8 +290,15 @@ def list_cmd(json_out: bool = typer.Option(False, "--json", help="Emit JSON")):
         return
     typer.echo(f"Discovered {len(fetchers)} fetchers:\n")
     for f in fetchers:
-        st = "fanout" if f["supports_targets"] else "single"
-        typer.echo(f"  {f['name']:50s} v{f['version']:8s} [{st:6s}] category={f['category'] or '-'}")
+        tag = "fanout" if f["supports_targets"] else "single"
+        # Pad before styling: ANSI codes count as characters to str.format, so a
+        # styled value formatted to a width lands short by the length of its escape.
+        col = "{:50s}".format(f["name"])
+        ver = "v{:8s}".format(f["version"])
+        typer.echo(
+            f"  {style.name(col)} {style.dim(ver)} [{style.dim('{:6s}'.format(tag))}]"
+            f" {style.dim('category=')}{style.env(f['category'] or '-')}"
+        )
 
 
 @app.command("catalog")
@@ -281,14 +310,15 @@ def catalog_cmd(json_out: bool = typer.Option(False, "--json", help="Emit JSON")
         typer.echo(json.dumps(cat, indent=2))
         return
     for c in cat["categories"]:
-        desc = f" — {c['description'].strip()}" if c.get("description") else ""
-        typer.echo(f"\n{c['name']}{desc}")
+        desc = style.dim(f" — {c['description'].strip()}") if c.get("description") else ""
+        typer.echo(f"\n{style.head(style.name(c['name']))}{desc}")
         if c.get("platform") and c["platform"]["config"]:
-            keys = ", ".join(f["name"] for f in c["platform"]["config"])
-            typer.echo(f"  platform config: {keys}")
+            keys = ", ".join(style.env(f["name"]) for f in c["platform"]["config"])
+            typer.echo(f"  {style.dim('platform config:')} {keys}")
         for f in c["fetchers"]:
             tag = "fanout" if f["supports_targets"] else "single"
-            typer.echo(f"    {f['name']:48s} [{tag}]")
+            # Pad before styling — see the note in list_cmd.
+            typer.echo(f"    {'{:48s}'.format(f['name'])} [{style.dim(tag)}]")
 
 
 @app.command("describe")
@@ -306,18 +336,27 @@ def describe_cmd(
     if json_out:
         typer.echo(json.dumps(f, indent=2))
         return
-    typer.echo(f"{f['name']}  v{f['version']}  (category={f['category'] or '-'})")
+    typer.echo(
+        f"{style.head(style.name(f['name']))}  {style.dim('v' + f['version'])}"
+        f"  {style.dim('(category=')}{style.env(f['category'] or '-')}{style.dim(')')}"
+    )
     typer.echo(f"  {f['description']}")
-    typer.echo(f"  supports_targets: {f['supports_targets']}")
+    typer.echo(f"  {style.dim('supports_targets:')} {f['supports_targets']}")
     for label, fields in (("config", f["config"]), ("secrets", f["secrets"]),
                           ("target_schema", f["target_schema"])):
         if fields:
-            typer.echo(f"  {label}:")
+            typer.echo(f"  {style.head(label)}:")
             for fld in fields:
-                req = "required" if fld.get("required") else "optional"
-                extra = f" default={fld['default']}" if fld.get("default") is not None else ""
-                env = f"  env={fld['env']}" if fld.get("env") else ""
-                typer.echo(f"    - {fld['name']} ({fld['type']}, {req}){extra}{env}")
+                req = style.warn("required") if fld.get("required") else style.dim("optional")
+                extra = (
+                    style.dim(f" default={fld['default']}")
+                    if fld.get("default") is not None else ""
+                )
+                var = f"  {style.dim('env=')}{style.env(fld['env'])}" if fld.get("env") else ""
+                typer.echo(
+                    f"    - {style.env(fld['name'])} {style.dim('(' + fld['type'] + ',')} "
+                    f"{req}{style.dim(')')}{extra}{var}"
+                )
                 # The env var and the description are what someone needs to wire
                 # this field into a manifest, and the schemas say describe shows
                 # them. Wrapped rather than truncated: a secret's description is
@@ -409,15 +448,19 @@ def doctor_cmd(
 
     ok_mark, bad_mark = "✅", "❌"
     p = rep["python"]
-    typer.echo(f"{ok_mark if p['ok'] else bad_mark} Python {p['version']} (need ≥ {p['required']})")
+    typer.echo(
+        f"{ok_mark if p['ok'] else bad_mark} Python {p['version']} "
+        f"{style.dim('(need ≥ ' + p['required'] + ')')}"
+    )
 
     if rep["tools"]:
         heading = "Required CLIs" if rep["tools_required"] else "CLIs for discovered categories"
-        typer.echo(f"\n{heading}:")
+        typer.echo(f"\n{style.head(heading)}:")
         for t in rep["tools"]:
             mark = ok_mark if t["present"] else bad_mark
-            where = t["path"] or "not found on PATH"
-            typer.echo(f"  {mark} {t['name']:8s} {where}  ({', '.join(t['categories'])})")
+            where = style.path(t["path"]) if t["path"] else style.fail("not found on PATH")
+            cats = style.dim(f"  ({', '.join(t['categories'])})")
+            typer.echo(f"  {mark} {style.env('{:8s}'.format(t['name']))} {where}{cats}")
         if not rep["tools_required"]:
             typer.echo("  (informational — you only need the CLIs for categories you run)")
 
@@ -443,7 +486,7 @@ def doctor_cmd(
         typer.echo("  fix: pip install -r requirements.txt")
 
     if rep.get("probes"):
-        typer.echo("\nCredentials (live):")
+        typer.echo(f"\n{style.head('Credentials (live)')}:")
         for pr in rep["probes"]:
             if pr["ok"]:
                 typer.echo(f"  {ok_mark} {pr['category']:6s} {pr['identity']}")
@@ -458,14 +501,15 @@ def doctor_cmd(
 
     up = rep.get("upload")
     if up:
-        typer.echo("\nUpload:")
+        typer.echo(f"\n{style.head('Upload')}:")
         src = f" (from {up['token_source']})" if up["token_source"] else ""
         if up["token_present"]:
             typer.echo(f"  {ok_mark} API token set{src}")
         else:
             typer.echo(
                 f"  {bad_mark} API token not set — "
-                f"{api.UPLOAD_TOKEN_ENV} (or {api.READ_TOKEN_ENV})"
+                f"{style.env(api.UPLOAD_TOKEN_ENV)} {style.dim('(or')} "
+                f"{style.env(api.READ_TOKEN_ENV)}{style.dim(')')}"
             )
         # Shown whether or not the token resolved: the destination is the other
         # half of "am I about to do the right thing", and stage-vs-production is
@@ -474,9 +518,11 @@ def doctor_cmd(
             "default" if up["base_url_source"] == "default"
             else f"from {up['base_url_source']}"
         )
-        typer.echo(f"  → {up['base_url_label']}: {up['base_url']}  ({origin})")
+        typer.echo(
+            f"  → {up['base_url_label']}: {style.path(up['base_url'])}  {style.dim('(' + origin + ')')}"
+        )
         if not rep.get("upload_required") and not up["ok"]:
-            typer.echo("  (informational — collecting without uploading is fine)")
+            typer.echo(style.dim("  (informational — collecting without uploading is fine)"))
 
     if rep["manifest"]:
         m = rep["manifest"]
@@ -484,40 +530,49 @@ def doctor_cmd(
         # config key is what makes the run fail, and no amount of secret listing
         # shows it.
         if m["errors"]:
-            typer.echo(f"\nManifest ({m['path']}):")
+            typer.echo(f"\n{style.head('Manifest')} {style.path('(' + str(m['path']) + ')')}:")
             for err in m["errors"]:
                 typer.echo(f"  {bad_mark} {err}")
         else:
             n = len(m["fetchers"])
             typer.echo(
-                f"\n{ok_mark} Manifest valid ({m['path']}): "
-                f"{n} entr{'y' if n == 1 else 'ies'}"
+                f"\n{ok_mark} Manifest valid {style.path('(' + str(m['path']) + ')')}: "
+                f"{style.dim(str(n) + ' entr' + ('y' if n == 1 else 'ies'))}"
             )
 
         if m["fetchers"]:
-            typer.echo(f"\nManifest secrets ({m['path']}):")
+            typer.echo(
+                f"\n{style.head('Manifest secrets')} {style.path('(' + str(m['path']) + ')')}:"
+            )
         for fr in m["fetchers"]:
+            use = style.name(fr["use"])
             if not fr["known"]:
-                typer.echo(f"  {bad_mark} {fr['use']}  unknown fetcher — see above")
+                typer.echo(f"  {bad_mark} {use}  {style.fail('unknown fetcher — see above')}")
             elif not fr["env_refs"]:
-                typer.echo(f"  {ok_mark} {fr['use']}  (no secrets)")
+                typer.echo(f"  {ok_mark} {use}  {style.dim('(no secrets)')}")
             elif fr["ok"]:
-                typer.echo(f"  {ok_mark} {fr['use']}  ({', '.join(fr['env_refs'])})")
+                refs = style.dim("(") + style.env(", ".join(fr["env_refs"])) + style.dim(")")
+                typer.echo(f"  {ok_mark} {use}  {refs}")
             else:
-                typer.echo(f"  {bad_mark} {fr['use']}  missing: {', '.join(fr['missing'])}")
+                typer.echo(
+                    f"  {bad_mark} {use}  {style.fail('missing:')} "
+                    f"{style.env(', '.join(fr['missing']))}"
+                )
             # Advisory: set, but shaped like a value that will fail at the API.
             for warn in fr["warnings"]:
-                typer.echo(f"  ⚠️  {warn}")
+                typer.echo(f"  ⚠️  {style.warn(warn)}")
 
     if not rep["ok"]:
-        typer.echo("\nIssues found — see above.")
+        typer.echo("\n" + style.verdict(False, "Issues found — see above."))
     elif any(not pr["ok"] for pr in rep.get("probes") or []):
         # The checks that gate the exit code passed, but a live credential did
         # not answer. Saying "All good" over the top of that is how a preflight
         # teaches people to stop reading it.
-        typer.echo("\nChecks passed, but a live credential check failed — see above.")
+        typer.echo("\n" + style.warn(
+            "Checks passed, but a live credential check failed — see above."
+        ))
     else:
-        typer.echo("\nAll good.")
+        typer.echo("\n" + style.verdict(True, "All good."))
     raise typer.Exit(0 if rep["ok"] else 1)
 
 
@@ -570,7 +625,11 @@ def runs_cmd(
         else:
             status = "ok"
         when = r.get("started_at") or "?"
-        typer.echo(f"  {r['run_id']:26s} {when}  {r['ok']}/{total} ok  {len(r['files'])} files  [{status}]")
+        tone = style.ok if status == "ok" else style.warn if status == "incomplete" else style.fail
+        typer.echo(
+            f"  {style.name('{:26s}'.format(r['run_id']))} {style.dim(when)}  "
+            f"{r['ok']}/{total} ok  {style.dim(str(len(r['files'])) + ' files')}  [{tone(status)}]"
+        )
 
 
 @app.command("evidence")
@@ -593,15 +652,17 @@ def evidence_cmd(
     # ensure_ascii=False: this view is for a person reading their own evidence, and
     # \u00e9 / \u2014 in place of the characters a tenant actually uses makes names
     # unreadable and unsearchable. The file on disk is untouched either way.
-    typer.echo(f"enveloped: {ev['enveloped']}")
+    typer.echo(f"{style.dim('enveloped:')} {ev['enveloped']}")
     if ev["schema_version"]:
-        typer.echo(f"schema_version: {ev['schema_version']}")
+        typer.echo(f"{style.dim('schema_version:')} {ev['schema_version']}")
     if ev["metadata"]:
-        typer.echo("metadata:")
+        typer.echo(style.head("metadata:"))
         rendered = json.dumps(ev["metadata"], indent=2, default=str, ensure_ascii=False)
-        typer.echo("  " + rendered.replace("\n", "\n  "))
-    typer.echo("payload:")
-    typer.echo(json.dumps(ev["payload"], indent=2, default=str, ensure_ascii=False))
+        typer.echo("  " + style.highlight_json(rendered).replace("\n", "\n  "))
+    typer.echo(style.head("payload:"))
+    typer.echo(style.highlight_json(
+        json.dumps(ev["payload"], indent=2, default=str, ensure_ascii=False)
+    ))
 
 
 # --------------------------------------------------------------------------- #
@@ -637,10 +698,12 @@ def validate_cmd(
         raise typer.Exit(0 if not errors else 1)
     if errors:
         for err in errors:
-            _err(f"  ERROR  {err}")
+            _err(f"  {style.fail('ERROR')}  {err}")
         raise typer.Exit(1)
     n = len(m.get("run", {}).get("fetchers", []))
-    typer.echo(f"OK  manifest valid; {n} fetcher entries")
+    typer.echo(
+        f"{style.verdict(True, 'OK')}  manifest valid; {style.dim(str(n) + ' fetcher entries')}"
+    )
 
 
 @app.command("run")
@@ -892,11 +955,11 @@ def _save_and_report(manifest: dict, path: Path, root: Path, json_out: bool, *, 
     if json_out:
         typer.echo(json.dumps({"ok": not errors, "path": str(path), "errors": errors}, indent=2))
         return
-    typer.echo(f"{verb} {path}")
+    typer.echo(f"{style.dim(verb)} {style.path(str(path))}")
     if errors:
-        _err("  (manifest saved but not yet runnable):")
+        _err(style.warn("  (manifest saved but not yet runnable):"))
         for err in errors:
-            _err(f"    {err}")
+            _err(style.dim(f"    {err}"))
 
 
 @manifest_app.command("init")

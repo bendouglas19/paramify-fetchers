@@ -9,12 +9,17 @@
 Output docs/demo/catalog.gif
 
 Set Shell "bash"
+Set FontFamily "JetBrainsMono Nerd Font"
 Set FontSize 16
 Set Width 1240
 Set Height 860
 Set Padding 20
-Set Theme "TokyoNight"
+Set Theme "Catppuccin Mocha"
 Set TypingSpeed 50ms
+Set WindowBar Colorful
+Set BorderRadius 10
+Set Margin 24
+Set MarginFill "#181825"
 Set Framerate 24
 
 # --- hidden setup: venv, the throwaway worktree render.sh built, a clean prompt,
@@ -26,7 +31,7 @@ Type "cd ${DEMO_WORKTREE:-/tmp/paramify-demo}"
 Enter
 Type `for v in $(env | cut -d= -f1 | grep -E '^(AWS|AZURE|OKTA|GITLAB|GOOGLE|DATADOG|KNOWBE4|SENTINELONE|RIPPLING|PARAMIFY|DEMO)_'); do unset "$v"; done`
 Enter
-Type "export PS1='$ '; clear"
+Type "export PS1='$ ' FORCE_COLOR=1; clear"
 Enter
 Show
 
