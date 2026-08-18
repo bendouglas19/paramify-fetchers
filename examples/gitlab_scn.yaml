@@ -1,0 +1,64 @@
+# FedRAMP Significant Change Notifications from GitLab merge requests.
+#
+# Set before running:
+#   export GITLAB_URL=https://gitlab.com                 # or your self-hosted instance
+#   export GITLAB_API_TOKEN=<personal or group token, scope: read_api>
+#   export FEDRAMP_CERT_PACKAGE_URI='https://trust.example.com/artifacts/<your-certification-package-overview>.json'
+#
+# Quote it in the shell — the URI contains percent-encoded spaces.
+#
+# TWO TARGETS PER PROJECT, and the split is not cosmetic:
+#
+#   state: merged  -> Adaptive changes. SCN-ADP-NTF allows 10 business days
+#                     after the change finishes, so scanning merged MRs on a
+#                     weekly schedule with a 30-day window is comfortably inside
+#                     the deadline, and doubles as the after-the-fact record.
+#
+#   state: opened  -> Transformative changes. SCN-TRF requires notification 30
+#                     business days BEFORE work starts, which a post-merge scan
+#                     structurally cannot produce. Catching the MR while it is
+#                     still open is where the forward-looking plan lives.
+#
+# Each target writes its own file and has an isolated failure domain.
+
+run:
+  output_dir: ./evidence
+
+  # One workspace publishes one Certification Package Overview. Setting it here
+  # means the SCN fetcher and the three paramify VER fetchers cite the SAME
+  # document — a FedRAMP reviewer correlating your VER reports against your
+  # change notifications must land on one artifact, not two.
+  platforms:
+    paramify:
+      config:
+        cert_package_uri: ${env:FEDRAMP_CERT_PACKAGE_URI}
+
+  fetchers:
+    - use: gitlab_significant_change_notifications
+      targets:
+        # Adaptive / after-the-fact record.
+        - project_id: your-group/your-project
+          url: ${env:GITLAB_URL}
+          state: merged
+          days_back: 30
+          secrets:
+            api_token: ${env:GITLAB_API_TOKEN}
+
+        # Transformative / forward-looking plans, captured pre-merge.
+        - project_id: your-group/your-project
+          url: ${env:GITLAB_URL}
+          state: opened
+          days_back: 90
+          secrets:
+            api_token: ${env:GITLAB_API_TOKEN}
+
+# Notes
+# -----
+# marker_label: set it to a GitLab label (e.g. "significant-change") to ALSO
+#   accept the label as the flag, and to push it to the API as a server-side
+#   filter so only labeled MRs are fetched. Leave it unset to rely purely on the
+#   ticked "- [x] Significant Change — SCN required" checkbox.
+#
+# strict: defaults to true — a flagged MR that fails to produce a schema-valid
+#   SCN fails the run. That is the point: an incomplete notification should be
+#   loud. Set it to false only if you want the evidence without the gate.
