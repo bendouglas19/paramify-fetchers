@@ -104,7 +104,7 @@ app.add_typer(programs_app, name="programs")
 def _root(ctx: typer.Context) -> None:
     """Resolve color once for every subcommand.
 
-    click.echo already strips ANSI when stdout is not a tty, which is the right
+    typer.echo already strips ANSI when stdout is not a tty, which is the right
     default: it keeps `--json` machine-readable and CI logs free of escapes. These
     two env vars override it in both directions, per the NO_COLOR / FORCE_COLOR
     conventions — FORCE_COLOR is what lets `paramify evidence … | head` keep its
