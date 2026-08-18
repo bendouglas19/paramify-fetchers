@@ -5,6 +5,10 @@
 #
 # The demo_hello fetcher writes synthetic evidence, so this exercises the whole
 # collect → envelope pipeline end to end. Delete once you've seen it work.
+#
+# This is the smallest possible run: one fetcher, one file, always green. For the
+# full demo program — a fanout, a target that fails and explains itself, and a
+# fetcher that reads a credential — run manifests/demo.yaml instead.
 
 run:
   output_dir: ./evidence
