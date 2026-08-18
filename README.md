@@ -99,14 +99,29 @@ manifest, runs it, and reviews evidence — all without leaving the keyboard:
 
 ![The paramify terminal UI](docs/demo/tui.gif)
 
-> **Zero-credential first run:** the bundled `demo_hello` fetcher emits synthetic
-> evidence, so you can watch the whole collect → envelope pipeline before wiring
-> up a real service:
->
-> ```bash
-> paramify run examples/demo.yaml                    # synthetic evidence — no credentials
-> paramify evidence evidence/run-*/demo_hello.json   # inspect the enveloped result
-> ```
+### Try it before you wire anything up
+
+`manifests/demo.yaml` is the one manifest the repo ships, and it needs no cloud
+account and no network. Five synthetic fetchers, nine invocations, one of them
+deliberately failing — so a first run shows every shape you will meet with real
+fetchers: a single collection, a fanout across accounts, a fanout where one target
+fails and the others carry on, and a fetcher that reads a credential.
+
+```bash
+paramify doctor manifests/demo.yaml    # → ❌ DEMO_API_TOKEN missing
+export DEMO_API_TOKEN=demo             # any value; the demo sends it nowhere
+paramify run manifests/demo.yaml       # evidence → ./evidence/run-<timestamp>/
+```
+
+![A first run with no credentials](docs/demo/firstrun.gif)
+
+The run ends **partial** on purpose. `demo_audit_logging` cannot read one of
+`demo-sandbox`'s regions, so it writes the evidence it did get, exits non-zero,
+and reports why — which is how a failure reaches you as
+`metadata.error: "1 of 3 regions unreadable …"` and
+`metadata.error_code: "not_authorized"` in that file's envelope, rather than as
+a guess scraped off the end of its logs. Delete the manifest and the `demo`
+category once you've seen it work; nothing depends on them.
 
 ---
 
@@ -135,7 +150,7 @@ scaffold a new fetcher, wire it into a manifest, or propose a validator directly
 The same operations, run by hand. `paramify catalog` lists the catalog and
 `paramify describe <fetcher>` shows exactly what any one fetcher needs:
 
-![Browsing the fetcher catalog with the paramify CLI](docs/demo/catalog.gif)
+![Browsing the catalog and reading a fetcher's contract](docs/demo/catalog.gif)
 
 A typical run, step by step:
 
@@ -290,11 +305,13 @@ Two flags worth knowing:
 config are still missing until the manifest is runnable.
 
 Nothing ships at `./manifest.yaml`, so the one you build there is yours — commit
-it or don't, as you prefer. For a worked reference see
-[`example_manifest.yaml`](example_manifest.yaml); [`examples/`](examples/) holds
-smaller per-scenario samples.
+it or don't, as you prefer. The only manifest the repo tracks is
+[`manifests/demo.yaml`](manifests/demo.yaml), the credential-free demo program;
+`paramify manifest new <name>` starts your own beside it. For a worked reference
+see [`example_manifest.yaml`](example_manifest.yaml); [`examples/`](examples/)
+holds smaller per-scenario samples.
 
-![Building a run manifest step by step with paramify manifest](docs/demo/manifest.gif)
+![Building a run manifest, then preflighting it with paramify doctor](docs/demo/doctor.gif)
 
 ```bash
 paramify manifest init [--output-dir DIR]            # start a manifest at -f/--file

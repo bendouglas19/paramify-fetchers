@@ -1,29 +1,42 @@
-# Paramify CLI — discovery & breadth
-# Render from the repo root:  vhs docs/demo/catalog.tape
-# (or run docs/demo/render.sh to build every demo)
+# Paramify — what is in the catalog, and what one fetcher declares
+# Render from the repo root:  docs/demo/render.sh catalog
+#
+# Breadth first, then the contract: a fetcher's declaration is the thing you wire
+# a manifest against, so the last two frames are `describe` -- one synthetic
+# fetcher with targets, and one real cloud fetcher whose credentials are optional
+# because it authenticates through a chain that usually hands over no secret.
 
 Output docs/demo/catalog.gif
 
 Set Shell "bash"
-Set FontSize 18
-Set Width 1180
-Set Height 640
-Set Padding 24
+Set FontSize 16
+Set Width 1240
+Set Height 860
+Set Padding 20
 Set Theme "TokyoNight"
-Set TypingSpeed 55ms
+Set TypingSpeed 50ms
+Set Framerate 24
 
-# --- hidden setup: activate venv, clean prompt ---
+# --- hidden setup: venv, the throwaway worktree render.sh built, a clean prompt,
+# --- and an environment with no real credentials in it (see render.sh).
 Hide
-Type "source .venv/bin/activate 2>/dev/null; export PS1='$ '; clear"
+Type "source .venv/bin/activate 2>/dev/null"
+Enter
+Type "cd ${DEMO_WORKTREE:-/tmp/paramify-demo}"
+Enter
+Type `for v in $(env | cut -d= -f1 | grep -E '^(AWS|AZURE|OKTA|GITLAB|GOOGLE|DATADOG|KNOWBE4|SENTINELONE|RIPPLING|PARAMIFY|DEMO)_'); do unset "$v"; done`
+Enter
+Type "export PS1='$ '; clear"
 Enter
 Show
 
-# The 8 source systems we collect from
+# Every category, what it collects, and each fetcher's mode. Long by design --
+# what settles on screen is the tail of it.
 Sleep 600ms
-Type `paramify catalog | grep -v '^[[:space:]]' | grep . | sed 's/ —.*//'`
+Type "paramify catalog"
 Sleep 400ms
 Enter
-Sleep 2800ms
+Sleep 4000ms
 
 Hide
 Type "clear"
@@ -31,11 +44,12 @@ Enter
 Show
 Sleep 300ms
 
-# 107 fetchers across them
-Type "paramify list | head -n 14"
+# One fetcher's contract: the target fields it fans out over, and the env var
+# each one arrives in.
+Type "paramify describe demo_audit_logging"
 Sleep 400ms
 Enter
-Sleep 3200ms
+Sleep 4000ms
 
 Hide
 Type "clear"
@@ -43,8 +57,10 @@ Enter
 Show
 Sleep 300ms
 
-# Inspect any one of them
-Type "paramify describe okta_phishing_resistant_mfa"
+# A real one. Its credentials are declared OPTIONAL: supply the key pair, or omit
+# it and the credential chain falls through to an instance role, IRSA or SSO --
+# none of which hand over a secret at all.
+Type "paramify describe aws_iam_roles"
 Sleep 400ms
 Enter
-Sleep 3500ms
+Sleep 5000ms
