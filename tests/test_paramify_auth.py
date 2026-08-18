@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 from framework.paramify_auth import (
     DEFAULT_BASE_URL,
     READ_TOKEN_ENV,
@@ -102,6 +104,25 @@ class _FakeTTY:
         pass
 
 
+@pytest.fixture(autouse=True)
+def _no_ci_marker(monkeypatch):
+    """Clear CI for every test here.
+
+    can_prompt() takes its environment explicitly, but prompt_for_token calls it
+    without one, so it reads os.environ — where a CI runner sets CI=true and every
+    prompt short-circuits. Faking the TTYs is not enough: on a runner these tests
+    measured the CI refusal instead of the path they name, so the three that
+    assert None passed for the wrong reason and the one that expects a token
+    failed. Autouse because the trap is invisible at the call site.
+
+    Only the environment is set here. Patching sys.stdin/sys.stderr from a fixture
+    does not survive: pytest re-activates global capture for the call phase and
+    replaces the streams again, so the fake TTYs have to be installed inside the
+    test body.
+    """
+    monkeypatch.delenv("CI", raising=False)
+
+
 def test_never_prompts_in_ci_even_on_a_terminal(monkeypatch):
     monkeypatch.setattr(sys, "stdin", _FakeTTY(True))
     monkeypatch.setattr(sys, "stderr", _FakeTTY(True))
@@ -128,6 +149,8 @@ def test_prompts_on_a_real_interactive_terminal(monkeypatch):
 
 
 def test_prompt_returns_none_instead_of_blocking_when_it_must_not_ask(monkeypatch):
+    # Redirected on both ends, with CI cleared, so the refusal comes from the
+    # streams rather than from a CI marker.
     monkeypatch.setattr(sys, "stdin", _FakeTTY(False))
     monkeypatch.setattr(sys, "stderr", _FakeTTY(False))
     assert prompt_for_token("https://app.paramify.com/api/v0") is None

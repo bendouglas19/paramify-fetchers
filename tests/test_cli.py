@@ -132,11 +132,17 @@ def test_doctor_requires_the_declared_tools_for_a_bash_category(tmp_path):
     assert {t["name"] for t in rep["tools"]} == {"aws", "kubectl", "jq"}
 
 
+# The demo category needs nothing installed, which is the point: these two assert
+# on the whole-report `ok`, so an azure manifest would have them measuring whether
+# the Azure SDKs happen to be present. CI installs only the core dependencies.
+DEMO_MANIFEST = "run:\n  fetchers:\n    - use: demo_hello\n"
+
+
 def test_doctor_reports_upload_readiness_without_gating_on_it(monkeypatch, tmp_path):
     """Collecting without uploading is legitimate, so a missing token informs only."""
     monkeypatch.delenv("PARAMIFY_UPLOAD_API_TOKEN", raising=False)
     monkeypatch.delenv("PARAMIFY_API_TOKEN", raising=False)
-    rep = _doctor_json(tmp_path, "run:\n  fetchers:\n    - use: azure_defender_plans\n")
+    rep = _doctor_json(tmp_path, DEMO_MANIFEST)
     assert rep["upload"]["token_present"] is False
     assert rep["upload"]["ok"] is False
     assert rep["ok"] is True, "a missing upload token must not fail a collect-only preflight"
@@ -145,10 +151,9 @@ def test_doctor_reports_upload_readiness_without_gating_on_it(monkeypatch, tmp_p
 def test_doctor_require_upload_gates_on_the_token(monkeypatch, tmp_path):
     monkeypatch.delenv("PARAMIFY_UPLOAD_API_TOKEN", raising=False)
     monkeypatch.delenv("PARAMIFY_API_TOKEN", raising=False)
-    rep = _doctor_json(
-        tmp_path, "run:\n  fetchers:\n    - use: azure_defender_plans\n", "--require-upload"
-    )
+    rep = _doctor_json(tmp_path, DEMO_MANIFEST, "--require-upload")
     assert rep["ok"] is False
+    assert rep["upload"]["ok"] is False, "the token is why it failed, not a missing dep"
 
 
 def test_doctor_reports_the_upload_destination(monkeypatch, tmp_path):
