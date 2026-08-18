@@ -789,7 +789,14 @@ def validate(manifest: dict, root: Path, fetchers=None, platforms=None) -> List[
                     f"(platforms.{fetcher.category}.config or fetcher config)"
                 )
 
-        for secret in fetcher.secrets:
+        # effective_secrets, and skip the optional ones: the runner resolves a
+        # category-declared credential exactly like a fetcher-declared one, and it
+        # skips an optional secret the manifest omits. Demanding one here failed a
+        # manifest that runs perfectly well -- which is every manifest using a
+        # fetcher that declares the ambient-identity key pair.
+        for secret in effective_secrets(fetcher, spec):
+            if not secret.required:
+                continue
             if secret.per_target:
                 for j, t in enumerate(entry.targets):
                     if secret.name not in t.secrets:
