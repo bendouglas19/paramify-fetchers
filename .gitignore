@@ -55,7 +55,6 @@ docs/demo/*.tape
 docs/demo/render.sh
 docs/demo/README.md
 manifests/demo.yaml
-tests/test_demo_program.py
 fetchers/demo/README.md
 fetchers/demo/access_review/
 fetchers/demo/audit_logging/
