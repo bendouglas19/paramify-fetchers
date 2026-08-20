@@ -1,103 +1,347 @@
-# FedRAMP 20x Key Security Indicators — the coverage denominator.
+# FedRAMP Key Security Indicators — the coverage denominator.
 #
 # This is the canonical list of KSIs the framework measures fetcher coverage
 # against. Each fetcher declares the KSIs its evidence speaks to via `ksis:` in
 # its fetcher.yaml; api.ksi_coverage() joins the two.
 #
-# PROVISIONAL (release 25.05C, Phase One). Statements are paraphrased from
-# docs/ksi_prowler_mapping.md — reconcile against the official FedRAMP 20x KSI
-# doc when remapping to the newer release:
-#   https://github.com/FedRAMP/docs/blob/main/tools/site/content/20x/phase1/key-security-indicators.md
+# GENERATED from the authoritative FedRAMP source — statements are verbatim, not
+# paraphrased. Do not hand-edit statements, names, or controls; re-transcribe from:
+#   https://github.com/FedRAMP/rules/blob/main/fedramp-consolidated-rules.json
 #
-# `evidenceable: true`  = obtainable from tool/cloud configuration (a fetcher can
-#                         produce it; if none does yet it shows as a GAP).
-# `evidenceable: false` = organizational (training, policy, plans, incident docs,
-#                         vendor vetting). Not a config gap; evidenced by HR/
-#                         training tools (KnowBe4, Rippling) or manual evidence.
+# `evidenceable` IS a hand-made judgment and is ours, not FedRAMP's. The rule:
+# strip the "persistently reviewed" wrapper from the statement and see what is
+# left. A technical state ("configured to limit inbound and outbound traffic",
+# "encrypted") is evidenceable -- a fetcher can show it, and a fetcher on a
+# schedule IS the persistent review. A bare process or document claim
+# ("effectiveness of documented procedures", "executive support") is not; it is
+# organizational, evidenced by HR/training tools or manual evidence.
+#
+# `optional_for_class_b: true` marks indicators FedRAMP requires at Moderate
+# (class c) but lists as optional at Low (class b). We still treat them as
+# evidenceable when the underlying state is collectable.
+#
+# HOW TO READ A MAPPING: a fetcher's `ksis:` entries are SUGGESTED / RELATED
+# mappings, not assertions that the fetcher alone satisfies the indicator. They
+# say "this evidence speaks to this KSI" and are a starting point for an
+# assessor conversation, not a substitute for one. Where a claim would need a
+# generous reading of the statement we leave the indicator uncovered instead --
+# an honest gap is more useful than a mapping that has to be defended.
+#
+# `controls` is FedRAMP's own NIST 800-53 crosswalk, carried for reference.
+# Control-to-evidence linkage itself stays manual and Paramify-side.
 
-release: "FedRAMP 20x KSI — release 25.05C Phase One (provisional)"
+release: "FedRAMP Consolidated Rules for 2026 \u2014 KSI release 2026.07.14.01"
 
 families:
-  CNA: Cloud Native Architecture
-  SVC: Service Configuration
-  MLA: Monitoring, Logging & Auditing
-  IAM: Identity & Access Management
-  CMT: Change Management
-  RPL: Recovery Planning
-  PIY: Policy & Inventory
-  TPR: Third-Party Information Resources
-  CED: Cybersecurity Education
-  INR: Incident Reporting
+  CNA: "Cloud Native Architecture"
+  SVC: "Service Configuration"
+  MLA: "Monitoring, Logging, and Auditing"
+  IAM: "Identity and Access Management"
+  CMT: "Change Management"
+  RPL: "Recovery Planning"
+  PIY: "Policy and Inventory"
+  SCR: "Supply Chain Risk"
+  CED: "Cybersecurity Education"
+  INR: "Incident Response"
 
 ksis:
-  # --- CNA: Cloud Native Architecture (config) ---
-  - {id: KSI-CNA-01, family: CNA, evidenceable: true,  statement: Limit and control inbound and outbound network traffic.}
-  - {id: KSI-CNA-02, family: CNA, evidenceable: true,  statement: Minimize the attack surface and lateral movement.}
-  - {id: KSI-CNA-03, family: CNA, evidenceable: true,  statement: Enforce logical traffic-flow controls and network segmentation.}
-  - {id: KSI-CNA-04, family: CNA, evidenceable: true,  statement: Use immutable infrastructure.}
-  - {id: KSI-CNA-05, family: CNA, evidenceable: true,  statement: Protect against denial-of-service attacks.}
-  - {id: KSI-CNA-06, family: CNA, evidenceable: true,  statement: Ensure high availability and rapid recovery.}
-  - {id: KSI-CNA-07, family: CNA, evidenceable: true,  statement: Enforce security best practices on hosts and containers.}
+  # --- CNA: Cloud Native Architecture (8 indicators, 8 evidenceable) ---
+  - id: KSI-CNA-DFP
+    family: CNA
+    name: "Defining Functionality and Privileges"
+    evidenceable: true
+    statement: "The functionality and privileges for infrastructure and services are strictly defined."
+    controls: [cm-2, si-3]
+  - id: KSI-CNA-EIS
+    family: CNA
+    name: "Enforcing Intended State"
+    evidenceable: true
+    optional_for_class_b: true
+    statement: "Automated services are used to persistently assess the security of all machine-based information resources and automatically enforce their intended operational state."
+    controls: [ca-2.1, ca-7.1]
+  - id: KSI-CNA-IBP
+    family: CNA
+    name: "Implementing Best Practices"
+    evidenceable: true
+    statement: "The use and configuration of third-party machine-based information resources is persistently compared against the original provider's best practices and guidance."
+    controls: [ac-17.3, cm-2, pl-10]
+  - id: KSI-CNA-MAT
+    family: CNA
+    name: "Minimizing Attack Surface"
+    evidenceable: true
+    statement: "Machine-based information resources are persistently reviewed to ensure they have a minimal attack surface and that lateral movement is minimized if compromised."
+    controls: [ac-17.3, ac-18.1, ac-18.3, ac-20.1, ca-9, sc-7.3, sc-7.4, sc-7.5, sc-7.8, sc-8, sc-10, si-10, si-11, si-16]
+  - id: KSI-CNA-OFA
+    family: CNA
+    name: "Optimizing for Availability"
+    evidenceable: true
+    statement: "Machine-based information resources are persistently reviewed to ensure they are appropriately optimized for high availability and rapid recovery."
+    controls: []
+  - id: KSI-CNA-RNT
+    family: CNA
+    name: "Restricting Network Traffic"
+    evidenceable: true
+    statement: "Machine-based information resources are persistently reviewed to ensure they are appropriately configured to limit inbound and outbound network traffic."
+    controls: [ac-17.3, ca-9, cm-7.1, sc-7.5, si-8]
+  - id: KSI-CNA-RVP
+    family: CNA
+    name: "Reviewing Protections"
+    evidenceable: true
+    statement: "The effectiveness of protection against denial of service attacks and other unwanted activity for machine-based information resources is persistently reviewed."
+    controls: [sc-5, si-8, si-8.2]
+  - id: KSI-CNA-ULN
+    family: CNA
+    name: "Using Logical Networking"
+    evidenceable: true
+    statement: "Logical networking and related capabilities are used and persistently reviewed to enforce traffic flow controls."
+    controls: [ac-12, ac-17.3, ca-9, sc-4, sc-7, sc-7.7, sc-8, sc-10]
 
-  # --- SVC: Service Configuration (config) ---
-  - {id: KSI-SVC-01, family: SVC, evidenceable: true,  statement: Harden and consistently configure services.}
-  - {id: KSI-SVC-02, family: SVC, evidenceable: true,  statement: Encrypt network traffic in transit (TLS).}
-  - {id: KSI-SVC-03, family: SVC, evidenceable: true,  statement: Encrypt data at rest.}
-  - {id: KSI-SVC-04, family: SVC, evidenceable: true,  statement: Centrally manage and enforce configuration.}
-  - {id: KSI-SVC-05, family: SVC, evidenceable: true,  statement: Enforce data integrity using cryptography.}
-  - {id: KSI-SVC-06, family: SVC, evidenceable: true,  statement: Automate key management and rotation.}
-  - {id: KSI-SVC-07, family: SVC, evidenceable: true,  statement: Apply risk-informed patching.}
+  # --- SVC: Service Configuration (8 indicators, 6 evidenceable) ---
+  - id: KSI-SVC-ACM
+    family: SVC
+    name: "Automating Configuration Management"
+    evidenceable: true
+    statement: "The configuration of machine-based information resources is managed using automation and persistently reviewed for drift."
+    controls: [ac-2.4, cm-2, cm-2.2, cm-2.3, cm-6, cm-7.1, pl-9, pl-10, sa-5, si-5, sr-10]
+  - id: KSI-SVC-ASM
+    family: SVC
+    name: "Automating Secret Management"
+    evidenceable: true
+    statement: "Management, protection, and regular rotation of digital keys, certificates, and other secrets is automated and persistently reviewed."
+    controls: [ac-17.2, ia-5.2, ia-5.6, sc-12, sc-17]
+  - id: KSI-SVC-EIS
+    family: SVC
+    name: "Evaluating and Improving Security"
+    evidenceable: true
+    statement: "Information resources are persistently evaluated for opportunities to improve security and those improvements are persistently made."
+    controls: [cm-7.1, cm-12.1, ma-2, pl-8, sc-7, sc-39, si-2.2, si-4, sr-10]
+  - id: KSI-SVC-PRR
+    family: SVC
+    name: "Preventing Residual Risk"
+    evidenceable: false
+    optional_for_class_b: true
+    statement: "Plans, procedures, and the state of information resources are persistently reviewed after making changes to limit and remove unwanted residual elements that would likely negatively affect the confidentiality, integrity, or availability of federal customer data."
+    controls: [sc-4]
+  - id: KSI-SVC-RUD
+    family: SVC
+    name: "Removing Unwanted Data"
+    evidenceable: false
+    optional_for_class_b: true
+    statement: "Unwanted federal customer data is removed promptly when requested by an agency in alignment with customer agreements, including from backups if appropriate; this typically applies when a customer spills information or when a customer seeks to remove information from a service due to a change in usage."
+    controls: [si-12.3, si-18.4]
+  - id: KSI-SVC-SIN
+    family: SVC
+    name: "Securing Information"
+    evidenceable: true
+    statement: "Information is encrypted or otherwise secured from unwanted access or modification."
+    controls: [ac-1, ac-17.2, cp-9.8, sc-8, sc-8.1, sc-13, sc-20, sc-21, sc-22, sc-23, sc-28, sc-28.1]
+  - id: KSI-SVC-VCM
+    family: SVC
+    name: "Validating Communications"
+    evidenceable: true
+    optional_for_class_b: true
+    statement: "The authenticity and integrity of communications between machine-based information resources is persistently validated using automation."
+    controls: [sc-23, si-7.1]
+  - id: KSI-SVC-VRI
+    family: SVC
+    name: "Validating Resource Integrity"
+    evidenceable: true
+    statement: "Use cryptographic methods to validate the integrity of machine-based information resources."
+    controls: [cm-2.2, cm-8.3, sc-13, sc-23, si-7, si-7.1, sr-10]
 
-  # --- MLA: Monitoring, Logging & Auditing (config) ---
-  - {id: KSI-MLA-01, family: MLA, evidenceable: true,  statement: "Centralized, tamper-resistant logging / SIEM."}
-  - {id: KSI-MLA-02, family: MLA, evidenceable: true,  statement: Regularly review and audit logs.}
-  - {id: KSI-MLA-03, family: MLA, evidenceable: true,  statement: Detect and remediate vulnerabilities.}
-  - {id: KSI-MLA-04, family: MLA, evidenceable: true,  statement: Perform authenticated vulnerability scanning.}
-  - {id: KSI-MLA-05, family: MLA, evidenceable: true,  statement: Evaluate infrastructure-as-code and configuration.}
-  - {id: KSI-MLA-06, family: MLA, evidenceable: true,  statement: Centrally track vulnerabilities.}
+  # --- MLA: Monitoring, Logging, and Auditing (5 indicators, 5 evidenceable) ---
+  - id: KSI-MLA-ALA
+    family: MLA
+    name: "Authorizing Log Access"
+    evidenceable: true
+    optional_for_class_b: true
+    statement: "A least-privileged, role and attribute-based, and just-in-time access authorization model is used and persistently reviewed for access to log data based on organizationally defined data sensitivity."
+    controls: [si-11]
+  - id: KSI-MLA-EVC
+    family: MLA
+    name: "Evaluating Configurations"
+    evidenceable: true
+    statement: "The configuration of machine-based information resources, especially infrastructure as code, is persistently evaluated and tested."
+    controls: [ca-7, cm-2, cm-6, si-7.7]
+  - id: KSI-MLA-LET
+    family: MLA
+    name: "Logging Event Types"
+    evidenceable: true
+    statement: "A list of information resources and event types that will be logged, monitored, and audited is maintained and persistently reviewed to ensure these activities occur."
+    controls: [ac-2.4, ac-6.9, ac-17.1, ac-20.1, au-2, au-7.1, au-12, si-4.4, si-4.5, si-7.7]
+  - id: KSI-MLA-OSM
+    family: MLA
+    name: "Operating SIEM Capability"
+    evidenceable: true
+    statement: "A Security Information and Event Management (SIEM) or similar system(s) is used and persistently reviewed for centralized, tamper-resistant logging of events, activities, and changes."
+    controls: [ac-17.1, ac-20.1, au-2, au-3, au-3.1, au-4, au-5, au-6.1, au-6.3, au-7, au-7.1, au-8, au-9, au-11, ir-4.1, si-4.2, si-4.4, si-7.7]
+  - id: KSI-MLA-RVL
+    family: MLA
+    name: "Reviewing Logs"
+    evidenceable: true
+    statement: "Logs are persistently reviewed and audited."
+    controls: [ac-2.4, ac-6.9, au-2, au-6, au-6.1, si-4, si-4.4]
 
-  # --- IAM: Identity & Access Management (config) ---
-  - {id: KSI-IAM-01, family: IAM, evidenceable: true,  statement: Enforce phishing-resistant MFA.}
-  - {id: KSI-IAM-02, family: IAM, evidenceable: true,  statement: Enforce passwordless or strong-password + MFA authentication.}
-  - {id: KSI-IAM-03, family: IAM, evidenceable: true,  statement: Securely authenticate non-user / service accounts.}
-  - {id: KSI-IAM-04, family: IAM, evidenceable: true,  statement: Enforce least-privilege access (RBAC/ABAC/JIT).}
-  - {id: KSI-IAM-05, family: IAM, evidenceable: true,  statement: Apply zero-trust design principles.}
-  - {id: KSI-IAM-06, family: IAM, evidenceable: true,  statement: Detect and respond to suspicious privileged-account activity.}
-  - {id: KSI-IAM-07, family: IAM, evidenceable: true,  statement: Automate account lifecycle management.}
+  # --- IAM: Identity and Access Management (6 indicators, 6 evidenceable) ---
+  - id: KSI-IAM-AAM
+    family: IAM
+    name: "Automating Account Management"
+    evidenceable: true
+    statement: "The lifecycle and privileges of all accounts, roles, and groups are securely managed using automation."
+    controls: [ac-2.2, ac-2.3, ac-2.13, ac-6.7, ia-4.4, ia-12, ia-12.2, ia-12.3, ia-12.5]
+  - id: KSI-IAM-APM
+    family: IAM
+    name: "Adopting Passwordless Methods"
+    evidenceable: true
+    statement: "Secure passwordless methods are used for user authentication and authorization when feasible, otherwise strong passwords with phishing-resistant MFA is used."
+    controls: [ac-3, ia-5.1, ia-5.2, ia-5.6, ia-6, ac-2, ia-2, ia-2.1, ia-2.2, ia-2.8, ia-5, ia-8, sc-23]
+  - id: KSI-IAM-ELP
+    family: IAM
+    name: "Ensuring Least Privilege"
+    evidenceable: true
+    statement: "Identity and access management measures are used and persistently reviewed to ensure each user or device can only access the resources they need."
+    controls: [ac-2.5, ac-2.6, ac-3, ac-4, ac-6, ac-12, ac-14, ac-17, ac-17.1, ac-17.2, ac-17.3, ac-20, ac-20.1, cm-2.7, cm-9, ia-2, ia-3, ia-4, ia-4.4, ia-5.2, ia-5.6, ia-11, ps-2, ps-3, ps-4, ps-5, ps-6, sc-4, sc-20, sc-21, sc-22, sc-23, sc-39, si-3]
+  - id: KSI-IAM-JIT
+    family: IAM
+    name: "Authorizing Just-in-Time"
+    evidenceable: true
+    statement: "A least-privileged, role and attribute-based, and just-in-time security authorization model is used and persistently reviewed for all user and non-user accounts and services."
+    controls: [ac-2, ac-2.1, ac-2.2, ac-2.3, ac-2.4, ac-2.6, ac-3, ac-4, ac-5, ac-6, ac-6.1, ac-6.2, ac-6.5, ac-6.7, ac-6.9, ac-6.10, ac-7, ac-20.1, ac-17, au-9.4, cm-5, cm-7, cm-7.2, cm-7.5, cm-9, ia-4, ia-4.4, ia-7, ps-2, ps-3, ps-4, ps-5, ps-6, ps-9, ra-5.5, sc-2, sc-23, sc-39]
+  - id: KSI-IAM-SNU
+    family: IAM
+    name: "Securing Non-User Authentication"
+    evidenceable: true
+    statement: "Appropriately secure authentication methods are used and persistently reviewed for non-user accounts and services."
+    controls: [ac-2, ac-2.2, ac-4, ac-6.5, ia-3, ia-5.2, ra-5.5]
+  - id: KSI-IAM-SUS
+    family: IAM
+    name: "Responding to Suspicious Activity"
+    evidenceable: true
+    statement: "Accounts with privileged access are disabled or otherwise secured in response to suspicious activity."
+    controls: [ac-2, ac-2.1, ac-2.3, ac-2.13, ac-7, ps-4, ps-8]
 
-  # --- CMT: Change Management (partial) ---
-  - {id: KSI-CMT-01, family: CMT, evidenceable: true,  statement: Log and monitor system modifications.}
-  - {id: KSI-CMT-02, family: CMT, evidenceable: true,  statement: Detect and control configuration drift.}
-  - {id: KSI-CMT-03, family: CMT, evidenceable: true,  statement: Automatically test and validate changes.}
-  - {id: KSI-CMT-04, family: CMT, evidenceable: true,  statement: Review and approve changes before release.}
-  - {id: KSI-CMT-05, family: CMT, evidenceable: false, statement: Maintain a formal change-management policy.}
+  # --- CMT: Change Management (4 indicators, 3 evidenceable) ---
+  - id: KSI-CMT-LMC
+    family: CMT
+    name: "Logging Changes"
+    evidenceable: true
+    statement: "Modifications to the cloud service offering are logged and monitored."
+    controls: [au-2, cm-3, cm-3.2, cm-4.2, cm-6, cm-8.3, ma-2]
+  - id: KSI-CMT-RMV
+    family: CMT
+    name: "Redeploying vs Modifying"
+    evidenceable: true
+    statement: "Changes to machine-based information resources are executed through the redeployment of version controlled resources rather than direct modification wherever reasonable."
+    controls: [cm-2, cm-3, cm-5, cm-6, cm-7, cm-8.1, si-3]
+  - id: KSI-CMT-RVP
+    family: CMT
+    name: "Reviewing Change Procedures"
+    evidenceable: false
+    statement: "The effectiveness of documented change management procedures is persistently reviewed."
+    controls: [cm-3, cm-3.2, cm-3.4, cm-5, cm-7.1, cm-9]
+  - id: KSI-CMT-VTD
+    family: CMT
+    name: "Validating Throughout Deployment"
+    evidenceable: true
+    statement: "Persistent testing and validation of changes throughout deployment is automated."
+    controls: [cm-3, cm-3.2, cm-4.2, si-2]
 
-  # --- RPL: Recovery Planning (only backups are config-evidenceable) ---
-  - {id: KSI-RPL-01, family: RPL, evidenceable: false, statement: Define recovery objectives (RTO/RPO).}
-  - {id: KSI-RPL-02, family: RPL, evidenceable: false, statement: Maintain a documented recovery plan.}
-  - {id: KSI-RPL-03, family: RPL, evidenceable: true,  statement: Perform and validate system backups.}
-  - {id: KSI-RPL-04, family: RPL, evidenceable: false, statement: Regularly test the recovery plan.}
+  # --- RPL: Recovery Planning (4 indicators, 2 evidenceable) ---
+  - id: KSI-RPL-ABO
+    family: RPL
+    name: "Aligning Backups with Objectives"
+    evidenceable: true
+    statement: "The alignment of machine-based information resource backups with defined recovery objectives is persistently reviewed."
+    controls: [cm-2.3, cp-6, cp-9, cp-10, cp-10.2, si-12]
+  - id: KSI-RPL-ARP
+    family: RPL
+    name: "Aligning Recovery Plan"
+    evidenceable: false
+    statement: "The alignment of recovery plans with defined recovery objectives is persistently reviewed."
+    controls: [cp-2, cp-2.1, cp-2.3, cp-4.1, cp-6, cp-6.1, cp-6.3, cp-7, cp-7.1, cp-7.2, cp-7.3, cp-8, cp-8.1, cp-8.2, cp-10, cp-10.2]
+  - id: KSI-RPL-RRO
+    family: RPL
+    name: "Reviewing Recovery Objectives"
+    evidenceable: false
+    statement: "The desired Recovery Time Objectives (RTO) and Recovery Point Objectives (RPO) are defined and persistently reviewed for alignment with the provider's business needs and capabilities."
+    controls: [cp-2.3, cp-10]
+  - id: KSI-RPL-TRC
+    family: RPL
+    name: "Testing Recovery Capabilities"
+    evidenceable: true
+    statement: "The capability to recover from incidents and contingencies aligned with defined recovery objectives is persistently tested."
+    controls: [cp-2.1, cp-2.3, cp-4, cp-4.1, cp-6, cp-6.1, cp-9.1, cp-10, ir-3, ir-3.2]
 
-  # --- PIY: Policy & Inventory (only inventory is config-evidenceable) ---
-  - {id: KSI-PIY-01, family: PIY, evidenceable: true,  statement: Maintain an up-to-date asset inventory.}
-  - {id: KSI-PIY-02, family: PIY, evidenceable: false, statement: Operate a vulnerability disclosure program.}
-  - {id: KSI-PIY-03, family: PIY, evidenceable: false, statement: Follow a secure software development lifecycle.}
-  - {id: KSI-PIY-04, family: PIY, evidenceable: false, statement: Document security and privacy roles and responsibilities.}
-  - {id: KSI-PIY-05, family: PIY, evidenceable: false, statement: Maintain adequate security staffing and budget.}
-  - {id: KSI-PIY-06, family: PIY, evidenceable: false, statement: Manage supply-chain risk (SBOM / dependency policy).}
-  - {id: KSI-PIY-07, family: PIY, evidenceable: false, statement: Maintain required security and privacy policies.}
+  # --- PIY: Policy and Inventory (5 indicators, 1 evidenceable) ---
+  - id: KSI-PIY-GIV
+    family: PIY
+    name: "Generating Inventories"
+    evidenceable: true
+    statement: "Authoritative sources are used to automatically generate real-time inventories of all information resources when needed."
+    controls: [cm-2.2, cm-7.5, cm-8, cm-8.1, cm-12, cm-12.1, cp-2.8]
+  - id: KSI-PIY-RES
+    family: PIY
+    name: "Reviewing Executive Support"
+    evidenceable: false
+    statement: "Executive support for achieving the provider's security goals is persistently reviewed and demonstrated."
+    controls: []
+  - id: KSI-PIY-RIS
+    family: PIY
+    name: "Reviewing Investments in Security"
+    evidenceable: false
+    statement: "The effectiveness of the provider's investments in achieving security goals is persistently reviewed."
+    controls: [ac-5, ca-2, cp-2.1, cp-4.1, ir-3.2, pm-3, sa-2, sa-3, sr-2.1]
+  - id: KSI-PIY-RSD
+    family: PIY
+    name: "Reviewing Security in the SDLC"
+    evidenceable: false
+    statement: "The effectiveness of building security and privacy considerations into the Software Development Lifecycle and aligning with CISA Secure By Design principles is persistently reviewed."
+    controls: [ac-5, au-3.3, cm-3.4, pl-8, pm-7, sa-3, sa-8, sc-4, sc-18, si-10, si-11, si-16]
+  - id: KSI-PIY-RVD
+    family: PIY
+    name: "Reviewing Vulnerability Disclosures"
+    evidenceable: false
+    statement: "The effectiveness of the provider's vulnerability disclosure program is persistently reviewed."
+    controls: [ra-5.11]
 
-  # --- TPR: Third-Party Information Resources (only upstream-vuln monitoring is config) ---
-  - {id: KSI-TPR-01, family: TPR, evidenceable: false, statement: Identify third-party information resources.}
-  - {id: KSI-TPR-02, family: TPR, evidenceable: false, statement: Vet third-party providers.}
-  - {id: KSI-TPR-03, family: TPR, evidenceable: false, statement: Monitor third-party compliance.}
-  - {id: KSI-TPR-04, family: TPR, evidenceable: true,  statement: Monitor third-party software for upstream vulnerabilities.}
+  # --- SCR: Supply Chain Risk (2 indicators, 2 evidenceable) ---
+  - id: KSI-SCR-MIT
+    family: SCR
+    name: "Mitigating Supply Chain Risk"
+    evidenceable: true
+    statement: "Persistently identify, review, and mitigate potential supply chain risks."
+    controls: [ac-20, ra-3.1, sa-9, sa-10, sa-11, sa-15.3, sa-22, si-7.1, sr-5, sr-6, ca-7.4, sc-18]
+  - id: KSI-SCR-MON
+    family: SCR
+    name: "Monitoring Supply Chain Risk"
+    evidenceable: true
+    statement: "Third party software information resources are automatically monitored for upstream vulnerabilities using mechanisms that may include contractual notification requirements or active monitoring services."
+    controls: [ac-20, ca-3, ir-6.3, ps-7, ra-5, sa-9, si-5, sr-5, sr-6, sr-8]
 
-  # --- CED: Cybersecurity Education (organizational — KnowBe4 / training records) ---
-  - {id: KSI-CED-01, family: CED, evidenceable: false, statement: Provide security-awareness training.}
-  - {id: KSI-CED-02, family: CED, evidenceable: false, statement: Provide role-based / specialized security training.}
+  # --- CED: Cybersecurity Education (1 indicators, 1 evidenceable) ---
+  - id: KSI-CED-RAT
+    family: CED
+    name: "Reviewing All Training"
+    evidenceable: true
+    statement: "The effectiveness of relevant cybersecurity education and training is persistently reviewed, including at least general training for all employees, role-specific training for employees in high risk roles, training for development and engineering staff on secure software delivery, and training for staff involved with incident response or disaster recovery."
+    controls: [cp-3, ir-2, ps-6, at-2, at-2.2, at-2.3, at-3.5, at-4, ir-2.3, at-3, sr-11.1]
 
-  # --- INR: Incident Reporting (organizational — incident docs / process) ---
-  - {id: KSI-INR-01, family: INR, evidenceable: false, statement: Report incidents to required stakeholders.}
-  - {id: KSI-INR-02, family: INR, evidenceable: false, statement: Maintain incident logs and after-action reports.}
-  - {id: KSI-INR-03, family: INR, evidenceable: false, statement: Maintain an incident-response process.}
+  # --- INR: Incident Response (3 indicators, 2 evidenceable) ---
+  - id: KSI-INR-AAR
+    family: INR
+    name: "Generating After Action Reports"
+    evidenceable: true
+    statement: "Incident after action reports are generated and lessons learned are persistently incorporated."
+    controls: [ir-3, ir-4, ir-4.1, ir-8]
+  - id: KSI-INR-RIR
+    family: INR
+    name: "Reviewing Incident Response Procedures"
+    evidenceable: false
+    statement: "The effectiveness of documented incident response procedures is persistently reviewed."
+    controls: [ir-4, ir-4.1, ir-6, ir-6.1, ir-6.3, ir-7, ir-7.1, ir-8, ir-8.1, si-4.5]
+  - id: KSI-INR-RPI
+    family: INR
+    name: "Reviewing Past Incidents"
+    evidenceable: true
+    statement: "Past incidents are persistently reviewed for patterns or vulnerabilities that were not previously apparent or identified."
+    controls: [ir-3, ir-4, ir-4.1, ir-5, ir-8]
