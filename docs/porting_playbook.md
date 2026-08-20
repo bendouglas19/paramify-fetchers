@@ -119,10 +119,17 @@ evidence set so the uploader can get-or-create it by `reference_id`:
 
 ```yaml
 evidence_set:
-  reference_id: <stable id, e.g. KSI-IAM-01>
+  reference_id: <stable id, e.g. EVD-OKTA-PHISHING-RESISTANT-MFA>
   name: <human-readable evidence set name>
   instructions: <what reviewers should look for>   # optional
 ```
+
+`reference_id` is the immutable key the uploader get-or-creates on — changing it
+orphans the existing evidence set in every tenant. So do **not** derive it from a
+KSI id: KSI identifiers get renumbered (FedRAMP re-keyed all of them in the 2026
+Consolidated Rules), and the reference_id must survive that. Name it after the
+evidence. For the same reason, keep KSI ids out of `name` — the mapping lives in
+`ksis:`, where it can be updated without touching identity.
 
 Pull `reference_id`/`name`/`instructions` from the upstream catalog when the
 source has a catalog entry. If there's no catalog entry, generate a stable
