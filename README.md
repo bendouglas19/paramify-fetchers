@@ -428,7 +428,7 @@ abbreviated:
     "evidence_set": {
       "reference_id": "EVD-VPC-SEGMENTATION",
       "name": "VPC Network Segmentation",
-      "instructions": "Script: fetcher.sh. Commands: aws ec2 describe-vpcs, describe-subnets, describe-vpc-peering-connections, describe-vpc-endpoints. Maps to KSI-CNA-03.",
+      "instructions": "Script: fetcher.sh. Commands: aws ec2 describe-vpcs, describe-subnets, describe-vpc-peering-connections, describe-vpc-endpoints.",
       "description": "Lists VPCs, subnets, peering connections, and endpoints to document network topology and segmentation."
     }
   },
@@ -518,6 +518,7 @@ To add evidence collection for a new control or a new tool, see [`docs/authoring
 | [`docs/uploader_design.md`](docs/uploader_design.md) | How both uploaders work + the shared evidence-set identity model |
 | [`docs/authoring_a_fetcher.md`](docs/authoring_a_fetcher.md) | Writing a new fetcher from scratch |
 | [`docs/fetcher_contract.md`](docs/fetcher_contract.md) | The binding runner↔fetcher contract |
+| [`docs/ksi_mapping.md`](docs/ksi_mapping.md) | Which fetchers map to which FedRAMP KSIs, per indicator and per fetcher, plus open gaps |
 | [`docs/run_manifest_reference.md`](docs/run_manifest_reference.md) | Manifest format reference |
 | [`docs/config_injection_design.md`](docs/config_injection_design.md) | Platform/config/auth model |
 | [`docs/design.md`](docs/design.md) | Why the framework is shaped this way + current state of the work |
