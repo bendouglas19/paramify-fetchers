@@ -1,6 +1,6 @@
 name: okta_suspicious_activity_management
 version: 0.1.0
-description: FedRAMP 20x KSI-IAM-SUS evidence. Collects suspicious activity management evidence from Okta.
+description: FedRAMP KSI-IAM-SUS evidence. Collects suspicious activity management evidence from Okta.
 category: okta
 
 supports_targets: false

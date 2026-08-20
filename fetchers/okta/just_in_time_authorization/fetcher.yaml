@@ -1,6 +1,6 @@
 name: okta_just_in_time_authorization
 version: 0.1.0
-description: FedRAMP 20x KSI-IAM-JIT evidence. Collects just-in-time authorization evidence from Okta.
+description: FedRAMP KSI-IAM-JIT evidence. Collects just-in-time authorization evidence from Okta.
 category: okta
 
 supports_targets: false

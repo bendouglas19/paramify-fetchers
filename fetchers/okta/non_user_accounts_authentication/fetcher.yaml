@@ -1,6 +1,6 @@
 name: okta_non_user_accounts_authentication
 version: 0.1.0
-description: FedRAMP 20x KSI-IAM-SNU evidence. Collects non-user accounts authentication evidence from Okta.
+description: FedRAMP KSI-IAM-SNU evidence. Collects non-user accounts authentication evidence from Okta.
 category: okta
 
 supports_targets: false

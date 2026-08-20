@@ -1,6 +1,6 @@
 name: gitlab_project_summary
 version: 0.1.0
-description: FedRAMP 20x KSI-PIY-GIV evidence. Inventories configuration files (Terraform, Dockerfiles, YAML configs, etc.) in a GitLab project repository. Single-target per invocation; runner does fanout.
+description: FedRAMP KSI-PIY-GIV evidence. Inventories configuration files (Terraform, Dockerfiles, YAML configs, etc.) in a GitLab project repository. Single-target per invocation; runner does fanout.
 category: gitlab
 
 supports_targets: true

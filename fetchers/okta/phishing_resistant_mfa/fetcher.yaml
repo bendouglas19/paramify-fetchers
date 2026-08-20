@@ -1,6 +1,6 @@
 name: okta_phishing_resistant_mfa
 version: 0.1.0
-description: FedRAMP 20x KSI-IAM-APM evidence. Collects phishing-resistant MFA evidence from Okta.
+description: FedRAMP KSI-IAM-APM evidence. Collects phishing-resistant MFA evidence from Okta.
 category: okta
 
 supports_targets: false

@@ -1,6 +1,6 @@
 name: okta_passwordless_authentication
 version: 0.1.0
-description: FedRAMP 20x KSI-IAM-APM evidence. Collects passwordless authentication evidence from Okta.
+description: FedRAMP KSI-IAM-APM evidence. Collects passwordless authentication evidence from Okta.
 category: okta
 
 supports_targets: false

@@ -1,6 +1,6 @@
 name: okta_automated_account_management
 version: 0.1.0
-description: FedRAMP 20x KSI-IAM-AAM evidence. Collects automated account management evidence from Okta.
+description: FedRAMP KSI-IAM-AAM evidence. Collects automated account management evidence from Okta.
 category: okta
 
 supports_targets: false

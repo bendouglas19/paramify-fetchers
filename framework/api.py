@@ -179,16 +179,16 @@ def catalog(root: Path) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# KSI coverage — join fetcher `ksis` against the FedRAMP 20x reference
+# KSI coverage — join fetcher `ksis` against the FedRAMP KSI reference
 # --------------------------------------------------------------------------- #
 
 def _load_ksi_reference(root: Path) -> dict:
-    """Load the canonical FedRAMP 20x KSI reference (the coverage denominator)."""
+    """Load the canonical FedRAMP KSI reference (the coverage denominator)."""
     return yaml.safe_load((root / "framework" / "reference" / "ksis.yaml").read_text())
 
 
 def ksi_coverage(root: Path) -> dict:
-    """Coverage of the FedRAMP 20x KSIs by discovered fetchers.
+    """Coverage of the FedRAMP KSIs by discovered fetchers.
 
     Joins each fetcher's `ksis` against framework/reference/ksis.yaml and returns
     one presentation-agnostic model — per-KSI status (covered/gap/organizational),

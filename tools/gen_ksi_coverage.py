@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate the KSI-coverage block in README.md from live data.
 
-The FedRAMP 20x KSI coverage numbers rot as fetchers and mappings change, so we
+The FedRAMP KSI coverage numbers rot as fetchers and mappings change, so we
 generate them rather than hand-maintain them (the SEC-27 "generate the rot-prone
 parts" pattern). This reads `framework.api.ksi_coverage()` — the same model
 `paramify ksi` renders — and rewrites the README between the markers:
@@ -34,8 +34,8 @@ def build_block(cov: dict) -> str:
     s = cov["summary"]
     pct = s["coverage_pct"]
     badge = (
-        f"![FedRAMP 20x KSI coverage]"
-        f"(https://img.shields.io/badge/FedRAMP_20x_KSI_coverage-{pct}%25-{BRAND})"
+        f"![FedRAMP KSI coverage]"
+        f"(https://img.shields.io/badge/FedRAMP_KSI_coverage-{pct}%25-{BRAND})"
     )
 
     evidenceable_fams = [f for f in cov["families"] if f["evidenceable"] > 0]

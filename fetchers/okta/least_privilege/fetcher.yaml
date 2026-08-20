@@ -1,6 +1,6 @@
 name: okta_least_privilege
 version: 0.1.0
-description: FedRAMP 20x KSI-IAM-ELP evidence. Collects least privilege evidence from Okta.
+description: FedRAMP KSI-IAM-ELP evidence. Collects least privilege evidence from Okta.
 category: okta
 
 supports_targets: false
