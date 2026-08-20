@@ -29,7 +29,8 @@ target_schema:
 secrets: []
 
 ksis:
-  - KSI-MLA-01
+  - KSI-MLA-RVL
+  - KSI-CNA-OFA
 
 evidence_set:
   reference_id: EVD-CLOUDWATCH-HA

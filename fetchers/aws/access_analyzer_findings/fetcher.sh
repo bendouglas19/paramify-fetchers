@@ -1,5 +1,5 @@
 #!/bin/bash
-# KSI-IAM-04: IAM Access Analyzer analyzers and active external-access findings.
+# KSI-IAM-ELP: IAM Access Analyzer analyzers and active external-access findings.
 # Lists analyzers (arn, name, status, type) and, for each ACTIVE analyzer, its
 # active findings (id, status, resource, resource type, external principal).
 # No analyzers or no active findings is valid evidence (not a failure).

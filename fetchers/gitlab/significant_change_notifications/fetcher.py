@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-CMT-04 / FedRAMP SCN: GitLab Significant Change Notifications
+KSI-CMT-LMC / FedRAMP SCN: GitLab Significant Change Notifications
 
 Finds merge requests that engineering flagged as a FedRAMP significant change,
 parses the SCN section of the MR description, and emits one FedRAMP-schema-valid
@@ -31,7 +31,7 @@ file — N separate SCN files would each get enveloped and stop being schema-val
 FedRAMP documents. Each element of payload.notifications[].scn is a verbatim,
 schema-valid SCN object that a downstream step can lift out and submit as-is.
 
-Unfilled template placeholders (`YYYY-MM-DD`, `KSI-XXX-XX`, `N/A`, …) are dropped
+Unfilled template placeholders (`YYYY-MM-DD`, `KSI-XXX-XXX`, `N/A`, …) are dropped
 rather than emitted, and each drop is recorded in parse_notes. A notification that
 says nothing is better evidence than one that says "YYYY-MM-DD".
 """

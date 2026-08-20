@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: Optional. AWS named profile for multi-account fanout; falls back to the ambient identity (IRSA / instance role / SSO / env) when omitted.
-
 secrets: []
 
 ksis:
-  - KSI-IAM-04
+  - KSI-IAM-ELP
 
 evidence_set:
   reference_id: EVD-ACCESS-ANALYZER
   name: IAM Access Analyzer Findings
-  instructions: 'Script: fetcher.sh. Commands executed: aws accessanalyzer list-analyzers, aws accessanalyzer list-findings (filtered to ACTIVE findings, per ACTIVE analyzer). Maps to KSI-IAM-04.'
+  instructions: 'Script: fetcher.sh. Commands executed: aws accessanalyzer list-analyzers, aws accessanalyzer list-findings (filtered to ACTIVE findings, per ACTIVE analyzer).'

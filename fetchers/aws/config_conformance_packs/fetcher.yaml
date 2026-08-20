@@ -29,8 +29,8 @@ target_schema:
 secrets: []
 
 ksis:
-  - KSI-SVC-04
-  - KSI-MLA-05
+  - KSI-MLA-EVC
+  - KSI-CNA-IBP
 
 evidence_set:
   reference_id: EVD-CONFIG-PACKS

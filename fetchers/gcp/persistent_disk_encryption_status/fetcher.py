@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-SVC-03 / KSI-RPL-03: GCP Persistent Disk & Snapshot Encryption at Rest
+KSI-SVC-SIN: GCP Persistent Disk & Snapshot Encryption at Rest
 
 For each Compute Engine persistent disk and snapshot in one project, reports
 whether encryption at rest uses a customer-managed key (CMEK) or the default

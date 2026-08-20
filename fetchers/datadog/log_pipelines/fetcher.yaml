@@ -21,6 +21,9 @@ secrets:
 - name: base_url
   env: DATADOG_BASE_URL
 
+ksis:
+  - KSI-MLA-LET
+
 evidence_set:
   reference_id: EVD-DD-LOG-PIPELINES
   name: Datadog Log Pipelines

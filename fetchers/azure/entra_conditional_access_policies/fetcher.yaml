@@ -52,6 +52,11 @@ target_schema:
 
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
 
+ksis:
+  - KSI-IAM-JIT   # role/attribute-based conditions — client app, platform, named location
+  - KSI-IAM-ELP   # the include/exclude maps and what each policy grants or blocks
+  - KSI-IAM-SUS   # sign-in risk and user risk conditions
+
 evidence_set:
   reference_id: EVD-AZURE-ENTRA-CA-POLICIES
   name: Microsoft Entra ID Conditional Access Policies

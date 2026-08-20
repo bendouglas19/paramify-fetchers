@@ -4,7 +4,7 @@
 #
 # For each OpenSearch/Elasticsearch domain in the account/region, reports
 # encryption at rest, node-to-node encryption, and enforced-HTTPS endpoint
-# settings (KSI-SVC-03).
+# settings (KSI-SVC-SIN).
 #
 # Output: $EVIDENCE_DIR/aws_opensearch_encryption_status.json
 # Optional env (else the AWS CLI ambient identity/region): AWS_PROFILE, AWS_DEFAULT_REGION

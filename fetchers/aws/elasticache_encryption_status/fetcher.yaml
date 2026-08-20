@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-03
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-ELASTICACHE-ENC
   name: ElastiCache Encryption
-  instructions: 'Script: elasticache_encryption_status.sh. Commands executed: aws elasticache describe-cache-clusters, aws elasticache describe-replication-groups. Maps to KSI-SVC-03.'
+  instructions: 'Script: elasticache_encryption_status.sh. Commands executed: aws elasticache describe-cache-clusters, aws elasticache describe-replication-groups.'

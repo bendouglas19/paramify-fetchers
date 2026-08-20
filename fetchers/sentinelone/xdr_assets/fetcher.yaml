@@ -19,6 +19,9 @@ secrets:
 - name: api_url
   env: SENTINELONE_API_URL
 
+ksis:
+  - KSI-PIY-GIV
+
 evidence_set:
   reference_id: EVD-S1-XDR-ASSET
   name: SentinelOne XDR Assets

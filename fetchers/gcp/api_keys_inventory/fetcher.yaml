@@ -39,6 +39,11 @@ target_schema:
 
 secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
 
+ksis:
+  - KSI-SVC-ASM
+  - KSI-IAM-SNU
+  - KSI-IAM-ELP
+
 evidence_set:
   reference_id: EVD-GCP-API-KEYS
   name: API Keys Inventory and Restrictions

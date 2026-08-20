@@ -41,6 +41,9 @@ target_schema:
 
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
 
+ksis:
+  - KSI-IAM-ELP
+
 evidence_set:
   reference_id: EVD-AZURE-RBAC-ASSIGNMENTS
   name: Azure RBAC Role Assignments

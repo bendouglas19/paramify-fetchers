@@ -53,6 +53,10 @@ target_schema:
 
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
 
+ksis:
+  - KSI-IAM-SNU
+  - KSI-SVC-ASM
+
 evidence_set:
   reference_id: EVD-AZURE-ENTRA-APP-CREDS
   name: Microsoft Entra ID App Registration Credentials

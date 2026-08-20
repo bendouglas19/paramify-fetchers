@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-CNA-06
+  - KSI-CNA-OFA
 
 evidence_set:
   reference_id: EVD-GLOBAL-ACCELERATOR-HA
   name: Global Accelerator High Availability
-  instructions: 'Script: global_accelerator_ha.sh. Commands executed: aws globalaccelerator list-accelerators, aws globalaccelerator list-listeners, aws globalaccelerator list-endpoint-groups. Maps to KSI-CNA-06.'
+  instructions: 'Script: global_accelerator_ha.sh. Commands executed: aws globalaccelerator list-accelerators, aws globalaccelerator list-listeners, aws globalaccelerator list-endpoint-groups.'

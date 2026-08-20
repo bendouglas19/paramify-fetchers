@@ -39,8 +39,8 @@ target_schema:
 secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
 
 ksis:
-  - KSI-SVC-03       # Protection of data at rest (mirrors aws s3_encryption_status)
-  - KSI-RPL-03       # Server-side protection — versioning / retention
+  - KSI-SVC-SIN
+  - KSI-RPL-ABO
 
 evidence_set:
   reference_id: EVD-GCP-STORAGE-ENC

@@ -41,6 +41,14 @@ target_schema:
 
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
 
+ksis:
+  - KSI-CNA-MAT   # private cluster, private API server, no public IPs on nodes
+  - KSI-CNA-RNT   # API server authorized IP ranges
+  - KSI-CNA-ULN   # network policy and plugin
+  - KSI-IAM-ELP   # Kubernetes RBAC + Entra-integrated Azure RBAC, local admin accounts disabled
+  - KSI-IAM-SNU   # workload identity and the OIDC issuer
+  - KSI-SVC-EIS   # cluster and node-OS auto-upgrade channels
+
 evidence_set:
   reference_id: EVD-AZURE-AKS-CONFIG
   name: Azure Kubernetes Service Cluster Configuration

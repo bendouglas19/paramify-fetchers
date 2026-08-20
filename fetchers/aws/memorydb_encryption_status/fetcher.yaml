@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-03
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-MEMORYDB-ENC
   name: MemoryDB Encryption
-  instructions: 'Script: memorydb_encryption_status.sh. Commands executed: aws memorydb describe-clusters. Maps to KSI-SVC-03.'
+  instructions: 'Script: memorydb_encryption_status.sh. Commands executed: aws memorydb describe-clusters.'

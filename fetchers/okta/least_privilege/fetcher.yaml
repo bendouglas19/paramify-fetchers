@@ -1,6 +1,6 @@
 name: okta_least_privilege
 version: 0.1.0
-description: FedRAMP 20x KSI-IAM-05 evidence. Collects least privilege evidence from Okta.
+description: FedRAMP 20x KSI-IAM-ELP evidence. Collects least privilege evidence from Okta.
 category: okta
 
 supports_targets: false
@@ -20,9 +20,9 @@ secrets:
   env: OKTA_ORG_URL
 
 ksis:
-  - KSI-IAM-05
+  - KSI-IAM-ELP
 
 evidence_set:
   reference_id: EVD-OKTA-KSI-IAM-05
-  name: Okta Least Privilege (KSI-IAM-05)
+  name: Okta Least Privilege
   instructions: 'Script: okta_least_privilege.py. Uses Okta APIs to identify admins and summarize privileged access. Output: okta_least_privilege.json'

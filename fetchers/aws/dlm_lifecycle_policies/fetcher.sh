@@ -71,7 +71,7 @@ if [ "$policy_count" -gt 0 ]; then
         [ -z "$policy_id" ] && continue
 
         # Full policy detail: PolicyDetails carries Schedules (with RetainRule)
-        # and TargetTags for KSI-RPL-03 retention/lifecycle evidence.
+        # and TargetTags for KSI-RPL-ABO retention/lifecycle evidence.
         detail=$(aws dlm get-lifecycle-policy --policy-id "$policy_id" --output json 2>/dev/null)
         detail_exit=$?
         if [ $detail_exit -ne 0 ]; then

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-MLA-01 / KSI-CMT-01: GCP Cloud Logging Configuration
+KSI-MLA-OSM / KSI-MLA-OSM: GCP Cloud Logging Configuration
 
 The GCP analogue of the AWS cloudtrail_configuration evidence set. For one
 project: every log sink defined on the project or inherited from its folders and

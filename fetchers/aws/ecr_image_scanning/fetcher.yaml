@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: Optional. AWS named profile for multi-account fanout; falls back to the ambient identity (IRSA / instance role / SSO / env) when omitted.
-
 secrets: []
 
 ksis:
-  - KSI-TPR-04
+  - KSI-SCR-MON
 
 evidence_set:
   reference_id: EVD-ECR-IMAGE-SCANNING
   name: ECR Image Scanning Configuration
-  instructions: 'Script: fetcher.sh. Commands executed: aws ecr describe-repositories, aws ecr get-registry-scanning-configuration, aws ecr describe-images, aws ecr describe-image-scan-findings. Maps to KSI-TPR-04.'
+  instructions: 'Script: fetcher.sh. Commands executed: aws ecr describe-repositories, aws ecr get-registry-scanning-configuration, aws ecr describe-images, aws ecr describe-image-scan-findings.'

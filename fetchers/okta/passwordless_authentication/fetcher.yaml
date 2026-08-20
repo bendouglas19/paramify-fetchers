@@ -1,6 +1,6 @@
 name: okta_passwordless_authentication
 version: 0.1.0
-description: FedRAMP 20x KSI-IAM-02 evidence. Collects passwordless authentication evidence from Okta.
+description: FedRAMP 20x KSI-IAM-APM evidence. Collects passwordless authentication evidence from Okta.
 category: okta
 
 supports_targets: false
@@ -20,9 +20,9 @@ secrets:
   env: OKTA_ORG_URL
 
 ksis:
-  - KSI-IAM-02
+  - KSI-IAM-APM
 
 evidence_set:
   reference_id: EVD-OKTA-KSI-IAM-02
-  name: Okta Passwordless Authentication (KSI-IAM-02)
+  name: Okta Passwordless Authentication
   instructions: 'Script: okta_passwordless_authentication.py. Uses Okta APIs to collect passwordless authentication policy and enrollment evidence. Output: okta_passwordless_authentication.json'

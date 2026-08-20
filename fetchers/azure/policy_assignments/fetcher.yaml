@@ -41,6 +41,10 @@ target_schema:
 
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
 
+ksis:
+  - KSI-SVC-ACM
+  - KSI-CNA-EIS
+
 evidence_set:
   reference_id: EVD-AZURE-POLICY-ASSIGN
   name: Azure Policy Assignments

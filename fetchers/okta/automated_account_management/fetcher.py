@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-IAM-07: Automated Account Management
+KSI-IAM-AAM: Automated Account Management
 
 Thin wrapper around okta_iam_core.py that runs only this KSI and outputs a dedicated JSON file.
 """

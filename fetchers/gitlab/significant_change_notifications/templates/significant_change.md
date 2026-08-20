@@ -14,7 +14,7 @@ How the parser reads this file:
   * Inside it, each field is identified by its backticked schema key —
     *(`changeTypeExplanation`)* — NOT by its human label. Rename the labels
     freely; keep the backticked keys exactly as they are.
-  * Unfilled placeholders (`YYYY-MM-DD`, `KSI-XXX-XX`, `N/A`) are dropped and
+  * Unfilled placeholders (`YYYY-MM-DD`, `KSI-XXX-XXX`, `N/A`) are dropped and
     reported rather than emitted. A blank field costs you a note; a field
     containing "YYYY-MM-DD" would cost you a rejected notification.
 -->
@@ -92,7 +92,7 @@ N/A
 
 **Impacted Controls** **Impacted KSIs or Rev5 Controls** *(`impactedControls[]`)* (List KSI or control identifiers that will be verified, assessed, or validated as part of this change. One per line.)
 
-- KSI-XXX-XX
+- KSI-XXX-XXX
 - AC-X
 - SI-X
 

@@ -39,13 +39,11 @@ target_schema:
     description: >
       Deployment environment label (e.g. prod / preprod) written into the evidence
       metadata. Optional — set per target for multi-subscription runs.
-
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
 
 ksis:
-  - KSI-CNA-07       # Enforce security best practices on hosts and containers
-  - KSI-MLA-03       # Detect and remediate vulnerabilities
-  - KSI-MLA-04       # Perform authenticated vulnerability scanning
+  - KSI-CNA-EIS      # Automated services persistently assess resource security — which Defender plans are enabled
+  - KSI-SVC-EIS      # Evaluate and improve security — the per-plan vulnerability-scanning extensions
 
 evidence_set:
   reference_id: EVD-AZURE-DEFENDER
@@ -53,4 +51,4 @@ evidence_set:
   instructions: >
     Script: fetcher.py. Azure SDK call (azure-mgmt-security SecurityCenter):
     pricings.list(scope_id="subscriptions/<subscription_id>") for every Defender for
-    Cloud plan. Maps to KSI-CNA-07, KSI-MLA-03, KSI-MLA-04.
+    Cloud plan.

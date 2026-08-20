@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-CMT-03: GitLab CI/CD Pipeline Configuration
+KSI-CMT-VTD: GitLab CI/CD Pipeline Configuration
 
 Pulls .gitlab-ci.yml for a single GitLab project and analyzes for test stages,
 security scanning, deployment jobs, and artifact configuration.

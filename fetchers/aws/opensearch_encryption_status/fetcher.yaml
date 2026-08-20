@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-03
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-OPENSEARCH-ENC
   name: OpenSearch Encryption
-  instructions: 'Commands executed: aws opensearch list-domain-names, aws opensearch describe-domain. Reports encryption-at-rest, node-to-node encryption, and enforce-HTTPS per domain. Maps to KSI-SVC-03.'
+  instructions: 'Commands executed: aws opensearch list-domain-names, aws opensearch describe-domain. Reports encryption-at-rest, node-to-node encryption, and enforce-HTTPS per domain.'

@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-IAM-02
+  - KSI-IAM-APM
 
 evidence_set:
   reference_id: EVD-IAM-PASSWORD-POLICY
   name: IAM Account Password Policy
-  instructions: 'Script: iam_password_policy.sh. Commands executed: aws iam get-account-password-policy. Maps to KSI-IAM-02.'
+  instructions: 'Script: iam_password_policy.sh. Commands executed: aws iam get-account-password-policy.'

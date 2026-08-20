@@ -39,8 +39,11 @@ target_schema:
     description: >
       Deployment environment label (e.g. prod / preprod) written into the evidence
       metadata. Optional — set per target for multi-subscription runs.
-
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+ksis:
+  - KSI-MLA-LET
+  - KSI-CMT-LMC
 
 evidence_set:
   reference_id: EVD-AZURE-DIAG-SETTINGS
@@ -48,4 +51,3 @@ evidence_set:
   instructions: >
     Script: fetcher.py. Azure SDK calls (azure-mgmt-monitor<7 MonitorManagementClient):
     diagnostic_settings.list(resource_uri="subscriptions/<id>/"), at subscription scope.
-    Maps to KSI-MLA-01, KSI-MLA-02, KSI-MLA-06, KSI-PIY-06.

@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-03
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-ATHENA-ENC
   name: Athena Workgroup Query-Result Encryption
-  instructions: 'Script: athena_encryption_status.sh. Commands executed: aws athena list-work-groups, aws athena get-work-group. Maps to KSI-SVC-03.'
+  instructions: 'Script: athena_encryption_status.sh. Commands executed: aws athena list-work-groups, aws athena get-work-group.'

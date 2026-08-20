@@ -121,7 +121,7 @@ secrets:
   per_target: true
 
 ksis:
-  - KSI-CMT-04
+  - KSI-CMT-LMC
 
 validators:
   - id: scn_schema_valid

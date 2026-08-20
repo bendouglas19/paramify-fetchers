@@ -37,13 +37,15 @@ target_schema:
     description: >
       Deployment environment label (e.g. prod / preprod) written into the evidence
       metadata. Optional — set per target for multi-subscription runs.
-
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+ksis:
+  - KSI-MLA-RVL
+  - KSI-CMT-LMC
 
 evidence_set:
   reference_id: EVD-AZURE-ACTIVITY-ALERTS
   name: Azure Activity Log Alerts
   instructions: >
     Script: fetcher.py. Azure SDK calls (azure-mgmt-monitor MonitorManagementClient):
-    activity_log_alerts.list_by_subscription_id(). Maps to KSI-MLA-02, KSI-MLA-05,
-    KSI-CNA-01, KSI-INR-01.
+    activity_log_alerts.list_by_subscription_id().

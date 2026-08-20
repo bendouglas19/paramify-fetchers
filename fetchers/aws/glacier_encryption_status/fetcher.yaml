@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-03
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-GLACIER-ENC
   name: S3 Glacier Vault Encryption and Lock
-  instructions: 'Script: glacier_encryption_status.sh. Commands executed: aws glacier list-vaults, aws glacier get-vault-access-policy, aws glacier get-vault-lock. Maps to KSI-SVC-03.'
+  instructions: 'Script: glacier_encryption_status.sh. Commands executed: aws glacier list-vaults, aws glacier get-vault-access-policy, aws glacier get-vault-lock.'

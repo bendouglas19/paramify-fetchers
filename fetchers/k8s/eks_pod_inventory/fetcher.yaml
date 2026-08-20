@@ -18,6 +18,9 @@ output:
 # category's passthrough_env. They are selectors, not secrets.
 secrets: []
 
+ksis:
+  - KSI-PIY-GIV
+
 evidence_set:
   reference_id: EVD-EKS-POD-INVENTORY
   name: EKS Pod Inventory

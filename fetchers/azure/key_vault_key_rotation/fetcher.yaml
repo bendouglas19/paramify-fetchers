@@ -39,8 +39,10 @@ target_schema:
     description: >
       Deployment environment label (e.g. prod / preprod) written into the evidence
       metadata. Optional — set per target for multi-subscription runs.
-
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+ksis:
+  - KSI-SVC-ASM
 
 evidence_set:
   reference_id: EVD-AZURE-KEYVAULT-ROTATION
@@ -49,4 +51,4 @@ evidence_set:
     Script: fetcher.py. Azure SDK calls (azure-mgmt-keyvault KeyVaultManagementClient):
     vaults.list_by_subscription(), keys.list(), keys.get(), secrets.list(); then
     (azure-keyvault-keys KeyClient): list_properties_of_keys(),
-    get_key_rotation_policy(). Maps to KSI-SVC-03, KSI-SVC-05, KSI-SVC-06.
+    get_key_rotation_policy().

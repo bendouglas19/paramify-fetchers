@@ -21,6 +21,9 @@ secrets:
 - name: base_url
   env: DATADOG_BASE_URL
 
+ksis:
+  - KSI-PIY-GIV
+
 evidence_set:
   reference_id: EVD-DD-AGENT-HOSTS
   name: Datadog Agent Hosts

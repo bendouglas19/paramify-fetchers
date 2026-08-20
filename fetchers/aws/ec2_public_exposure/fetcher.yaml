@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-CNA-02
+  - KSI-CNA-MAT
 
 evidence_set:
   reference_id: EVD-EC2-PUBLIC-EXPOSURE
   name: EC2 Public Exposure
-  instructions: 'Script: ec2_public_exposure.sh. Commands executed: aws ec2 describe-instances. Maps to KSI-CNA-02.'
+  instructions: 'Script: ec2_public_exposure.sh. Commands executed: aws ec2 describe-instances.'

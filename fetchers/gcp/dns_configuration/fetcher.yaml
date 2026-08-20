@@ -38,6 +38,9 @@ target_schema:
 
 secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
 
+ksis:
+  - KSI-SVC-SIN
+
 evidence_set:
   reference_id: EVD-GCP-DNS
   name: Cloud DNS Zone and DNSSEC Configuration

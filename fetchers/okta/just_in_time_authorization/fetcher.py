@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-IAM-04: Just-in-Time Authorization
+KSI-IAM-JIT: Just-in-Time Authorization
 
 Thin wrapper around okta_iam_core.py that runs only this KSI and outputs a dedicated JSON file.
 """

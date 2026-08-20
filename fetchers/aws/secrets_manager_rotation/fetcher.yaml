@@ -29,10 +29,9 @@ target_schema:
 secrets: []
 
 ksis:
-  - KSI-SVC-06
-  - KSI-IAM-03
+  - KSI-SVC-ASM
 
 evidence_set:
   reference_id: EVD-SECRETS-ROTATION
   name: Secrets Manager Rotation
-  instructions: 'Script: secrets_manager_rotation.sh. Commands executed: aws secretsmanager list-secrets, aws secretsmanager describe-secret. Maps to KSI-SVC-06.'
+  instructions: 'Script: secrets_manager_rotation.sh. Commands executed: aws secretsmanager list-secrets, aws secretsmanager describe-secret.'

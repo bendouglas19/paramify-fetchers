@@ -146,7 +146,7 @@ Date/Time of Change: MM/DD/YYYY @ HH:MM
 CHANGE_MR_COMPLETE = (
     CHANGE_MR.replace(
         "- KSI-XXX-XX\n- AC-X\n- SI-X",
-        "- KSI-CMT-04\n- KSI-MLA-01\n- RA-5\n- SI-2",
+        "- KSI-CMT-VTD\n- KSI-MLA-OSM\n- RA-5\n- SI-2",
     )
     .replace(
         "*(`planAndTimeline.summary`)* **\\[REQUIRED within planAndTimeline\\]** "
@@ -154,7 +154,7 @@ CHANGE_MR_COMPLETE = (
         "approach for impacted KSIs or controls)",
         "*(`planAndTimeline.summary`)* **\\[REQUIRED within planAndTimeline\\]**\n\n"
         "The replacement scanner runs in parallel with the incumbent until coverage is "
-        "confirmed equivalent, after which the incumbent is retired. KSI-MLA-01 and "
+        "confirmed equivalent, after which the incumbent is retired. KSI-MLA-OSM and "
         "RA-5 are re-verified against the new output before decommissioning.",
     )
     .replace(
@@ -464,7 +464,7 @@ def main() -> int:
     n202 = by_iid[202]
     scn2 = n202["scn"]
     check("202 VALID once the plan summary is written", n202["validation"]["valid"])
-    check("202 real controls parsed", scn2.get("impactedControls") == ["KSI-CMT-04", "KSI-MLA-01", "RA-5", "SI-2"])
+    check("202 real controls parsed", scn2.get("impactedControls") == ["KSI-CMT-VTD", "KSI-MLA-OSM", "RA-5", "SI-2"])
     check("202 plannedStart parsed from backticks", scn2["planAndTimeline"].get("plannedStart") == "2026-09-01")
     check("202 plannedCompletion parsed", scn2["planAndTimeline"].get("plannedCompletion") == "2026-11-14")
     check("202 milestone dates parsed from `date` | description",

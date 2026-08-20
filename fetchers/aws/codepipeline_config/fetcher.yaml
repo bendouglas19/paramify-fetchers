@@ -25,13 +25,13 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-CMT-03
+  - KSI-CMT-VTD
+  - KSI-CMT-RMV
 
 evidence_set:
   reference_id: EVD-CODEPIPELINE-CONFIG
   name: AWS CodePipeline Configuration
-  instructions: 'Script: aws_codepipeline_config.sh. Commands executed: aws codepipeline list-pipelines, aws codepipeline get-pipeline. Captures each pipeline''s stages, source action providers, and artifact-store KMS encryption key. Maps to KSI-CMT-03.'
+  instructions: 'Script: aws_codepipeline_config.sh. Commands executed: aws codepipeline list-pipelines, aws codepipeline get-pipeline. Captures each pipeline''s stages, source action providers, and artifact-store KMS encryption key.'

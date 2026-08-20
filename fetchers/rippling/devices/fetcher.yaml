@@ -17,6 +17,9 @@ secrets:
 - name: api_token
   env: RIPPLING_API_TOKEN
 
+ksis:
+  - KSI-PIY-GIV
+
 evidence_set:
   reference_id: EVD-RIPPLING-DEVICES
   name: Rippling Devices

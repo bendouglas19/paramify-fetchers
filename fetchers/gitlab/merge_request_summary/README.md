@@ -1,6 +1,6 @@
 # gitlab_merge_request_summary
 
-Pulls recent merge requests for a GitLab project with approval, discussion, and timing metadata. Evidence for change-management compliance (KSI-CMT-04).
+Pulls recent merge requests for a GitLab project with approval, discussion, and timing metadata. Evidence for change-management compliance (KSI-CMT-LMC).
 
 ## Fanout-capable
 

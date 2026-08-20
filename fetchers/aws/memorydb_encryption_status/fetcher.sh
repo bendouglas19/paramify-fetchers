@@ -4,7 +4,7 @@
 #
 # For each MemoryDB cluster in the account/region, reports at-rest encryption
 # (KMS key), in-transit encryption (TLS), and engine. Aggregates a coverage
-# percentage. Maps to KSI-SVC-03.
+# percentage. Maps to KSI-SVC-SIN.
 #
 # Output: $EVIDENCE_DIR/aws_memorydb_encryption_status.json
 # Optional env (else the AWS CLI ambient identity/region): AWS_PROFILE, AWS_DEFAULT_REGION

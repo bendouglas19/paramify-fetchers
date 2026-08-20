@@ -22,6 +22,9 @@ secrets:
   env: DATADOG_BASE_URL
 - name: signals_lookback_days
   env: DATADOG_SIGNALS_LOOKBACK_DAYS
+ksis:
+  - KSI-MLA-RVL
+
 evidence_set:
   reference_id: EVD-DD-SIEM-SIGNALS
   name: Datadog SIEM Signals

@@ -25,11 +25,10 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-02
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-APIGATEWAY-TLS
@@ -38,4 +37,4 @@ evidence_set:
     Collected via aws apigateway get-rest-apis (REST API endpoint configuration),
     aws apigateway get-stages (per-API stage security: client certificate, WAF,
     logging, tracing, cache data encryption), and aws apigateway get-domain-names
-    (custom domain securityPolicy / TLS minimum version). Maps to KSI-SVC-02.
+    (custom domain securityPolicy / TLS minimum version).

@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: Optional. AWS named profile for multi-account fanout; falls back to the ambient identity (IRSA / instance role / SSO / env) when omitted.
-
 secrets: []
 
 ksis:
-  - KSI-MLA-03
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-MACIE
   name: Macie Data Discovery
-  instructions: 'Script: fetcher.sh. Commands executed: aws macie2 get-macie-session, aws macie2 get-automated-discovery-configuration, aws macie2 list-classification-jobs, aws macie2 get-finding-statistics. Maps to KSI-MLA-03.'
+  instructions: 'Script: fetcher.sh. Commands executed: aws macie2 get-macie-session, aws macie2 get-automated-discovery-configuration, aws macie2 list-classification-jobs, aws macie2 get-finding-statistics.'

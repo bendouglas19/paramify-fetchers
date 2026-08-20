@@ -25,13 +25,13 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-RPL-03
+  - KSI-RPL-ABO
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-EBS-SNAPSHOT
   name: EBS Snapshot Status
-  instructions: 'Script: fetcher.sh. Commands executed: aws ec2 describe-volumes, aws ec2 describe-snapshots --owner-ids self, aws ec2 describe-snapshot-attribute --attribute createVolumePermission. Maps to KSI-RPL-03.'
+  instructions: 'Script: fetcher.sh. Commands executed: aws ec2 describe-volumes, aws ec2 describe-snapshots --owner-ids self, aws ec2 describe-snapshot-attribute --attribute createVolumePermission.'

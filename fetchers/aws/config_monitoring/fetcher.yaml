@@ -29,10 +29,9 @@ target_schema:
 secrets: []
 
 ksis:
-  - KSI-SVC-04
-  - KSI-MLA-01
-  - KSI-MLA-05
-  - KSI-CMT-01
+  - KSI-SVC-ACM
+  - KSI-MLA-EVC
+  - KSI-CMT-LMC
 
 evidence_set:
   reference_id: EVD-CONFIG-MONITORING

@@ -38,6 +38,10 @@ target_schema:
 
 secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
 
+ksis:
+  - KSI-CNA-RNT
+  - KSI-CNA-MAT
+
 evidence_set:
   reference_id: EVD-GCP-FW-RULES
   name: VPC Firewall Rules

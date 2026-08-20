@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-IAM-05: Least Privilege
+KSI-IAM-ELP: Least Privilege
 
 Thin wrapper around okta_iam_core.py that runs only this KSI and outputs a dedicated JSON file.
 """

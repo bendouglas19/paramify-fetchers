@@ -41,6 +41,12 @@ target_schema:
 
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
 
+ksis:
+  - KSI-CNA-MAT   # minimal attack surface — the hardening posture overall
+  - KSI-SVC-VRI   # Trusted Launch: UEFI secure boot + vTPM are cryptographic integrity validation
+  - KSI-IAM-APM   # disable_password_authentication — Linux VMs enforcing SSH-key-only auth
+  - KSI-SVC-SIN   # encryption at host
+
 evidence_set:
   reference_id: EVD-AZURE-VM-HARDENING
   name: Azure Virtual Machine Hardening

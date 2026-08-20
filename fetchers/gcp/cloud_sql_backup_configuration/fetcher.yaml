@@ -38,6 +38,9 @@ target_schema:
 
 secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
 
+ksis:
+  - KSI-RPL-ABO
+
 evidence_set:
   reference_id: EVD-GCP-CLOUDSQL-BACKUP
   name: Cloud SQL Backup Configuration
