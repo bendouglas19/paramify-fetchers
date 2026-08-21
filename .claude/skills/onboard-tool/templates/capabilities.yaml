@@ -1,0 +1,30 @@
+# Capability inventory → KSI-scored fetcher slate.
+# Phase 2 output. Gitignored. The `slate:` order is the build order in plan.md.
+
+tool: <TOOL>
+category: <tool>
+researched: <YYYY-MM-DD>
+
+# Everything the API/CLI can expose that could plausibly be evidence.
+# Kept even when rejected — the rejection reason is the useful part.
+capabilities:
+  - id: <short_name>
+    calls:                       # exact endpoints or CLI commands
+      - GET /api/v1/<thing>
+    yields: <what the response actually contains>
+    evidence_of: <the security property this demonstrates>
+    ksis: [KSI-XXX-YYY]          # [] if it evidences no indicator
+    validator_would_key_on: <the field + value that proves the control>
+    fanout: single | per_target  # per what? project/tenant/region
+    verified: true | UNVERIFIED  # was the call confirmed live, or doc-only?
+    verdict: slate | weak | reject
+    why: <one line — required for weak and reject>
+
+# The approved build order. Written after the user's Phase 2 gate.
+slate:
+  - <short_name>
+
+# Candidates deliberately not built, so a future session doesn't re-propose them.
+rejected:
+  - id: <short_name>
+    why: <proves only that the tool is answering / no KSI / needs manual attestation>

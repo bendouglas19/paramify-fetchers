@@ -31,6 +31,14 @@ venv/
 # reference sample and nothing at ./manifest.yaml, so a manifest you create is
 # never in conflict with one of ours.
 
+# --- Tool onboarding state (onboard-tool skill) ---
+# .onboarding/ holds the per-tool plan, research notes, generated seeders and
+# draft validators, plus sandboxes.yaml (the registry of accounts a seeder is
+# allowed to write to). It carries tenant ids and half-finished plans, so it
+# stays local — validators in particular are drafts for Paramify, not repo
+# artifacts.
+/.onboarding/
+
 # --- Claude Code: ignore personal settings, keep shared skills + settings.json ---
 .claude/settings.local.json
 .claude/tmp/

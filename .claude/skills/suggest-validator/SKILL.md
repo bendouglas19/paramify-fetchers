@@ -1,13 +1,16 @@
 ---
 name: suggest-validator
 description: >
-  Suggest a regex validator for a fetcher's evidence. Use after a fetcher has
-  been run against a real tenant and produced a populated evidence file — reads
+  Suggest ONE ad-hoc regex validator for a fetcher's evidence, printed not
+  filed. Use after a fetcher has been run against a real tenant and produced a
+  populated evidence file — reads
   that file, finds the field that proves the control is being implemented, and
   proposes a regex (with an explanation and its failure modes) the user can use
   as-is or refine into their own validator. Triggers on "suggest a validator",
   "regex validator", "validate this evidence", "what regex proves this control".
-  Read-only: it writes nothing into the repo.
+  Read-only: it writes nothing at all. For the full proven set for a fetcher
+  (completeness + configuration checks, each proven to fail, filed as a draft),
+  use `author-validators` instead.
 ---
 
 # Suggest a Validator
@@ -17,6 +20,12 @@ This skill is the third beat in the fetcher lifecycle, after `create-fetcher`
 it proposes a regex that asserts the evidence actually proves what it's supposed
 to. The output is a suggestion for the user — a starting point for the validator
 they'll attach in Paramify, not an artifact this repo stores or executes.
+
+**Which validator skill?** This one for a single quick regex, printed to the
+terminal, writing nothing anywhere. `author-validators` for the whole set for
+one fetcher — one completeness check plus a configuration check per asserted
+property, each proven to fail against a mutated copy, filed under
+`.onboarding/<tool>/validators/`. The onboarding loop uses that one.
 
 **Golden rules**
 - **Read-only.** This skill writes nothing — no files, no schema edits, no
