@@ -4,7 +4,7 @@
 #
 # Lists CloudFront distributions and, for each, records the viewer protocol
 # policy (HTTPS enforcement), minimum TLS version, WAF (web ACL) association,
-# and access logging state. Maps to KSI-SVC-02.
+# and access logging state. Maps to KSI-SVC-SIN.
 #
 # Output: $EVIDENCE_DIR/aws_cloudfront_distribution_security.json
 # Optional env (else the AWS CLI ambient identity/region): AWS_PROFILE, AWS_DEFAULT_REGION

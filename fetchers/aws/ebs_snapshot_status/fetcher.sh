@@ -4,7 +4,7 @@
 #
 # Lists EBS volumes in the target region and whether each has at least one
 # snapshot, plus per-snapshot encryption, age, and public-exposure status.
-# Maps to KSI-RPL-03.
+# Maps to KSI-RPL-ABO.
 #
 # Output: $EVIDENCE_DIR/aws_ebs_snapshot_status_<target>.json
 # Optional env (else the AWS CLI ambient identity/region): AWS_PROFILE, AWS_DEFAULT_REGION

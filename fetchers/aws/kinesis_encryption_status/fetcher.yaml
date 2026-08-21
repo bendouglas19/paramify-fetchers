@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-03
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-KINESIS-ENC
   name: Kinesis Data Stream Encryption
-  instructions: 'Script: kinesis_encryption_status.sh. Commands executed: aws kinesis list-streams, aws kinesis describe-stream-summary. Maps to KSI-SVC-03.'
+  instructions: 'Script: kinesis_encryption_status.sh. Commands executed: aws kinesis list-streams, aws kinesis describe-stream-summary.'

@@ -21,6 +21,9 @@ secrets:
 - name: base_url
   env: DATADOG_BASE_URL
 
+ksis:
+  - KSI-MLA-EVC
+
 evidence_set:
   reference_id: EVD-DD-INFRA-CHECKS
   name: Datadog Infrastructure Agent Checks

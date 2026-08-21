@@ -40,13 +40,14 @@ target_schema:
     description: >
       Deployment environment label (e.g. prod / preprod) written into the evidence
       metadata. Optional — set per target for multi-subscription runs.
-
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+ksis:
+  - KSI-IAM-ELP
 
 evidence_set:
   reference_id: EVD-AZURE-KEYVAULT-CFG
   name: Azure Key Vault Configuration
   instructions: >
     Script: fetcher.py. Azure SDK calls (azure-mgmt-keyvault KeyVaultManagementClient):
-    vaults.list_by_subscription(). Management plane only. Maps to KSI-SVC-04,
-    KSI-SVC-06, KSI-IAM-04, KSI-RPL-03.
+    vaults.list_by_subscription(). Management plane only.

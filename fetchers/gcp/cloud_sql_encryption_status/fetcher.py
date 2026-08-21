@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-SVC-03 / KSI-RPL-03: GCP Cloud SQL Encryption at Rest
+KSI-SVC-SIN / KSI-RPL-ABO: GCP Cloud SQL Encryption at Rest
 
 For each Cloud SQL instance in one project, reports whether disk encryption at
 rest uses a customer-managed key (CMEK) or the Google-managed key, plus backup

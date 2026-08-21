@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-03
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-KAFKA-ENC
   name: MSK (Kafka) Encryption
-  instructions: 'Script: kafka_encryption_status.sh. Commands executed: aws kafka list-clusters-v2, aws kafka describe-cluster-v2. Maps to KSI-SVC-03.'
+  instructions: 'Script: kafka_encryption_status.sh. Commands executed: aws kafka list-clusters-v2, aws kafka describe-cluster-v2.'

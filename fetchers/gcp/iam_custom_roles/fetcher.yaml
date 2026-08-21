@@ -40,6 +40,9 @@ target_schema:
 
 secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
 
+ksis:
+  - KSI-IAM-ELP
+
 evidence_set:
   reference_id: EVD-GCP-IAM-CUSTOM-ROLES
   name: IAM Custom Role Definitions

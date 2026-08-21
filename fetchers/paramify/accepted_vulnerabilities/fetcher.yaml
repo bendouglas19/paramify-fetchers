@@ -65,5 +65,4 @@ evidence_set:
     the FedRAMP Accepted Vulnerability Info JSON.
 
 ksis:
-  - KSI-MLA-06
-  - KSI-MLA-03
+  - KSI-SVC-EIS

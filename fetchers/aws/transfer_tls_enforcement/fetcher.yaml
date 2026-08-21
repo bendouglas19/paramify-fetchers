@@ -25,11 +25,10 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-02
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-TRANSFER-TLS
@@ -39,4 +38,4 @@ evidence_set:
     servers, then `aws transfer describe-server --server-id <id>` to capture each
     server's Protocols (SFTP/FTPS/FTP/AS2) and SecurityPolicyName. Review that
     only TLS-protected protocols are enabled and that the security policy enforces
-    a modern TLS version. Maps to KSI-SVC-02.
+    a modern TLS version.

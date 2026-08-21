@@ -40,10 +40,13 @@ target_schema:
 secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
 
 ksis:
-  - KSI-CNA-02       # Attack surface / lateral movement — private nodes, private endpoint, network policy
-  - KSI-CNA-07       # Host & container hardening — shielded nodes, secure boot, integrity monitoring
-  - KSI-IAM-04       # Least privilege — legacy ABAC off, Workload Identity, non-default node service accounts
-  - KSI-SVC-07       # Risk-informed patching — node auto-upgrade + release channel
+  - KSI-CNA-IBP   # hardened-vs-default posture against Google's GKE guidance
+  - KSI-CNA-MAT   # private nodes + private control-plane endpoint + master-authorized networks
+  - KSI-CNA-ULN   # network policy
+  - KSI-IAM-ELP   # legacy ABAC — the one path that bypasses RBAC
+  - KSI-IAM-SNU   # Workload Identity — how pods authenticate
+  - KSI-SVC-EIS   # release channel + per-nodepool auto-upgrade / auto-repair
+  - KSI-SVC-VRI   # Binary Authorization + shielded nodes
 
 evidence_set:
   reference_id: EVD-GCP-GKE-CONFIG

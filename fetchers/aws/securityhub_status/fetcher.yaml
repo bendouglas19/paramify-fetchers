@@ -25,14 +25,13 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: Optional. AWS named profile for multi-account fanout; falls back to the ambient identity (IRSA / instance role / SSO / env) when omitted.
-
 secrets: []
 
 ksis:
-  - KSI-MLA-01
-  - KSI-MLA-06
+  - KSI-MLA-OSM
+  - KSI-CNA-IBP
 
 evidence_set:
   reference_id: EVD-SECURITYHUB
   name: Security Hub Status
-  instructions: 'Script: securityhub_status.sh. Commands executed: aws securityhub describe-hub, aws securityhub get-enabled-standards, aws securityhub list-enabled-products-for-import. Maps to KSI-MLA-06.'
+  instructions: 'Script: securityhub_status.sh. Commands executed: aws securityhub describe-hub, aws securityhub get-enabled-standards, aws securityhub list-enabled-products-for-import.'

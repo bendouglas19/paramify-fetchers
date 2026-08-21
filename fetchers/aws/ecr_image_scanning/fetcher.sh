@@ -1,5 +1,5 @@
 #!/bin/bash
-# KSI-TPR-04: Lists AWS ECR repositories with their image scan-on-push configuration,
+# KSI-SCR-MON: Lists AWS ECR repositories with their image scan-on-push configuration,
 # the registry scanning type/frequency, and a summary of the latest image scan findings.
 #
 # Output: $EVIDENCE_DIR/aws_ecr_image_scanning.json

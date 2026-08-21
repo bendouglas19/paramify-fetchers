@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-IAM-01
+  - KSI-IAM-APM
 
 evidence_set:
   reference_id: EVD-IAM-MFA
   name: IAM MFA Status
-  instructions: 'Script: iam_mfa_status.sh. Commands executed: aws iam get-account-summary, aws iam list-virtual-mfa-devices, aws iam list-users, aws iam list-mfa-devices. Maps to KSI-IAM-01.'
+  instructions: 'Script: iam_mfa_status.sh. Commands executed: aws iam get-account-summary, aws iam list-virtual-mfa-devices, aws iam list-users, aws iam list-mfa-devices.'

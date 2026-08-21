@@ -3,7 +3,7 @@
 # AWS — Kinesis Data Stream Encryption at Rest
 #
 # For each Kinesis data stream in the account/region, reports server-side
-# encryption type (NONE/KMS) and the KMS key id. Maps to KSI-SVC-03.
+# encryption type (NONE/KMS) and the KMS key id. Maps to KSI-SVC-SIN.
 #
 # Output: $EVIDENCE_DIR/aws_kinesis_encryption_status.json
 # Optional env (else the AWS CLI ambient identity/region): AWS_PROFILE, AWS_DEFAULT_REGION

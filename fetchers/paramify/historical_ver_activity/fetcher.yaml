@@ -70,5 +70,4 @@ evidence_set:
     operational, outside the fetcher).
 
 ksis:
-  - KSI-MLA-06
-  - KSI-MLA-03
+  - KSI-SVC-EIS

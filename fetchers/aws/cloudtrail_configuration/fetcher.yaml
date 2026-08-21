@@ -29,8 +29,8 @@ target_schema:
 secrets: []
 
 ksis:
-  - KSI-MLA-01
-  - KSI-CMT-01
+  - KSI-MLA-OSM
+  - KSI-CMT-LMC
 
 evidence_set:
   reference_id: EVD-CLOUDTRAIL-CONFIG

@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: Optional. AWS named profile for multi-account fanout; falls back to the ambient identity (IRSA / instance role / SSO / env) when omitted.
-
 secrets: []
 
 ksis:
-  - KSI-CNA-05
+  - KSI-CNA-RVP
 
 evidence_set:
   reference_id: EVD-SHIELD-DOS
   name: Shield Advanced DoS Protection
-  instructions: 'Script: shield_dos_protection.sh. Commands executed: aws shield get-subscription-state, aws shield list-protections. Maps to KSI-CNA-05.'
+  instructions: 'Script: shield_dos_protection.sh. Commands executed: aws shield get-subscription-state, aws shield list-protections.'

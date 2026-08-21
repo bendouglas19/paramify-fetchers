@@ -1,6 +1,6 @@
 #!/bin/bash
 # Collects API Gateway REST API endpoint configuration, stage-level security,
-# and custom domain name TLS minimum version (securityPolicy). Maps to KSI-SVC-02.
+# and custom domain name TLS minimum version (securityPolicy). Maps to KSI-SVC-SIN.
 # Output: $EVIDENCE_DIR/aws_apigateway_tls_enforcement_<target>.json
 # Optional env (else the AWS CLI ambient identity/region): AWS_PROFILE, AWS_DEFAULT_REGION
 # Required tools: aws, jq

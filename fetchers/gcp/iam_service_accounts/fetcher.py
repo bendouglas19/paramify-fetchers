@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-IAM-03 / KSI-IAM-04 / KSI-SVC-06: GCP IAM Service Accounts & Keys
+KSI-IAM-SNU / KSI-IAM-ELP / KSI-SVC-ASM: GCP IAM Service Accounts & Keys
 
 For each service account in one project: its key inventory split by key type, the
 project-level roles it holds, and who can impersonate it. The finding it exists to

@@ -38,8 +38,10 @@ target_schema:
     description: >
       Deployment environment label (e.g. prod / preprod) written into the evidence
       metadata. Optional — set per target for multi-subscription runs.
-
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+ksis:
+  - KSI-RPL-ABO
 
 evidence_set:
   reference_id: EVD-AZURE-BACKUP-RECOVERY
@@ -49,4 +51,3 @@ evidence_set:
     RecoveryServicesClient): vaults.list_by_subscription_id(); then
     (azure-mgmt-recoveryservicesbackup RecoveryServicesBackupClient):
     backup_policies.list(), backup_protected_items.list(). Retention threshold 30 days.
-    Maps to KSI-RPL-01, KSI-RPL-02, KSI-RPL-03, KSI-RPL-04.

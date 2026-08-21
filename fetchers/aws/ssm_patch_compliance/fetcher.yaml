@@ -25,14 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-01
-  - KSI-SVC-07
+  - KSI-SVC-EIS
 
 evidence_set:
   reference_id: EVD-SSM-PATCH
   name: AWS SSM Patch Compliance
-  instructions: 'Script: aws_ssm_patch_compliance.sh. Commands executed: aws ssm describe-instance-information, aws ssm list-resource-compliance-summaries --filters Key=ComplianceType,Values=Patch. Maps to KSI-SVC-07.'
+  instructions: 'Script: aws_ssm_patch_compliance.sh. Commands executed: aws ssm describe-instance-information, aws ssm list-resource-compliance-summaries --filters Key=ComplianceType,Values=Patch.'

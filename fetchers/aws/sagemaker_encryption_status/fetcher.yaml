@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-03
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-SAGEMAKER-ENC
   name: SageMaker Encryption
-  instructions: 'Script: sagemaker_encryption_status.sh. Commands executed: aws sagemaker list-notebook-instances, aws sagemaker describe-notebook-instance, aws sagemaker list-training-jobs, aws sagemaker describe-training-job, aws sagemaker list-endpoint-configs, aws sagemaker describe-endpoint-config. Maps to KSI-SVC-03.'
+  instructions: 'Script: sagemaker_encryption_status.sh. Commands executed: aws sagemaker list-notebook-instances, aws sagemaker describe-notebook-instance, aws sagemaker list-training-jobs, aws sagemaker describe-training-job, aws sagemaker list-endpoint-configs, aws sagemaker describe-endpoint-config.'

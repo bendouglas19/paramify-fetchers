@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-03
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-FSX-ENC
   name: FSx Encryption
-  instructions: 'Script: fsx_encryption_status.sh. Commands executed: aws fsx describe-file-systems. Maps to KSI-SVC-03.'
+  instructions: 'Script: fsx_encryption_status.sh. Commands executed: aws fsx describe-file-systems.'

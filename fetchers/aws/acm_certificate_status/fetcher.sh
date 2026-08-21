@@ -4,7 +4,7 @@
 #
 # For each ACM certificate in the target region, reports validation status,
 # expiry (NotAfter / days remaining), key algorithm, renewal eligibility, and
-# the resources currently using the certificate. Maps to KSI-SVC-06.
+# the resources currently using the certificate. Maps to KSI-SVC-ASM.
 #
 # Output: $EVIDENCE_DIR/aws_acm_certificate_status_<profile>_<region>.json
 # Optional env (else the AWS CLI ambient identity/region): AWS_PROFILE, AWS_DEFAULT_REGION
@@ -50,7 +50,7 @@ jq -n \
 
 # `aws acm list-certificates` defaults to returning only RSA_1024/RSA_2048
 # certificates; EC and larger-RSA certs are silently omitted. Pass the full
-# keyTypes filter (matching Prowler's ACM service) so KSI-SVC-06 sees every
+# keyTypes filter (matching Prowler's ACM service) so KSI-SVC-ASM sees every
 # certificate's key algorithm, not just the RSA defaults.
 cert_arns=$(aws acm list-certificates \
     --includes keyTypes=RSA_1024,RSA_2048,RSA_3072,RSA_4096,EC_prime256v1,EC_secp384r1,EC_secp521r1 \

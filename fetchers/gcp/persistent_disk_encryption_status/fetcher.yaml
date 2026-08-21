@@ -39,8 +39,9 @@ target_schema:
 secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
 
 ksis:
-  - KSI-SVC-03       # Protection of data at rest (mirrors aws block_storage_encryption_status)
-  - KSI-RPL-03       # Server-side/backup encryption — snapshots (mirrors aws ebs_snapshot_status)
+  - KSI-SVC-SIN      # Protection of data at rest, disks and snapshots (mirrors aws block_storage_encryption_status)
+  # No RPL-ABO: this reports snapshot *encryption*, not retention or alignment with
+  # recovery objectives. aws_ebs_snapshot_status / aws_dlm_lifecycle_policies own that.
 
 evidence_set:
   reference_id: EVD-GCP-PD-ENC

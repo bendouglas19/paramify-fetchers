@@ -1,6 +1,6 @@
 # gitlab_project_summary
 
-Inventories configuration files (Terraform, Dockerfiles, YAML configs, etc.) in a GitLab project repository. Evidence of information resource inventory (KSI-PIY-01).
+Inventories configuration files (Terraform, Dockerfiles, YAML configs, etc.) in a GitLab project repository. Evidence of information resource inventory (KSI-PIY-GIV).
 
 ## Fanout-capable
 

@@ -119,7 +119,7 @@ evidence's *intent* guide the pick:
 
 1. **What is this evidence supposed to prove?** Read `fetcher.yaml`'s
    `description` and `evidence_set.name`/`.instructions`. Many fetchers name their
-   KSI directly in the description (e.g. `KSI-IAM-01`, `KSI-CMT-03`); some
+   KSI directly in the description (e.g. `KSI-IAM-APM`, `KSI-CMT-VTD`); some
    payloads even carry `ksi`/`related_controls` inline (the okta ones do). That
    intent tells you which number matters.
 

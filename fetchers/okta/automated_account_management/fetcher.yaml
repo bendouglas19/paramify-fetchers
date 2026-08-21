@@ -1,6 +1,6 @@
 name: okta_automated_account_management
 version: 0.1.0
-description: FedRAMP 20x KSI-IAM-07 evidence. Collects automated account management evidence from Okta.
+description: FedRAMP KSI-IAM-AAM evidence. Collects automated account management evidence from Okta.
 category: okta
 
 supports_targets: false
@@ -20,9 +20,9 @@ secrets:
   env: OKTA_ORG_URL
 
 ksis:
-  - KSI-IAM-07
+  - KSI-IAM-AAM
 
 evidence_set:
   reference_id: EVD-OKTA-KSI-IAM-07
-  name: Okta Automated Account Management (KSI-IAM-07)
+  name: Okta Automated Account Management
   instructions: 'Script: okta_automated_account_management.py. Uses Okta APIs to collect account lifecycle monitoring and health evidence. Output: okta_automated_account_management.json'

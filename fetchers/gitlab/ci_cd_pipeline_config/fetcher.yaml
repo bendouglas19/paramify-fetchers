@@ -1,6 +1,6 @@
 name: gitlab_ci_cd_pipeline_config
 version: 0.1.0
-description: FedRAMP 20x KSI-CMT-03 evidence. Pulls .gitlab-ci.yml for a GitLab project and analyzes it for test stages, security scanning, deployment jobs, and artifact configuration. Single-target per invocation; runner does fanout.
+description: FedRAMP KSI-CMT-VTD evidence. Pulls .gitlab-ci.yml for a GitLab project and analyzes it for test stages, security scanning, deployment jobs, and artifact configuration. Single-target per invocation; runner does fanout.
 category: gitlab
 
 supports_targets: true
@@ -38,7 +38,8 @@ secrets:
   per_target: true
 
 ksis:
-  - KSI-CMT-03
+  - KSI-CMT-VTD
+  - KSI-CMT-RMV
 
 evidence_set:
   reference_id: EVD-GITLAB-CICD-CONFIG

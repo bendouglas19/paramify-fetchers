@@ -21,6 +21,10 @@ secrets:
 - name: base_url
   env: DATADOG_BASE_URL
 
+ksis:
+  - KSI-MLA-OSM
+  - KSI-MLA-RVL
+
 evidence_set:
   reference_id: EVD-DD-SIEM-RULES
   name: Datadog SIEM Detection Rules

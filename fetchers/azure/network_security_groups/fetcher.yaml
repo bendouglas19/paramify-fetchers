@@ -40,10 +40,8 @@ target_schema:
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
 
 ksis:
-  - KSI-CNA-01       # Limit and control inbound and outbound network traffic
-  - KSI-CNA-02       # Minimize the attack surface — no admin port open to the Internet
-  - KSI-CNA-03       # Logical traffic-flow controls and segmentation — subnet/NSG association
-  - KSI-CNA-05       # Protect against denial-of-service attacks — VNet DDoS protection
+  - KSI-CNA-RNT
+  - KSI-CNA-MAT
 
 evidence_set:
   reference_id: EVD-AZURE-NSG
@@ -51,4 +49,4 @@ evidence_set:
   instructions: >
     Script: fetcher.py. Azure SDK calls (azure-mgmt-network NetworkManagementClient):
     network_security_groups.list_all(), virtual_networks.list_all(). Maps to
-    KSI-CNA-01, KSI-CNA-02, KSI-CNA-03, KSI-CNA-05.
+    KSI-CNA-RNT / KSI-CNA-MAT.

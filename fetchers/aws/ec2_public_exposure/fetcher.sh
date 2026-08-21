@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# AWS — EC2 Public Exposure (KSI-CNA-02)
+# AWS — EC2 Public Exposure (KSI-CNA-MAT)
 #
 # Lists EC2 instances with public IP/DNS, IMDSv2 metadata options
 # (http_tokens, http_endpoint), and attached security groups.

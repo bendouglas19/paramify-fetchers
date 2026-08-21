@@ -39,9 +39,9 @@ target_schema:
 secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
 
 ksis:
-  - KSI-IAM-03       # Secure non-user / service-account authentication — key type and age
-  - KSI-IAM-04       # Least privilege — primitive/admin roles held by service accounts
-  - KSI-SVC-06       # Key management and rotation — user-managed key age vs the 90-day interval
+  - KSI-IAM-SNU       # Secure non-user / service-account authentication — key type and age
+  - KSI-IAM-ELP       # Least privilege — primitive/admin roles held by service accounts
+  - KSI-SVC-ASM       # Key management and rotation — user-managed key age vs the 90-day interval
 
 evidence_set:
   reference_id: EVD-GCP-IAM-SA

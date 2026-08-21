@@ -57,7 +57,7 @@ if [ $? -ne 0 ]; then
 fi
 
 # Patch compliance per resource (list_resource_compliance_summaries -> ComplianceResource:
-# id/status COMPLIANT|NON_COMPLIANT), scoped to ComplianceType=Patch for KSI-SVC-07.
+# id/status COMPLIANT|NON_COMPLIANT), scoped to ComplianceType=Patch for KSI-SVC-EIS.
 compliance=$(aws ssm list-resource-compliance-summaries \
     --filters Key=ComplianceType,Values=Patch \
     --query 'ResourceComplianceSummaryItems[*].{ResourceId:ResourceId,ResourceType:ResourceType,Status:Status,OverallSeverity:OverallSeverity}' \

@@ -1,6 +1,6 @@
 name: okta_non_user_accounts_authentication
 version: 0.1.0
-description: FedRAMP 20x KSI-IAM-03 evidence. Collects non-user accounts authentication evidence from Okta.
+description: FedRAMP KSI-IAM-SNU evidence. Collects non-user accounts authentication evidence from Okta.
 category: okta
 
 supports_targets: false
@@ -20,9 +20,9 @@ secrets:
   env: OKTA_ORG_URL
 
 ksis:
-  - KSI-IAM-03
+  - KSI-IAM-SNU
 
 evidence_set:
   reference_id: EVD-OKTA-KSI-IAM-03
-  name: Okta Non-User Accounts (KSI-IAM-03)
+  name: Okta Non-User Accounts
   instructions: 'Script: okta_non_user_accounts_authentication.py. Uses Okta APIs to identify non-user/service accounts using definitive indicators and automation credentials. Output: okta_non_user_accounts_authentication.json'

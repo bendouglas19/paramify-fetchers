@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# AWS — Resource Inventory (KSI-PIY-01)
+# AWS — Resource Inventory (KSI-PIY-GIV)
 #
 # Collects AWS Resource Explorer indexes and views as an asset inventory:
 # index ARN/region/type and view ARN/name/filters, plus the default view.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-PIY-01: GitLab Project Summary
+KSI-PIY-GIV: GitLab Project Summary
 
 Inventories configuration files (Terraform, Dockerfiles, YAML configs, etc.)
 in a GitLab project repository — evidence of information resource inventory.

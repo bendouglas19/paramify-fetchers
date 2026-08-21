@@ -60,7 +60,7 @@ if [ $list_exit -ne 0 ]; then
 else
     for project_name in $(aws_text_list "$project_names"); do
         # batch-get-projects returns the full project config; keep only the
-        # KSI-CMT-03 fields: source, environment, logging, artifact encryption.
+        # KSI-CMT-VTD fields: source, environment, logging, artifact encryption.
         project_info=$(aws codebuild batch-get-projects \
             --names "$project_name" \
             --query 'projects[0]' \

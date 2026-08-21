@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-KSI-IAM-01: Phishing-Resistant MFA
+Phishing-Resistant MFA
 
-Thin wrapper around okta_iam_core.py that runs only this KSI and outputs a dedicated JSON file.
+Thin wrapper around okta_iam_core.py that runs only this collector and outputs a dedicated JSON file.
 """
 
 import json
@@ -37,7 +37,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     fetcher = OktaIAMEvidenceFetcher(skip_compatibility_check=skip_check)
-    evidence = fetcher.collect_ksi_iam_01()
+    evidence = fetcher.collect_phishing_resistant_mfa()
 
     output_path = output_dir / "okta_phishing_resistant_mfa.json"
     with open(output_path, "w") as f:

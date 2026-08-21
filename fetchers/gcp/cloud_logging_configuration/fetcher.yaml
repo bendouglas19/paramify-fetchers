@@ -39,8 +39,8 @@ target_schema:
 secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
 
 ksis:
-  - KSI-MLA-01       # Centralized, tamper-resistant logging — sinks, locked buckets, retention, CMEK
-  - KSI-CMT-01       # Log and monitor system modifications — audit-log sinks + metric/alert pairs
+  - KSI-MLA-OSM
+  - KSI-CMT-LMC
 
 evidence_set:
   reference_id: EVD-GCP-LOGGING-CONFIG

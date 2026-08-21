@@ -43,6 +43,14 @@ target_schema:
 
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
 
+ksis:
+  - KSI-SVC-SIN   # minimum TLS version
+  - KSI-CNA-MAT   # public network access
+  - KSI-CNA-RNT   # firewall rules, with allow-all-Azure and whole-internet rules flagged
+  - KSI-IAM-APM   # Entra ID administrator and whether Entra-only auth is enforced
+  - KSI-MLA-LET   # server blob auditing policies and their retention
+  - KSI-SVC-EIS   # vulnerability assessment recurring scans, Defender for SQL
+
 evidence_set:
   reference_id: EVD-AZURE-SQL-CONFIG
   name: Azure SQL Server Configuration

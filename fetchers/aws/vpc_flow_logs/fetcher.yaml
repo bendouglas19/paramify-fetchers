@@ -25,14 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-CNA-03
-  - KSI-MLA-01
+  - KSI-MLA-LET
 
 evidence_set:
   reference_id: EVD-VPC-FLOW-LOGS
   name: VPC Flow Logs
-  instructions: 'Script: fetcher.sh. Commands executed: aws ec2 describe-vpcs, aws ec2 describe-flow-logs. Maps to KSI-CNA-03.'
+  instructions: 'Script: fetcher.sh. Commands executed: aws ec2 describe-vpcs, aws ec2 describe-flow-logs.'

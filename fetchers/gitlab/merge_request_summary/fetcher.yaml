@@ -1,6 +1,6 @@
 name: gitlab_merge_request_summary
 version: 0.1.0
-description: FedRAMP 20x KSI-CMT-04 evidence. Pulls recent merge requests for a GitLab project with approval, discussion, and timing metadata to demonstrate change-management process. Single-target per invocation; runner does fanout.
+description: FedRAMP KSI-CMT-LMC evidence. Pulls recent merge requests for a GitLab project with approval, discussion, and timing metadata to demonstrate change-management process. Single-target per invocation; runner does fanout.
 category: gitlab
 
 supports_targets: true
@@ -50,7 +50,7 @@ secrets:
   per_target: true
 
 ksis:
-  - KSI-CMT-04
+  - KSI-CMT-LMC
 
 evidence_set:
   reference_id: EVD-GITLAB-MR-SUMMARY

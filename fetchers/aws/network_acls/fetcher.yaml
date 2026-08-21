@@ -25,14 +25,13 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-CNA-01
-  - KSI-CNA-03
+  - KSI-CNA-RNT
+  - KSI-CNA-ULN
 
 evidence_set:
   reference_id: EVD-NETWORK-ACLS
   name: Network ACLs
-  instructions: 'Script: fetcher.sh. Commands executed: aws ec2 describe-network-acls. Maps to KSI-CNA-01.'
+  instructions: 'Script: fetcher.sh. Commands executed: aws ec2 describe-network-acls.'

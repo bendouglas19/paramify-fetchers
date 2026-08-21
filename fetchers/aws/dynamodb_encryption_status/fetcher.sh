@@ -70,7 +70,7 @@ else
         kms_arn=$(echo "$table_details" | jq -r '.Table.SSEDescription.KMSMasterKeyArn // "None"')
         sse_status=$(echo "$table_details" | jq -r '.Table.SSEDescription.Status // "DEFAULT"')
 
-        # Customer-managed/AWS-managed KMS encryption is the hardened state for KSI-SVC-03.
+        # Customer-managed/AWS-managed KMS encryption is the hardened state for KSI-SVC-SIN.
         [ "$sse_type" = "KMS" ] && encrypted_tables=$((encrypted_tables + 1))
 
         table_data=$(jq -n --arg name "$table" --arg sse "$sse_type" \

@@ -22,6 +22,9 @@ secrets:
   env: DATADOG_BASE_URL
 - name: incidents_lookback_days
   env: DATADOG_INCIDENTS_LOOKBACK_DAYS
+ksis:
+  - KSI-INR-AAR
+
 evidence_set:
   reference_id: EVD-DD-INCIDENT-TIMELINES
   name: Datadog Incident Timelines

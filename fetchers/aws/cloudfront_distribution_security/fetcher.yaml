@@ -25,14 +25,13 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-CNA-05
-  - KSI-SVC-02
+  - KSI-SVC-SIN
+  - KSI-CNA-RVP
 
 evidence_set:
   reference_id: EVD-CLOUDFRONT-SECURITY
   name: AWS CloudFront Distribution Security
-  instructions: 'Script: aws_cloudfront_distribution_security.sh. Commands executed: aws cloudfront list-distributions, aws cloudfront get-distribution-config. Maps to KSI-SVC-02.'
+  instructions: 'Script: aws_cloudfront_distribution_security.sh. Commands executed: aws cloudfront list-distributions, aws cloudfront get-distribution-config.'

@@ -38,8 +38,8 @@ target_schema:
 secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
 
 ksis:
-  - KSI-SVC-03       # Protection of data at rest (mirrors aws rds_encryption_status)
-  - KSI-RPL-03       # Server-side backup protection — settings.backupConfiguration
+  - KSI-SVC-SIN
+  - KSI-RPL-ABO
 
 evidence_set:
   reference_id: EVD-GCP-CLOUDSQL-ENC

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-CMT-04: GitLab Merge Request Summary
+KSI-CMT-LMC: GitLab Merge Request Summary
 
 Pulls recent merge requests for a single GitLab project with approval,
 discussion, and timing metadata — evidence of change-management process.

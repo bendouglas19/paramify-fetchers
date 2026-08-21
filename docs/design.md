@@ -117,7 +117,7 @@ Example for the first ported fetcher:
 name: okta_phishing_resistant_mfa
 version: 0.1.0
 description: >
-  FedRAMP 20x KSI-IAM-01 evidence. Collects phishing-resistant MFA
+  FedRAMP KSI-IAM-APM evidence. Collects phishing-resistant MFA
   configuration and adoption from Okta.
 category: okta
 

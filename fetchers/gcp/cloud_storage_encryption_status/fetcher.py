@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-SVC-03 / KSI-RPL-03: GCP Cloud Storage Encryption at Rest
+KSI-SVC-SIN / KSI-RPL-ABO: GCP Cloud Storage Encryption at Rest
 
 For each Cloud Storage bucket in one project, reports whether the default
 encryption uses a customer-managed key (CMEK) or the Google-managed key, and the

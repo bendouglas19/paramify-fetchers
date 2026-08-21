@@ -11,7 +11,7 @@ Read / discover:
   paramify list [--json]                       # discovered fetchers (flat)
   paramify catalog [--json]                    # categories -> fetchers -> fields
   paramify describe <fetcher> [--json]
-  paramify ksi [--json]                        # FedRAMP 20x KSI coverage
+  paramify ksi [--json]                        # FedRAMP KSI coverage
   paramify doctor [manifest] [--probe] [--json]  # preflight: deps, manifest, upload
   paramify manifests [--json]                  # discovered run manifests
   paramify runs [--output-dir DIR] [--json]    # past runs under an output dir
@@ -375,7 +375,7 @@ def describe_cmd(
 
 @app.command("ksi")
 def ksi_cmd(json_out: bool = typer.Option(False, "--json", help="Emit JSON")):
-    """Show FedRAMP 20x KSI coverage across discovered fetchers."""
+    """Show FedRAMP KSI coverage across discovered fetchers."""
     root = api.find_repo_root()
     cov = api.ksi_coverage(root)
     if json_out:
@@ -383,7 +383,7 @@ def ksi_cmd(json_out: bool = typer.Option(False, "--json", help="Emit JSON")):
         return
     s = cov["summary"]
     release = cov["release"].split("—", 1)[-1].strip() if "—" in cov["release"] else cov["release"]
-    typer.echo("FedRAMP 20x KSI coverage")
+    typer.echo("FedRAMP KSI coverage")
     typer.echo(f"{release}\n")
 
     bar_w = 10

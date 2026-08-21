@@ -43,6 +43,9 @@ target_schema:
 
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
 
+ksis:
+  - KSI-SVC-SIN
+
 evidence_set:
   reference_id: EVD-AZURE-SQL-ENC
   name: Azure SQL Transparent Data Encryption

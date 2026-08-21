@@ -3,7 +3,7 @@
 # AWS — VPC Flow Logs
 #
 # Lists each VPC and whether flow logging is enabled, plus the flow log
-# destination and traffic type when present. Maps to KSI-CNA-03.
+# destination and traffic type when present. Maps to KSI-MLA-LET.
 #
 # Output: $EVIDENCE_DIR/aws_vpc_flow_logs.json
 # Optional env (else the AWS CLI ambient identity/region): AWS_PROFILE, AWS_DEFAULT_REGION

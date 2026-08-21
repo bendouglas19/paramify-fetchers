@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-SVC-03
+  - KSI-SVC-SIN
 
 evidence_set:
   reference_id: EVD-SNS-ENC
   name: SNS Encryption
-  instructions: 'Script: sns_encryption_status.sh. Commands executed: aws sns list-topics, aws sns get-topic-attributes. Maps to KSI-SVC-03.'
+  instructions: 'Script: sns_encryption_status.sh. Commands executed: aws sns list-topics, aws sns get-topic-attributes.'

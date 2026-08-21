@@ -4,7 +4,7 @@
 #
 # Lists AWS Network Firewall firewalls and, for each, the firewall policy's
 # default actions and the stateless/stateful rule groups it references (with
-# per-group rule counts). Maps to KSI-CNA-01.
+# per-group rule counts). Maps to KSI-CNA-RNT.
 #
 # Output: $EVIDENCE_DIR/aws_network_firewall_rules_<target>.json
 # Optional env (else the AWS CLI ambient identity/region): AWS_PROFILE, AWS_DEFAULT_REGION

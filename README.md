@@ -32,19 +32,19 @@ Fetchers are small scripts that collect compliance evidence from your infrastruc
 
 </div>
 
-| Category | Fetchers | What it collects | Status |
-|---|---:|---|---|
-| **AWS** | 80 | Encryption at rest, IAM, high availability, logging, network segmentation — across the AWS service surface | ✅ complete |
-| **Azure** | 27 | Storage/disk/SQL encryption and CMK use, Entra identity + Conditional Access, RBAC assignments and custom roles, network security groups, Key Vault config and key rotation, Defender plans, diagnostic settings and activity-log alerts, backup, and the managed databases | broad coverage |
-| **GCP** | 19 | Disk/bucket/Cloud SQL/BigQuery/Secret Manager encryption and CMEK use, IAM policy bindings, custom roles and service-account keys, KMS key rotation, GKE cluster hardening, Cloud Logging sinks and metric alerts, VPC/firewall/DNS segmentation, load-balancer TLS, and API keys | broad coverage |
-| **Datadog** | 13 | Cloud SIEM detection rules & signals, log pipelines/indexes/archives, host & container inventory, agent checks, APM services, and incidents with timelines | broad coverage |
-| **Okta** | 8 | Phishing-resistant MFA, authenticators, least privilege, just-in-time access, account management | starter set |
-| **SentinelOne** | 5 | Agents, activities, cloud detection rules, XDR assets, user config | starter set |
-| **KnowBe4** | 4 | Security-awareness, high-risk, developer, and module-based training summaries | starter set |
-| **GitLab** | 3 | CI/CD pipeline config, merge-request and project summaries | starter set |
-| **Kubernetes** | 3 | EKS pod inventory, microservice segmentation, `kubectl` security posture | starter set |
-| **Rippling** | 3 | Employee roster, current employees, managed devices | starter set |
-| **Checkov** | 2 | IaC scans over cloned Terraform / Kubernetes source | starter set |
+| Category | Fetchers | What it collects |
+|---|---:|---|
+| **AWS** | 80 | Encryption at rest, IAM, high availability, logging, network segmentation — across the AWS service surface |
+| **Azure** | 27 | Storage/disk/SQL encryption and CMK use, Entra identity + Conditional Access, RBAC assignments and custom roles, network security groups, Key Vault config and key rotation, Defender plans, diagnostic settings and activity-log alerts, backup, and the managed databases |
+| **GCP** | 19 | Disk/bucket/Cloud SQL/BigQuery/Secret Manager encryption and CMEK use, IAM policy bindings, custom roles and service-account keys, KMS key rotation, GKE cluster hardening, Cloud Logging sinks and metric alerts, VPC/firewall/DNS segmentation, load-balancer TLS, and API keys |
+| **Datadog** | 13 | Cloud SIEM detection rules & signals, log pipelines/indexes/archives, host & container inventory, agent checks, APM services, and incidents with timelines |
+| **Okta** | 8 | Phishing-resistant MFA, authenticators, least privilege, just-in-time access, account management |
+| **SentinelOne** | 5 | Agents, activities, cloud detection rules, XDR assets, user config |
+| **KnowBe4** | 4 | Security-awareness, high-risk, developer, and module-based training summaries |
+| **GitLab** | 4 | CI/CD pipeline config, merge-request and project summaries, significant change notifications |
+| **Kubernetes** | 3 | EKS pod inventory, microservice segmentation, `kubectl` security posture |
+| **Rippling** | 3 | Employee roster, current employees, managed devices |
+| **Checkov** | 2 | IaC scans over cloned Terraform / Kubernetes source |
 
 ### Coming soon
 
@@ -177,7 +177,7 @@ The full command surface:
 paramify list                  # discovered fetchers (flat)
 paramify catalog               # categories → fetchers → editable fields
 paramify describe <fetcher>    # one fetcher's config / secrets / target fields
-paramify ksi                   # FedRAMP 20x KSI coverage
+paramify ksi                   # FedRAMP KSI coverage
 paramify doctor   [manifest]   # preflight: Python, CLIs/packages, manifest, upload
 paramify manifests             # discovered run manifests (manifests/*.yaml)
 paramify validate <manifest>   # validate a manifest without running
@@ -428,7 +428,7 @@ abbreviated:
     "evidence_set": {
       "reference_id": "EVD-VPC-SEGMENTATION",
       "name": "VPC Network Segmentation",
-      "instructions": "Script: fetcher.sh. Commands: aws ec2 describe-vpcs, describe-subnets, describe-vpc-peering-connections, describe-vpc-endpoints. Maps to KSI-CNA-03.",
+      "instructions": "Script: fetcher.sh. Commands: aws ec2 describe-vpcs, describe-subnets, describe-vpc-peering-connections, describe-vpc-endpoints.",
       "description": "Lists VPCs, subnets, peering connections, and endpoints to document network topology and segmentation."
     }
   },
@@ -518,6 +518,7 @@ To add evidence collection for a new control or a new tool, see [`docs/authoring
 | [`docs/uploader_design.md`](docs/uploader_design.md) | How both uploaders work + the shared evidence-set identity model |
 | [`docs/authoring_a_fetcher.md`](docs/authoring_a_fetcher.md) | Writing a new fetcher from scratch |
 | [`docs/fetcher_contract.md`](docs/fetcher_contract.md) | The binding runner↔fetcher contract |
+| [`docs/ksi_mapping.md`](docs/ksi_mapping.md) | Which fetchers map to which FedRAMP KSIs, per indicator and per fetcher, plus open gaps |
 | [`docs/run_manifest_reference.md`](docs/run_manifest_reference.md) | Manifest format reference |
 | [`docs/config_injection_design.md`](docs/config_injection_design.md) | Platform/config/auth model |
 | [`docs/design.md`](docs/design.md) | Why the framework is shaped this way + current state of the work |

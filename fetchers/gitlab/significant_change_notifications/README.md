@@ -4,7 +4,7 @@ Turns GitLab merge requests that engineering flagged as significant changes into
 FedRAMP Significant Change Notifications (SCN-CSO-INF), validated against
 [FedRAMP's SCN schema, 2026-06-24](https://www.fedramp.gov/schemas/fedramp-significant-change-notifications-schema-2026-06-24.json).
 
-Evidence for change-management (KSI-CMT-04) and the SCN obligation itself.
+Evidence for change-management (KSI-CMT-LMC) and the SCN obligation itself.
 
 ## What it does
 

@@ -25,13 +25,13 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-IAM-04
+  - KSI-IAM-ELP
+  - KSI-CNA-DFP
 
 evidence_set:
   reference_id: EVD-ORGANIZATIONS-SCP
   name: Organizations Service Control Policies
-  instructions: 'Script: organizations_scp.sh. Commands executed: aws organizations describe-organization, aws organizations list-roots, aws organizations list-policies --filter SERVICE_CONTROL_POLICY, aws organizations describe-policy, aws organizations list-targets-for-policy. Maps to KSI-IAM-04.'
+  instructions: 'Script: organizations_scp.sh. Commands executed: aws organizations describe-organization, aws organizations list-roots, aws organizations list-policies --filter SERVICE_CONTROL_POLICY, aws organizations describe-policy, aws organizations list-targets-for-policy.'

@@ -113,7 +113,7 @@
 
     "ksis": {
       "type": "array",
-      "description": "FedRAMP 20x Key Security Indicators this fetcher's evidence speaks to (1 or more). Intrinsic to the fetcher, not a per-customer control mapping (those stay Paramify-side).",
+      "description": "FedRAMP Key Security Indicators this fetcher's evidence speaks to (1 or more). Intrinsic to the fetcher, not a per-customer control mapping (those stay Paramify-side).",
       "items": { "type": "string" }
     },
 

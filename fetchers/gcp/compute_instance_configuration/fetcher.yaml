@@ -39,6 +39,11 @@ target_schema:
 
 secrets: []          # ADC only — no handed-over secret (see _categories/gcp.yaml)
 
+ksis:
+  - KSI-CNA-MAT
+  - KSI-SVC-VRI
+  - KSI-IAM-APM
+
 evidence_set:
   reference_id: EVD-GCP-VM-CONFIG
   name: Compute Engine Instance Configuration

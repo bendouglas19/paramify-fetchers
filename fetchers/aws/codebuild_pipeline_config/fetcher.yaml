@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-CMT-03
+  - KSI-CMT-VTD
 
 evidence_set:
   reference_id: EVD-CODEBUILD-CONFIG
   name: AWS CodeBuild Pipeline Configuration
-  instructions: 'Script: aws_codebuild_pipeline_config.sh. Commands executed: aws codebuild list-projects, aws codebuild batch-get-projects (collects per-project source, environment, logsConfig, and artifacts encryption). Maps to KSI-CMT-03.'
+  instructions: 'Script: aws_codebuild_pipeline_config.sh. Commands executed: aws codebuild list-projects, aws codebuild batch-get-projects (collects per-project source, environment, logsConfig, and artifacts encryption).'

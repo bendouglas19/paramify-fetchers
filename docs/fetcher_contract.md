@@ -39,7 +39,7 @@ Every fetcher ships a `fetcher.yaml` in its directory. The schema is enforced; s
 | `target_schema.<field>.env` | string | Env var the runner sets from this field per target |
 | `depends_on` | array | Fetcher names this one depends on (not yet honored by the runner) |
 | `evidence_set` | object | Paramify evidence-set identity: `{reference_id, name, instructions?}`. Carried into envelope metadata and used by the uploader to get-or-create the set. |
-| `ksis` | array | FedRAMP 20x KSIs this fetcher's evidence speaks to (1+). Intrinsic to the fetcher; per-customer control mappings stay Paramify-side. |
+| `ksis` | array | FedRAMP KSIs this fetcher's evidence speaks to (1+) — *suggested / related* mappings, not a claim that the fetcher alone satisfies the indicator. Intrinsic to the fetcher; per-customer control mappings stay Paramify-side. |
 | `validators` | array | Regex checks over the evidence payload that show the control is being implemented. Each entry: `{id, regex, proves?, failure_modes?}` (`id` + `regex` required); each regex matches the whole payload. |
 
 ---

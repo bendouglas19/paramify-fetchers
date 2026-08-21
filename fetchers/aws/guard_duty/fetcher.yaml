@@ -29,8 +29,7 @@ target_schema:
 secrets: []
 
 ksis:
-  - KSI-MLA-03
-  - KSI-IAM-06
+  - KSI-MLA-RVL
 
 evidence_set:
   reference_id: EVD-GUARD-DUTY

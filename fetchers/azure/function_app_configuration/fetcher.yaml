@@ -42,6 +42,10 @@ target_schema:
 
 secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
 
+ksis:
+  - KSI-CNA-MAT
+  - KSI-SVC-SIN
+
 evidence_set:
   reference_id: EVD-AZURE-FUNCAPP-CONFIG
   name: Azure Function App Configuration

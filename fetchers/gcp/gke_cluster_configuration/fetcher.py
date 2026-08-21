@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KSI-CNA-02 / KSI-CNA-07 / KSI-IAM-04 / KSI-SVC-07: GKE Cluster Configuration
+KSI-CNA-IBP / KSI-CNA-MAT / KSI-CNA-ULN / KSI-IAM-ELP / KSI-IAM-SNU / KSI-SVC-EIS / KSI-SVC-VRI: GKE Cluster Configuration
 
 Every GKE cluster in one project with the posture that separates a hardened
 cluster from a default one: private nodes and control-plane endpoint,

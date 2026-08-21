@@ -25,13 +25,12 @@ target_schema:
     required: false
     env: AWS_PROFILE
     description: AWS named profile (credentials resolved from ~/.aws / SSO).
-
 secrets: []
 
 ksis:
-  - KSI-RPL-03
+  - KSI-RPL-ABO
 
 evidence_set:
   reference_id: EVD-DLM-LIFECYCLE
   name: Data Lifecycle Manager Policies
-  instructions: 'Script: fetcher.sh. Commands executed: aws dlm get-lifecycle-policies, aws dlm get-lifecycle-policy. Captures DLM policy state, type, target tags, schedules, and retention rules. Maps to KSI-RPL-03.'
+  instructions: 'Script: fetcher.sh. Commands executed: aws dlm get-lifecycle-policies, aws dlm get-lifecycle-policy. Captures DLM policy state, type, target tags, schedules, and retention rules.'
