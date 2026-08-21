@@ -27,8 +27,9 @@ they'll attach in Paramify, not an artifact this repo stores or executes.
   counts. You cannot author a meaningful "proves the control" regex from that.
   If the newest evidence looks empty, say so and stop (Phase 1).
 - **Anchor on the key name plus a value pattern**, never on byte position or
-  whitespace. `"completion_rate":\s*(?:100|[1-9][0-9])`, not a brittle slice of
-  pretty-printed JSON. Key ordering and indentation vary between runs.
+  whitespace. `"completion_rate":\s*(?<completion_rate>100|[1-9][0-9])`, not a
+  brittle slice of pretty-printed JSON. Key ordering and indentation vary
+  between runs.
 - **Every suggestion ships with three lines: what it asserts, what it does NOT
   assert, and when it (correctly) fails.** A regex without its failure mode is a
   false sense of coverage.
@@ -37,7 +38,9 @@ they'll attach in Paramify, not an artifact this repo stores or executes.
   Paramify's validator sees. So avoid anchor keys that collide with envelope
   metadata (`fetcher_name`, `fetcher_version`, `category`, `run_id`, `target`,
   `collected_at`, `status`, `exit_code`, `error`, `evidence_set`,
-  `schema_version`) unless you pin a payload-specific value too.
+  `schema_version`) unless you pin a payload-specific value too. The one
+  sanctioned exception is `exit_code` in a Phase 3b error rule, where the
+  envelope *is* the subject of the check.
 
 ---
 
@@ -99,8 +102,8 @@ PY
   coarse: **static descriptive fields can mask empty measurements.** A payload
   that carries a control name, a `ksi` string, or a `related_controls` list will
   read as HAS DATA even if every *measured* value (the MFA percentages, the
-  enabled-counts) is empty or zero. (The okta smoke-test payloads in this repo do
-  exactly this.) So the authoritative emptiness check is field-specific and
+  enabled-counts) is empty or zero. (The okta smoke-test payloads do exactly
+  this.) So the authoritative emptiness check is field-specific and
   happens once you've picked the critical field (Phase 2) and run the match
   (Phase 4): if your chosen metric matches **0 times** on a `success` run, the
   evidence is empty *for that metric* — loop back here and ask for a populated
@@ -158,12 +161,26 @@ variant. Rules:
 - Boolean/enum: `true`, or `"Passed"` — pin the *compliant* value.
 - Non-empty array of objects: `"<key>"\s*:\s*\[\s*\{` (note in the explanation
   that this one is the most formatting-sensitive).
-- Use standard PCRE / Python-`re` syntax (`\s`, `(?:…)`, classes). Tell the user
-  to confirm the flavor matches Paramify's validator engine.
+- **Paramify's validator engine is ECMAScript (JavaScript) regex** — write for
+  that flavor. The `g` and `s` flags are applied automatically; `m` is not, so
+  `^`/`$` match the whole document and you should span lines with `[\s\S]*?`.
+  The common constructs (`\s`, `(?:…)`, classes, lookaheads) are identical in
+  Python and JS, so most patterns port cleanly — but **named groups do not**:
+  JS uses `(?<name>…)`, Python uses `(?P<name>…)`, and each fails to compile in
+  the other. Always emit `(?<name>…)`.
+- **Name every capture group.** `(?<alb_total_count>\d+)` is self-documenting
+  where a bare `(\d+)` forces the reader to count parentheses. Derive the name
+  from the key being captured, in `snake_case` (`BackupRetentionPeriod` →
+  `backup_retention_period`); names must be unique within one pattern.
+  Naming does **not** renumber anything — `(?<x>…)` is still group 1 — so
+  Paramify's rule table, which references groups by number, is unaffected.
+  (Adding the Phase 3b error anchor *does* shift the numbers, because it puts a
+  group in front of yours — see that section.)
 
-**Worked example (knowbe4 — the populated file in this repo):**
+**Worked example (from a populated knowbe4 run — `evidence/` is gitignored, so
+this is the shape to copy, not a file you can open):**
 
-> Presence: `"completion_rate"\s*:\s*(?:100|[1-9][0-9])`
+> Presence: `"completion_rate"\s*:\s*(?<completion_rate>100|[1-9][0-9])`
 > - **Asserts:** a `completion_rate` of 10–100 exists — real, non-zero training
 >   completion data was returned.
 > - **Does NOT assert:** a coverage threshold across all modules; just that one
@@ -171,34 +188,122 @@ variant. Rules:
 > - **Fails when:** the payload is empty, all rates are single-digit, or the
 >   field is absent — exactly the "evidence doesn't prove the control" case.
 >
-> Stronger: `"completion_rate"\s*:\s*(?:100|9[0-9])` requires ≥90%.
-> Alternative anchor: `"status"\s*:\s*"Passed"` proves ≥1 passing completion
-> (simpler, weaker — silent on coverage).
+> Stronger: `"completion_rate"\s*:\s*(?<completion_rate>100|9[0-9])` requires ≥90%.
+> Alternative anchor: `"status"\s*:\s*"(?<enrollment_status>Passed)"` proves ≥1
+> passing completion (simpler, weaker — silent on coverage).
 
 Tailor the same pattern to the fetcher in front of you.
 
 ---
 
+## Phase 3b — Add an error state (recommended)
+
+Paramify validation rules carry a **disposition** of Pass, Fail, or **Error**.
+The distinction matters: a Fail means the evidence was collected and the control
+looks bad; an Error means the evidence never arrived, so compliance is *unknown*.
+Without an Error rule, an expired token or a network timeout is indistinguishable
+from a real compliance failure — the fetcher returns no payload, the regex finds
+nothing, and the artifact reports Fail.
+
+**The envelope already carries the signal.** `wrap_outputs` sets
+`"status": "success" if exit_code == 0 else "failed"`, so `status` and
+`exit_code` are perfectly redundant — anchor on `exit_code` alone. It is numeric,
+appears once in the envelope, and avoids the `status` key collision (the
+envelope says `failed` while a payload may say `error` — two different
+vocabularies for the same event).
+
+The envelope contributes only that one `exit_code`, but a fetcher that wraps a
+subprocess can serialize its own into the payload. Confirm the Phase 4 match
+count is exactly 1 before trusting the rules below: Rule 01 only fires on *zero*
+matches, so a second `exit_code` reads as healthy while Match Group 1 silently
+binds to whichever match comes first.
+
+Build the pattern as **the error anchor first, then the compliance pattern in an
+optional group**, so it matches exactly once whether or not the payload arrived:
+
+```
+"exit_code":\s*(?<exit_code>-?\d+)(?:[\s\S]*?<your Phase 3 pattern>)?
+```
+
+Suggested rules (Paramify evaluates Error rules first, then Fail, then Pass —
+so an error short-circuits the compliance rules regardless of Index order):
+
+| Index | Operation | Criteria | Value | Disposition |
+|-------|-----------|----------|-------|-------------|
+| 01 | Match Count | Equals | `0` | Error |
+| 02 | Match Group 1 (`exit_code`) | Not Equals | `0` | Error |
+| 03+ | Match Group 2+ (your Phase 3 group(s)) | … | … | Pass |
+
+**The anchor renumbers your groups.** `exit_code` takes group 1, so the Phase 3
+groups shift up — the first one you named is now group 2. A rule you already
+wrote against group 1 will read the exit code instead of your evidence field, so
+renumber those rules when you adopt this pattern. The Phase 4 snippet prints
+`m.groups` in pattern order, so — with every group named, as Phase 3 requires —
+the Nth entry is group N. Read the numbering off that instead of counting
+parentheses.
+
+Rule 01 is the **drift canary**. Because the compliance half is optional, a
+well-formed envelope always yields exactly one match — so zero matches means the
+`exit_code` anchor itself is gone (envelope restructured, file truncated, wrong
+artifact). That case would otherwise pass silently, since a Match Group rule with
+nothing to read does not fail. Rule 01 turns that silence into an Error.
+
+**Do not pin `schema_version`.** It reads like prudent version-safety but fails
+in the dangerous direction: a bump to `2.0` that leaves `exit_code` untouched
+would stop the pattern matching entirely, and a zero-match validator passes
+silently rather than erroring. Rule 01 gives strictly better coverage — it fires
+on *any* structural change that breaks the anchor, not just a version bump, and
+it fails loudly. If a workspace wants an explicit envelope-contract check, that
+belongs in one dedicated validator applied across all fetcher evidence sets, not
+duplicated into every per-fetcher validator.
+
+Note this is the one sanctioned exception to the envelope-key golden rule:
+anchoring on `exit_code` is deliberate, because here the envelope *is* the
+subject of the check.
+
+---
+
 ## Phase 4 — Show it matching, then hand it over
 
-1. **Prove the regex hits the real file** (portable, no `grep -P` — BSD grep on
-   macOS lacks it):
+1. **Prove the regex hits the real file.** Verify in **Node**, not Python —
+   Paramify runs ECMAScript, so testing in the target flavor is what makes the
+   check meaningful (and `(?<name>…)` will not compile under Python `re` at all).
+   Avoid `grep -P`; BSD grep on macOS lacks it.
    ```bash
-   .venv/bin/python - <<'PY'
-   import re
-   t = open("<path>").read()
-   rx = r'<your regex>'
-   m = re.findall(rx, t)
-   print(f"{len(m)} match(es):", m[:5])
-   PY
+   node -e '
+   const fs = require("fs");
+   const t = fs.readFileSync("<path>", "utf8");
+   const re = new RegExp(String.raw`<your regex>`, "gs");
+   let m, n = 0;
+   while ((m = re.exec(t)) !== null) {
+     if (n < 5) console.log("match:", m.groups ?? m[0].slice(0, 80));
+     n++;
+   }
+   console.log(n + " match(es)");
+   '
    ```
+   The `gs` flags mirror Paramify, which applies `g` and `s` automatically.
    A non-zero match count on real evidence = the suggestion works. If it matches
    **0 times on a `success` run**, the evidence is empty for this metric (Phase 1
    triage missed it because static fields masked the emptiness) — go back to
-   Phase 1 and ask the user for a populated run. Optionally demonstrate the
-   failure mode by showing the regex returns 0 against an empty smoke-test file of
-   the same fetcher (if one exists) — that's what makes it a validator and not
-   just a field-finder.
+   Phase 1 and ask the user for a populated run.
+
+   **Test both directions.** A regex that only ever matches proves nothing — run
+   it against a payload that *should* fail (an empty smoke-test file of the same
+   fetcher, or a copy with the key value edited below threshold). What failure
+   looks like depends on which pattern you built:
+
+   - **A plain Phase 3 pattern** drops to **0 matches**.
+   - **A Phase 3b pattern still matches once.** The compliance half is optional —
+     that is exactly what Rule 01's canary depends on — so the count stays 1 and
+     the *group* carries the signal: the snippet prints `{"exit_code":"0"}` with
+     your compliance name absent from the object. Do **not** "fix" this by
+     removing the optional wrapper; that deletes the canary and makes a missing
+     envelope indistinguishable from a missing metric.
+
+   If you added a Phase 3b error rule, also run it against a `failed` run and
+   confirm `exit_code` captures non-zero. That contrast is what makes it a
+   validator and not just a field-finder.
 
 2. **Hand over the regex, the explanation, and the boundary.** State plainly:
    this is a *suggested* validator derived from one evidence sample — use it
@@ -216,7 +321,14 @@ Tailor the same pattern to the fetcher in front of you.
   proves nothing.
 - Anchoring on an envelope-metadata key (`status`, `category`, `name`, …) without
   pinning a payload value, so it matches the wrapper instead of the evidence.
+  (`exit_code` in a Phase 3b error rule is the deliberate exception.)
+- Emitting Python-flavored syntax — `(?P<name>…)` is a hard compile error in
+  Paramify's ECMAScript engine. Use `(?<name>…)`.
+- Leaving capture groups unnamed, or pinning `schema_version` for
+  version-safety — see Phase 3b for why that fails silently.
+- Handing over a compliance regex with no Error rule, so a failed collection
+  reports as a compliance Fail and hides the real problem.
 - Writing anything to disk or to `fetcher.yaml`. This skill only reads and
   suggests; the validator's home is Paramify, decided by the user.
-- Demonstrating the match with `grep -P` (unavailable on macOS) — use Python
-  `re` so the shown match is real and portable.
+- Demonstrating the match with `grep -P` (unavailable on macOS) or with Python
+  `re` (wrong flavor) — use Node so the shown match reflects Paramify's engine.
