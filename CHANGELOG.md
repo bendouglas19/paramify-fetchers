@@ -67,6 +67,22 @@ schemas and the `paramify` CLI — not the internal code.
 - **README's category table** listed GitLab as 3 fetchers; it has 4
   (`significant_change_notifications` was missing).
 
+- **`paramify programs target` no longer misses the manifest it should edit.**
+  Its `-f/--file` defaulted to the literal `manifest.yaml` resolved against the
+  *current directory*, and `read_manifest()` reads a missing file as an empty
+  manifest — so running it from a subdirectory, or passing a bare name whose file
+  lives under `manifests/`, silently found nothing and reported "No manifest
+  entry takes a program as a target", blaming the contents for a path that
+  wasn't there. Worse, the write then created a second manifest at that wrong
+  path. Now: omitting `-f` offers the discovered manifests as a numbered pick
+  list (annotated with how many entries take a program, since names carry no
+  convention to guess from) and uses a lone candidate outright, naming it; `-f`
+  accepts a bare name or stem, resolved against `manifests/` and the repo root
+  so it works from anywhere in the tree; and a `-f` that resolves to nothing is
+  an error that writes no file. Under `--json` (or any non-tty) several
+  candidates is an error listing them rather than a guess. Other `manifest`
+  subcommands still default to `./manifest.yaml`.
+
 ## [0.4.0-beta] - 2026-08-18
 
 ### Breaking

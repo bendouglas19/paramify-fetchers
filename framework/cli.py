@@ -22,6 +22,8 @@ Paramify workspace (live lookups; needs PARAMIFY_API_TOKEN with read scope):
   paramify programs list [--json]              # programs in the workspace: name + id
   paramify programs target [fetcher ...] [--program NAME|ID ...] [--all]
                            [--cert-uri URI] [--report-from DATE] [-f FILE] [--json]
+                           # -f takes a bare name (resolved under manifests/) or a
+                           # path; omit it to pick from the discovered manifests
 
 Manifest editing (writes the manifest file; -f/--file, default ./manifest.yaml;
 every subcommand accepts --json, emitting {"ok", "path", "errors"}):
@@ -1235,6 +1237,114 @@ def _programs_or_exit(json_out: bool) -> List[dict]:
         _fail(None, str(e), json_out)
 
 
+def _manifest_label(path, root: Path) -> str:
+    """How a manifest is named in output. Manifest names are arbitrary, so the
+    label is the path relative to the repo root, never a stem."""
+    try:
+        return str(Path(path).relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _manifest_choices(root: Path, fetchers: dict) -> List[dict]:
+    """The discovered manifests, each annotated with how many of its entries take
+    a program — the one fact that decides whether this command has anything to do
+    with a given file."""
+    choices: List[dict] = []
+    for item in api.list_manifests(root):
+        path = Path(item["path"])
+        entries: Optional[int] = None
+        if item["readable"]:
+            try:
+                entries = len(api.program_target_fetchers(api.read_manifest(path), root, fetchers))
+            except Exception:  # noqa: BLE001
+                entries = None  # unparseable: still offer it, just unannotated
+        choices.append({**item, "label": _manifest_label(path, root), "program_entries": entries})
+    return choices
+
+
+def _manifest_choice_note(choice: dict) -> str:
+    if not choice["readable"]:
+        return "unreadable"
+    n = choice["program_entries"]
+    if n is None:
+        return ""  # readable, but its entries couldn't be counted
+    if not n:
+        return "no program entries"
+    return f"{n} program {'entry' if n == 1 else 'entries'}"
+
+
+def _resolve_manifest_arg(root: Path, file: str, json_out: bool) -> Path:
+    """Resolve an explicit -f value: as typed, then against <root>/manifests/ and
+    the repo root, so a bare name works from anywhere in the tree.
+
+    A value that resolves to nothing is an error here. read_manifest() reads a
+    missing file as an *empty* manifest, which this command then reports as "no
+    entry takes a program" — blaming the contents for a path that isn't there —
+    and whose write would fork a brand-new manifest at the wrong location.
+    """
+    given = Path(file)
+    candidates = [given]
+    if not given.is_absolute():
+        if len(given.parts) == 1:
+            candidates += [root / "manifests" / file, root / "manifests" / f"{file}.yaml"]
+        candidates.append(root / file)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    known = ", ".join(_manifest_label(i["path"], root) for i in api.list_manifests(root))
+    _fail(
+        given.resolve(),
+        f"no such manifest: {file}"
+        + (f" (discovered: {known})" if known else " (no manifests discovered)"),
+        json_out,
+    )
+
+
+def _manifest_for_edit(root: Path, file: Optional[str], json_out: bool, fetchers: dict) -> Path:
+    """The manifest to edit: the -f path if given, else chosen from the discovered
+    set. One manifest is used outright (named, so the write is never a surprise);
+    several are offered as a numbered pick list, because the file names carry no
+    convention this command could guess from."""
+    if file:
+        return _resolve_manifest_arg(root, file, json_out)
+
+    choices = _manifest_choices(root, fetchers)
+    if not choices:
+        _fail(
+            None,
+            f"No manifests found (looked in {root}/manifests/*.yaml and "
+            f"{root}/manifest.yaml). Create one with: paramify manifest new <name>",
+            json_out,
+        )
+    if len(choices) == 1:
+        if not json_out:
+            typer.echo(f"{style.dim('Manifest:')} {style.path(choices[0]['label'])}")
+        return Path(choices[0]["path"]).resolve()
+    labels = ", ".join(c["label"] for c in choices)
+    if not _can_prompt(json_out):
+        _fail(
+            None,
+            f"{len(choices)} manifests found and no terminal to choose on: "
+            f"pass -f <path>. Discovered: {labels}",
+            json_out,
+        )
+
+    typer.echo("Manifests in this workspace\n")
+    width = max(len(c["label"]) for c in choices)
+    for i, c in enumerate(choices, 1):
+        label = style.name(c["label"].ljust(width))
+        count = style.dim(f"{c['fetcher_count']:2d} fetchers")
+        note = _manifest_choice_note(c)
+        line = f"  {i:>3}. {label}  {count}"
+        typer.echo(f"{line}  {style.dim(note)}" if note else line)
+    typer.echo("")
+    choice = typer.prompt("Select a manifest", type=int)
+    if not 1 <= choice <= len(choices):
+        _fail(None, f"Invalid selection: {choice} is outside 1-{len(choices)}", json_out)
+    return Path(choices[choice - 1]["path"]).resolve()
+
+
 def _parse_selection(raw: str, count: int) -> List[int]:
     """Parse "1,3,5", "1-3", "2 4", or "all" into zero-based indices.
 
@@ -1295,17 +1405,21 @@ def programs_target(
         help="Report period start (ISO date, e.g. 2026-01-01). Set once as category "
              "config; shown for confirmation on every interactive run.",
     ),
-    file: str = typer.Option(_DEFAULT_MANIFEST, "-f", "--file", help="Manifest path"),
+    file: Optional[str] = typer.Option(
+        None, "-f", "--file",
+        help="Manifest to edit. A bare name resolves under manifests/. Omit to "
+             "choose from the discovered manifests.",
+    ),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON"),
 ):
     """Select programs from the workspace and add them as manifest targets."""
     root = api.find_repo_root()
-    path = Path(file).resolve()
-    m = _read_for_edit(path, json_out)
     # Discovered once and threaded through every api call below. Each of these
     # walks + schema-validates all ~125 fetcher.yaml files; the tree is immutable
     # for the life of the command, so one pass is enough.
     discovered = api.discover(root)
+    path = _manifest_for_edit(root, file, json_out, discovered["fetchers"])
+    m = _read_for_edit(path, json_out)
 
     uses = list(fetchers or [])
     if not uses:

@@ -205,6 +205,13 @@ With no fetcher argument it targets every manifest entry that takes a program, s
 one command fans all of them out at once. Re-running it tops the manifest up
 rather than duplicating targets.
 
+Which manifest it edits is chosen, never assumed. With no `-f/--file` it lists
+the discovered manifests — `manifests/*.yaml` plus a legacy `./manifest.yaml` —
+and you pick one by number; a lone candidate is used outright and named. `-f`
+takes a path or a bare name (`-f azure`, `-f azure.yaml`), resolved against
+`manifests/` and the repo root so it works from any directory in the tree. A `-f`
+that matches nothing is an error, not an empty manifest.
+
 A target carries only what varies per program — `project_id` and its readable
 `program_name`. Everything shared is written once to `platforms.paramify.config`:
 the Certification Package Overview URI (not in Paramify's API, one value per

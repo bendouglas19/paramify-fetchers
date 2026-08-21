@@ -258,6 +258,16 @@ With no fetcher argument it targets every manifest entry whose `target_schema`
 declares `project_id`. Programs already targeted are skipped, so re-running tops
 the manifest up instead of duplicating entries.
 
+The manifest it writes to is chosen explicitly. Omit `-f/--file` and it offers
+the discovered manifests (`manifests/*.yaml`, plus a legacy `./manifest.yaml`) as
+a numbered list, each annotated with how many of its entries take a program;
+a single candidate is used outright and named in the output. `-f` accepts a path
+or a bare name resolved against `manifests/` and the repo root, so `-f azure`
+works from any directory. A `-f` naming nothing is an error and writes no file —
+it never creates a manifest, which is what `manifest new <name>` is for. Under
+`--json`, where there's nothing to prompt, more than one candidate is an error
+listing them: pass `-f`.
+
 A target gets only what varies per program: `project_id` and `program_name` (the
 readable label — the fetcher uses it for its evidence filename, the uploader for
 the artifact title).
