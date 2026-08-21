@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-KSI-IAM-AAM: Automated Account Management
+Automated Account Management
 
-Thin wrapper around okta_iam_core.py that runs only this KSI and outputs a dedicated JSON file.
+Thin wrapper around okta_iam_core.py that runs only this collector and outputs a dedicated JSON file.
 """
 
 import json
@@ -37,7 +37,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     fetcher = OktaIAMEvidenceFetcher(skip_compatibility_check=skip_check)
-    evidence = fetcher.collect_ksi_iam_07()
+    evidence = fetcher.collect_automated_account_management()
 
     output_path = output_dir / "okta_automated_account_management.json"
     with open(output_path, "w") as f:

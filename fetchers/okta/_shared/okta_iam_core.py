@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Okta IAM Evidence Fetcher for FedRAMP 20x
+Okta IAM Evidence Fetcher
 
 Based on Official Okta API Documentation:
 https://developer.okta.com/docs/api/
@@ -9,14 +9,9 @@ API Version: v1
 URL Format: https://{yourOktaDomain}/api/v1/{endpoint}
 Authentication: SSWS {api_token}
 
-Extracts comprehensive IAM evidence from Okta covering all FedRAMP 20x IAM KSIs:
-- KSI-IAM-01: Phishing-Resistant MFA
-- KSI-IAM-02: Passwordless Authentication
-- KSI-IAM-03: Non-User Accounts
-- KSI-IAM-04: Just-in-Time Authorization
-- KSI-IAM-05: Least Privilege
-- KSI-IAM-06: Suspicious Activity
-- KSI-IAM-07: Automated Account Management
+Extracts IAM evidence from Okta. Each collector below backs one fetcher in
+fetchers/okta/; which KSI that evidence maps to is declared in that fetcher's
+fetcher.yaml, not here.
 
 Environment variables required:
 - OKTA_API_TOKEN: Your Okta API token
@@ -24,7 +19,7 @@ Environment variables required:
 
 Usage:
     python okta_iam_core.py --check-only
-    (Or use dedicated KSI wrapper scripts, e.g. python okta_phishing_resistant_mfa.py)
+    (Or use the dedicated wrapper scripts, e.g. python okta_phishing_resistant_mfa.py)
 """
 
 import json
@@ -583,8 +578,8 @@ class OktaAPIClient:
 
 class OktaIAMEvidenceFetcher:
     """
-    Fetches IAM evidence from Okta for FedRAMP 20x compliance.
-    Organized by KSI (Key Security Indicator).
+    Fetches IAM evidence from Okta.
+    Organized by evidence set.
     """
 
     def __init__(self, skip_compatibility_check: bool = False):
@@ -596,20 +591,17 @@ class OktaIAMEvidenceFetcher:
             self.compatibility_results = self.client.run_compatibility_check()
 
     # =========================================================================
-    # KSI-IAM-01: Phishing-Resistant MFA
+    # Phishing-Resistant MFA
     # =========================================================================
-    def collect_ksi_iam_01(self) -> Dict:
+    def collect_phishing_resistant_mfa(self) -> Dict:
+        """Phishing-Resistant MFA.
+
+        The KSI this maps to lives in the fetcher's fetcher.yaml (`ksis:`) --
+        FedRAMP re-keys its indicators, and this code should not have to follow.
         """
-        KSI-IAM-01: Phishing-Resistant MFA
-        Enforce MFA using methods that are difficult to intercept or impersonate.
-        
-        Related Controls: AC-2, IA-2, IA-2.1, IA-2.2, IA-2.8, IA-5, IA-8, SC-23
-        """
-        print("\n📌 KSI-IAM-01: Phishing-Resistant MFA")
+        print("\n📌 Phishing-Resistant MFA")
         evidence = {
-            "ksi": "KSI-IAM-01",
             "name": "Phishing-Resistant MFA",
-            "related_controls": ["AC-2", "IA-2", "IA-2.1", "IA-2.2", "IA-2.8", "IA-5", "IA-8", "SC-23"],
             "data": {}
         }
 
@@ -763,20 +755,17 @@ class OktaIAMEvidenceFetcher:
         return evidence
 
     # =========================================================================
-    # KSI-IAM-02: Passwordless Authentication
+    # Passwordless Authentication
     # =========================================================================
-    def collect_ksi_iam_02(self) -> Dict:
+    def collect_passwordless_authentication(self) -> Dict:
+        """Passwordless Authentication.
+
+        The KSI this maps to lives in the fetcher's fetcher.yaml (`ksis:`) --
+        FedRAMP re-keys its indicators, and this code should not have to follow.
         """
-        KSI-IAM-02: Passwordless Authentication
-        Use secure passwordless methods or enforce strong passwords with MFA.
-        
-        Related Controls: AC-2, AC-3, IA-2.1, IA-2.2, IA-2.8, IA-5.1, IA-5.2, IA-5.6, IA-6
-        """
-        print("\n📌 KSI-IAM-02: Passwordless Authentication")
+        print("\n📌 Passwordless Authentication")
         evidence = {
-            "ksi": "KSI-IAM-02",
             "name": "Passwordless Authentication",
-            "related_controls": ["AC-2", "AC-3", "IA-2.1", "IA-2.2", "IA-2.8", "IA-5.1", "IA-5.2", "IA-5.6", "IA-6"],
             "data": {}
         }
 
@@ -1252,20 +1241,17 @@ class OktaIAMEvidenceFetcher:
         return evidence
 
     # =========================================================================
-    # KSI-IAM-03: Non-User Accounts
+    # Non-User Accounts
     # =========================================================================
-    def collect_ksi_iam_03(self) -> Dict:
+    def collect_non_user_accounts_authentication(self) -> Dict:
+        """Non-User Accounts.
+
+        The KSI this maps to lives in the fetcher's fetcher.yaml (`ksis:`) --
+        FedRAMP re-keys its indicators, and this code should not have to follow.
         """
-        KSI-IAM-03: Non-User Accounts
-        Enforce secure authentication for non-user accounts and services.
-        
-        Related Controls: AC-2, AC-2.2, AC-4, AC-6.5, IA-3, IA-5.2, RA-5.5
-        """
-        print("\n📌 KSI-IAM-03: Non-User Accounts")
+        print("\n📌 Non-User Accounts")
         evidence = {
-            "ksi": "KSI-IAM-03",
             "name": "Non-User Accounts",
-            "related_controls": ["AC-2", "AC-2.2", "AC-4", "AC-6.5", "IA-3", "IA-5.2", "RA-5.5"],
             "data": {}
         }
 
@@ -1528,20 +1514,17 @@ class OktaIAMEvidenceFetcher:
         return evidence
 
     # =========================================================================
-    # KSI-IAM-04: Just-in-Time Authorization
+    # Just-in-Time Authorization
     # =========================================================================
-    def collect_ksi_iam_04(self) -> Dict:
+    def collect_just_in_time_authorization(self) -> Dict:
+        """Just-in-Time Authorization.
+
+        The KSI this maps to lives in the fetcher's fetcher.yaml (`ksis:`) --
+        FedRAMP re-keys its indicators, and this code should not have to follow.
         """
-        KSI-IAM-04: Just-in-Time Authorization
-        Use least-privileged, role/attribute-based, JIT security authorization.
-        
-        Related Controls: AC-2, AC-3, AC-5, AC-6, CM-5, IA-4, etc.
-        """
-        print("\n📌 KSI-IAM-04: Just-in-Time Authorization")
+        print("\n📌 Just-in-Time Authorization")
         evidence = {
-            "ksi": "KSI-IAM-04",
             "name": "Just-in-Time Authorization",
-            "related_controls": ["AC-2", "AC-3", "AC-5", "AC-6", "CM-5", "IA-4"],
             "data": {}
         }
 
@@ -1808,20 +1791,17 @@ class OktaIAMEvidenceFetcher:
         return evidence
 
     # =========================================================================
-    # KSI-IAM-05: Least Privilege
+    # Least Privilege
     # =========================================================================
-    def collect_ksi_iam_05(self) -> Dict:
+    def collect_least_privilege(self) -> Dict:
+        """Least Privilege.
+
+        The KSI this maps to lives in the fetcher's fetcher.yaml (`ksis:`) --
+        FedRAMP re-keys its indicators, and this code should not have to follow.
         """
-        KSI-IAM-05: Least Privilege
-        Configure IAM so users/devices can only access resources they need.
-        
-        Related Controls: AC-2.5, AC-6, IA-2, PS-2, etc.
-        """
-        print("\n📌 KSI-IAM-05: Least Privilege")
+        print("\n📌 Least Privilege")
         evidence = {
-            "ksi": "KSI-IAM-05",
             "name": "Least Privilege",
-            "related_controls": ["AC-2.5", "AC-6", "IA-2", "PS-2"],
             "data": {}
         }
 
@@ -2351,20 +2331,17 @@ class OktaIAMEvidenceFetcher:
         return evidence
 
     # =========================================================================
-    # KSI-IAM-06: Suspicious Activity
+    # Suspicious Activity
     # =========================================================================
-    def collect_ksi_iam_06(self) -> Dict:
+    def collect_suspicious_activity_management(self) -> Dict:
+        """Suspicious Activity.
+
+        The KSI this maps to lives in the fetcher's fetcher.yaml (`ksis:`) --
+        FedRAMP re-keys its indicators, and this code should not have to follow.
         """
-        KSI-IAM-06: Suspicious Activity
-        Auto-disable or secure accounts with privileged access on suspicious activity.
-        
-        Related Controls: AC-2, AC-2.13, AC-7, PS-4, PS-8
-        """
-        print("\n📌 KSI-IAM-06: Suspicious Activity")
+        print("\n📌 Suspicious Activity")
         evidence = {
-            "ksi": "KSI-IAM-06",
             "name": "Suspicious Activity",
-            "related_controls": ["AC-2", "AC-2.13", "AC-7", "PS-4", "PS-8"],
             "data": {}
         }
 
@@ -2513,20 +2490,17 @@ class OktaIAMEvidenceFetcher:
         return evidence
 
     # =========================================================================
-    # KSI-IAM-07: Automated Account Management
+    # Automated Account Management
     # =========================================================================
-    def collect_ksi_iam_07(self) -> Dict:
+    def collect_automated_account_management(self) -> Dict:
+        """Automated Account Management.
+
+        The KSI this maps to lives in the fetcher's fetcher.yaml (`ksis:`) --
+        FedRAMP re-keys its indicators, and this code should not have to follow.
         """
-        KSI-IAM-07: Automated Account Management
-        Securely manage lifecycle and privileges of all accounts using automation.
-        
-        Related Controls: AC-2.2, AC-2.3, AC-2.13, IA-4.4, IA-12
-        """
-        print("\n📌 KSI-IAM-07: Automated Account Management")
+        print("\n📌 Automated Account Management")
         evidence = {
-            "ksi": "KSI-IAM-07",
             "name": "Automated Account Management",
-            "related_controls": ["AC-2.2", "AC-2.3", "AC-2.13", "IA-4.4", "IA-12"],
             "data": {}
         }
 
@@ -3133,127 +3107,6 @@ class OktaIAMEvidenceFetcher:
         print(f"    }}")
         
         return evidence
-
-    # =========================================================================
-    # Main Collection Method
-    # =========================================================================
-    def collect_all_evidence(self) -> Dict:
-        """Collect comprehensive IAM evidence for all FedRAMP 20x KSIs."""
-        print("=" * 70)
-        print("OKTA IAM EVIDENCE COLLECTION FOR FEDRAMP 20x")
-        print("=" * 70)
-        print(f"Organization: {self.client.org_url}")
-        print(f"API Base: {self.client.api_base}")
-        print(f"Started at: {datetime.utcnow().isoformat()}Z")
-        print("=" * 70)
-
-        evidence = {
-            "metadata": {
-                "collected_at": datetime.utcnow().isoformat() + "Z",
-                "org_url": self.client.org_url,
-                "api_version": "v1",
-                "evidence_type": "okta_iam_evidence",
-                "framework": "FedRAMP 20x",
-                "reference": "https://developer.okta.com/docs/api/",
-                "ksis_covered": [
-                    "KSI-IAM-01", "KSI-IAM-02", "KSI-IAM-03",
-                    "KSI-IAM-04", "KSI-IAM-05", "KSI-IAM-06", "KSI-IAM-07"
-                ]
-            },
-            "ksi_evidence": {}
-        }
-
-        # Include compatibility check results if available
-        if self.compatibility_results:
-            evidence["metadata"]["compatibility_check"] = self.compatibility_results
-            evidence["metadata"]["org_type"] = self.compatibility_results.get("org_type", "Unknown")
-            
-            # Add warnings for unavailable features
-            if self.client.unavailable_features:
-                evidence["metadata"]["unavailable_features"] = self.client.unavailable_features
-                evidence["metadata"]["collection_warnings"] = [
-                    f"{uf['feature']}: {uf['reason']}" 
-                    for uf in self.client.unavailable_features
-                ]
-
-        # Collect evidence for each KSI
-        evidence["ksi_evidence"]["KSI-IAM-01"] = self.collect_ksi_iam_01()
-        evidence["ksi_evidence"]["KSI-IAM-02"] = self.collect_ksi_iam_02()
-        evidence["ksi_evidence"]["KSI-IAM-03"] = self.collect_ksi_iam_03()
-        evidence["ksi_evidence"]["KSI-IAM-04"] = self.collect_ksi_iam_04()
-        evidence["ksi_evidence"]["KSI-IAM-05"] = self.collect_ksi_iam_05()
-        evidence["ksi_evidence"]["KSI-IAM-06"] = self.collect_ksi_iam_06()
-        evidence["ksi_evidence"]["KSI-IAM-07"] = self.collect_ksi_iam_07()
-
-        # Overall summary
-        evidence["overall_summary"] = {
-            ksi: evidence["ksi_evidence"][ksi]["summary"]
-            for ksi in evidence["ksi_evidence"]
-        }
-
-        # Add feature availability summary
-        # Get available feature names
-        available_features = []
-        if self.compatibility_results and self.compatibility_results.get("feature_availability"):
-            for feature_name, details in self.compatibility_results["feature_availability"].items():
-                if details.get("available", False):
-                    available_features.append(feature_name)
-        
-        # Get unavailable features with detailed reasons
-        unavailable_features_detailed = []
-        if self.client.unavailable_features:
-            for uf in self.client.unavailable_features:
-                unavailable_features_detailed.append({
-                    "feature": uf["feature"],
-                    "reason": uf.get("reason", "Unknown reason"),
-                    "status_code": uf.get("status_code"),
-                    "endpoint": uf.get("endpoint", "N/A"),
-                    "prediction": uf.get("prediction", "Unable to determine requirements - check Okta documentation")
-                })
-        
-        evidence["feature_availability_summary"] = {
-            "features_available": self.compatibility_results.get("features_available", 0) if self.compatibility_results else "Not checked",
-            "features_unavailable": self.compatibility_results.get("features_unavailable", 0) if self.compatibility_results else "Not checked",
-            "available_features": available_features,
-            "unavailable_features": unavailable_features_detailed,
-            "data_completeness_note": "Some data sections may be empty if features were unavailable" if self.client.unavailable_features else "All features available - data should be complete"
-        }
-
-        print("\n" + "=" * 70)
-        print("COLLECTION COMPLETE")
-        print("=" * 70)
-        
-        # Print feature availability summary
-        print("\n📊 FEATURE AVAILABILITY SUMMARY:")
-        print("-" * 40)
-        
-        # Show available features
-        if available_features:
-            print(f"\n✅ Available Features ({len(available_features)}):")
-            for feature in available_features:
-                print(f"  • {feature}")
-        
-        # Show unavailable features with detailed reasons
-        if self.client.unavailable_features:
-            print(f"\n⚠️  Unavailable Features ({len(self.client.unavailable_features)}):")
-            for uf in self.client.unavailable_features:
-                print(f"  • {uf['feature']}")
-                print(f"    Reason: {uf.get('reason', 'Unknown reason')}")
-                if uf.get('status_code'):
-                    print(f"    Status Code: {uf.get('status_code')}")
-                if uf.get('endpoint') and uf.get('endpoint') != 'N/A':
-                    print(f"    Endpoint: {uf.get('endpoint')}")
-                if uf.get('prediction'):
-                    print(f"    Prediction: {uf.get('prediction')}")
-            print("-" * 40)
-            print("  Evidence was collected, but some sections may have empty data.")
-            print("  This is normal if certain Okta features are not enabled.")
-        else:
-            print("\n✅ All features available - data collection should be complete.")
-
-        return evidence
-
-
 def main():
     """Main entry point."""
     # Check for --check-only flag
@@ -3274,7 +3127,7 @@ def main():
             sys.exit(1)
  
     # Combined evidence output has been intentionally disabled.
-    # Use the dedicated KSI scripts instead:
+    # Use the dedicated fetchers instead:
     # - okta_phishing_resistant_mfa.py
     # - okta_passwordless_authentication.py
     # - okta_non_user_accounts_authentication.py
@@ -3285,9 +3138,9 @@ def main():
     print("=" * 70)
     print("OKTA IAM EVIDENCE (COMBINED) DISABLED")
     print("=" * 70)
-    print("This repo now uses 7 separate Okta KSI fetchers (one per FedRAMP 20x KSI-IAM).")
+    print("This repo uses 7 separate Okta fetchers, one per evidence set.")
     print("The combined okta_iam_evidence.json output is no longer generated to avoid duplicate evidence artifacts.")
-    print("\nRun one of the KSI scripts in fetchers/okta/ instead.")
+    print("\nRun one of the fetchers in fetchers/okta/ instead.")
     print("\nTip: You can still run compatibility check only:")
     print("  python fetchers/okta/okta_iam_evidence.py --check-only")
     sys.exit(2)
