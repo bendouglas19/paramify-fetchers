@@ -50,7 +50,11 @@ which has its own contract in `docs/issue_report_fetchers.md`.
      `fetchers/_template_issue_report/` (not `_template/`) and follow
      `docs/issue_report_fetchers.md` for the rest of the build. Shared parts
      (secrets, categories, fanout, `$FETCHER_STATUS_FILE`) still apply from
-     below. Do not write an `evidence_set`, do not emit a JSON payload, do not
+     below — and if it fans out, the output filename must carry the target
+     (keep the template's `target_suffix()`): all targets share one
+     `issue-reports/` directory, so a fixed name overwrites all but the last
+     and the rest are recorded as having produced nothing. Do not write an
+     `evidence_set`, do not emit a JSON payload, do not
      run `suggest-validator`. The Phase 4 smoke test below expects a JSON
      evidence file — skip it. The check for this kind is: after a real run, the
      file in `<run>/issue-reports/` is byte-identical to the tool's own export.

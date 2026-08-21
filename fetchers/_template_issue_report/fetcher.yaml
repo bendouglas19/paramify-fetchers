@@ -29,6 +29,10 @@ output:
   # Filename only, no directory: the runner points EVIDENCE_DIR at
   # <run>/issue-reports/ for you. Keep the tool's own extension (.nessus stays
   # .nessus — Paramify picks its parser from it).
+  #
+  # If you add `supports_targets: true`, every target writes into that one
+  # directory, so this name must vary per target or they overwrite each other
+  # and all but the last are silently lost — see target_suffix() in fetcher.py.
   path: <category>_<short_name>.csv
 
 secrets:

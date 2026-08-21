@@ -147,6 +147,26 @@ def test_every_fetcher_declares_the_identity_its_kind_needs() -> None:
     assert not missing, "\n".join(missing)
 
 
+def test_issue_report_template_varies_its_filename_per_target() -> None:
+    """The template must derive its output filename from the fanout target.
+
+    Every target of a fanout run writes into one issue-reports/ directory, and the
+    runner detects outputs by diffing that directory around each invocation. A
+    template that hardcodes the filename teaches a fetcher where target 2
+    overwrites target 1 and is then recorded as having produced nothing — see
+    tests/test_issue_reports.py::test_a_fixed_filename_collapses_a_fanout_run.
+    Templates are copied before anyone finds out, so the convention is gated here.
+    """
+    src = (FETCHERS_ROOT / "_template_issue_report" / "fetcher.py").read_text()
+    assert "def target_suffix(" in src, "the template dropped its target_suffix helper"
+    assigns = [ln for ln in src.splitlines() if ln.strip().startswith("output_path =")]
+    assert assigns, "the template no longer assigns output_path"
+    assert all("target_suffix()" in ln for ln in assigns), (
+        "the template builds output_path from a fixed name:\n  "
+        + "\n  ".join(assigns)
+    )
+
+
 def test_issue_reports_declare_an_intakeable_format() -> None:
     """Paramify's assessment intake accepts only csv/json/xml/nessus, so any other
     format means a report that collects and can never be uploaded."""

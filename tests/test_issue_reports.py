@@ -114,12 +114,54 @@ def write_issue_report_fetcher(root: Path, *, output="scan.csv", fmt="csv", body
         f"body = {body!r}\n"
         f'Path(os.environ["EVIDENCE_DIR"], {output!r}).write_bytes(body)\n'
     )
-    # The runner validates every fetcher.yaml against the real schema.
+    _stage_schemas(root)
+
+
+def _stage_schemas(root: Path) -> None:
+    """The runner validates every fetcher.yaml against the real schema."""
     schemas = root / "framework" / "schemas"
     if not schemas.exists():
         schemas.mkdir(parents=True)
         for src in (REPO_ROOT / "framework" / "schemas").glob("*.json"):
             (schemas / src.name).write_bytes(src.read_bytes())
+
+
+def write_fanout_issue_report_fetcher(root: Path, *, per_target_filename: bool) -> None:
+    """Stage a runnable issue-report fetcher that fans out over target_schema.
+
+    `per_target_filename` picks between the convention the template teaches and
+    the fixed name that loses every target but the last.
+    """
+    fdir = root / "fetchers" / "testcat" / "vuln_scan"
+    fdir.mkdir(parents=True, exist_ok=True)
+    (fdir / "fetcher.yaml").write_text(
+        "name: t_vuln_scan\n"
+        "version: 0.1.0\n"
+        "description: test issue report\n"
+        "category: testcat\n"
+        "kind: issue_report\n"
+        "runtime:\n  type: python\n  entry: fetcher.py\n"
+        "output:\n  type: csv\n  path: scan.csv\n"
+        "secrets: []\n"
+        "supports_targets: true\n"
+        "target_schema:\n"
+        "  scanner_id:\n"
+        "    type: string\n"
+        "    required: true\n"
+        "    env: TARGET_SCANNER_ID\n"
+        "issue_report:\n  assessment_type: VULNERABILITY\n  title: Test Scan\n"
+    )
+    suffix = '"_" + scanner' if per_target_filename else '""'
+    (fdir / "fetcher.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        'scanner = os.environ["TARGET_SCANNER_ID"]\n'
+        f"suffix = {suffix}\n"
+        'Path(os.environ["EVIDENCE_DIR"], f"scan{suffix}.csv").write_bytes(\n'
+        '    f"Plugin ID,Severity,Scanner\\n19506,Info,{scanner}\\n".encode()\n'
+        ")\n"
+    )
+    _stage_schemas(root)
 
 
 # --------------------------------------------------------------------------- #
@@ -159,6 +201,76 @@ def test_run_records_outputs_relative_to_the_run_dir(tmp_path):
                         "fetchers": [{"use": "t_vuln_scan"}]}}
     summary = api.run(manifest, tmp_path)
     assert summary["invocations"][0]["outputs"] == [f"{ISSUE_REPORTS_DIR}/scan.csv"]
+
+
+def test_fanout_records_one_report_per_target(tmp_path):
+    """Every target of a fanout run must reach the sidecar with its own file.
+
+    The runner detects outputs by diffing the issue-reports/ directory around each
+    invocation, so this holds only while the fetcher varies the filename per
+    target — the convention fetchers/_template_issue_report/ teaches and the
+    evidence side already follows.
+    """
+    write_fanout_issue_report_fetcher(tmp_path, per_target_filename=True)
+    manifest = {"run": {"output_dir": str(tmp_path / "out"), "fetchers": [{
+        "use": "t_vuln_scan",
+        "config": {ASSESSMENT_ID_FIELD: "abc-123"},
+        "targets": [{"scanner_id": "east"}, {"scanner_id": "west"}],
+    }]}}
+    summary = api.run(manifest, tmp_path)
+
+    assert summary["ok"], summary
+    run_dir = Path(summary["run_dir"])
+    reports = run_dir / ISSUE_REPORTS_DIR
+    assert {p.name for p in reports.iterdir() if not p.name.startswith("_")} == {
+        "scan_east.csv", "scan_west.csv"
+    }
+    # Each target reports its own output rather than being swallowed by the diff.
+    assert [inv["outputs"] for inv in summary["invocations"]] == [
+        [f"{ISSUE_REPORTS_DIR}/scan_east.csv"],
+        [f"{ISSUE_REPORTS_DIR}/scan_west.csv"],
+    ]
+    # And each gets a record whose bytes match the target it is labelled with.
+    records = read_index(run_dir)["reports"]
+    assert len(records) == 2
+    for rec in records:
+        scanner = rec["target"]["scanner_id"]
+        assert rec["file"] == f"scan_{scanner}.csv"
+        assert scanner in (reports / rec["file"]).read_text()
+        assert rec["title"] == f"Test Scan - {scanner}"
+
+
+def test_a_fixed_filename_collapses_a_fanout_run(tmp_path):
+    """The hazard the per-target filename convention exists to avoid.
+
+    With one fixed name, target 2 overwrites target 1 on disk, and because the
+    filename already existed the runner sees no new file and records nothing for
+    target 2. What survives is a single record carrying target 1's identity and
+    target 2's bytes — including a sha256 taken after the overwrite, so the field
+    that could have caught it agrees with the wrong story. Nothing raises.
+
+    This pins today's behavior so the cost is visible. A runner-side guard on
+    "issue-report invocation produced no new file" would change these assertions,
+    which is the point.
+    """
+    write_fanout_issue_report_fetcher(tmp_path, per_target_filename=False)
+    manifest = {"run": {"output_dir": str(tmp_path / "out"), "fetchers": [{
+        "use": "t_vuln_scan",
+        "config": {ASSESSMENT_ID_FIELD: "abc-123"},
+        "targets": [{"scanner_id": "east"}, {"scanner_id": "west"}],
+    }]}}
+    summary = api.run(manifest, tmp_path)
+
+    assert summary["ok"], "the run reports success — that is the problem"
+    run_dir = Path(summary["run_dir"])
+    body = (run_dir / ISSUE_REPORTS_DIR / "scan.csv").read_text()
+    assert "west" in body and "east" not in body, "target 1's report was overwritten"
+    assert summary["invocations"][1]["outputs"] == [], "target 2 looks like it made nothing"
+
+    records = read_index(run_dir)["reports"]
+    assert len(records) == 1
+    assert records[0]["target"] == {"scanner_id": "east"}, "labelled with the lost target"
+    assert records[0]["sha256"] == hashlib.sha256(body.encode()).hexdigest()
 
 
 def test_json_issue_report_is_not_enveloped(tmp_path):

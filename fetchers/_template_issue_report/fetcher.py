@@ -15,6 +15,7 @@ evidence fetcher instead — see ../_template/.
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -43,6 +44,32 @@ def report_failure(reason: str, code: str | None = None) -> None:
     Path(path).write_text(json.dumps({"error": reason} | ({"code": code} if code else {})))
 
 
+def target_suffix() -> str:
+    """This invocation's fanout target as a filename-safe suffix ("" if single-run).
+
+    ONE FILENAME PER INVOCATION. Every target of a fanout run writes into the same
+    issue-reports/ directory, and the runner works out what a fetcher produced by
+    diffing that directory before and after. A fixed filename therefore fails
+    twice over: target 2 overwrites target 1's report, and because the name
+    already existed the runner sees no new file and records nothing for target 2 —
+    leaving one sidecar entry that carries target 1's identity and target 2's
+    bytes. Nothing raises, and Paramify parses the missing target as "those
+    findings are resolved".
+
+    This mirrors the evidence-side convention — see
+    fetchers/aws/acm_certificate_status/, which writes
+    aws_acm_certificate_status_<profile>_<region>.json. Join every target_schema
+    field that distinguishes one invocation from another, not just the first.
+    Delete this only if the fetcher will never declare supports_targets.
+    """
+    value = os.environ.get("<TARGET_ENV_VAR>", "").strip()
+    if not value:
+        return ""
+    # A target value comes from the manifest, not from us: sanitize it so a slash
+    # or a space cannot write outside the directory the runner chose.
+    return "_" + re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+
+
 def main() -> int:
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -60,7 +87,7 @@ def main() -> int:
     # yourself — the runner owns that layout.
     output_dir = Path(os.environ.get("EVIDENCE_DIR", "./evidence"))
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "<category>_<short_name>.csv"
+    output_path = output_dir / f"<category>_<short_name>{target_suffix()}.csv"
 
     # Replace with the real export call. Two shapes are common:
     #

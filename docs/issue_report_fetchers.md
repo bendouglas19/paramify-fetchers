@@ -170,7 +170,44 @@ Streaming is not only about size (though a full scan export is routinely hundred
 of megabytes). It also makes the no-transformation rule structural: there is no
 intermediate object to be tempted into editing.
 
-Two failure cases deserve care, because both produce a file that looks fine:
+### One filename per invocation
+
+If the fetcher declares `supports_targets`, **the filename must vary per target.**
+Every target of a fanout run writes into the same `issue-reports/` directory, and
+the runner works out what a fetcher produced by diffing that directory before and
+after the subprocess. A fixed filename fails twice over:
+
+```
+target 1 → writes tenable_vuln_scan.nessus     new file    → recorded
+target 2 → writes tenable_vuln_scan.nessus     OVERWRITES  → "produced nothing"
+```
+
+Target 1's report is gone from disk, and because the name already existed the
+runner sees no new file and records nothing for target 2. What survives is a single
+sidecar entry holding target 1's identity and target 2's bytes — including a
+`sha256` taken after the overwrite, so the one field that could have caught the
+mismatch agrees with the wrong story. Nothing raises, and Paramify parses a scan
+missing an entire target as *those findings are resolved*.
+
+So put the target in the name:
+
+```python
+target = os.environ.get("TENABLE_SCANNER_ID", "")
+suffix = "_" + re.sub(r"[^A-Za-z0-9._-]+", "_", target) if target else ""
+output_path = output_dir / f"tenable_vuln_scan{suffix}.nessus"
+```
+
+Join every `target_schema` field that distinguishes one invocation from another,
+not just the first, and sanitize the value — it is manifest data, and a slash in it
+would write outside the directory the runner chose. This is the same convention the
+evidence side already uses: see
+[`fetchers/aws/acm_certificate_status/`](../fetchers/aws/acm_certificate_status/),
+which writes `aws_acm_certificate_status_<profile>_<region>.json`.
+
+`output.path` in `fetcher.yaml` stays the un-suffixed name. It documents the shape
+and carries the extension; the runner discovers actual filenames by diffing.
+
+Two more failure cases deserve care, because both produce a file that looks fine:
 
 - **An empty report is a failure, not an empty result.** Intake would parse it as
   "no findings", silently resolving every open issue on the assessment. Exit
