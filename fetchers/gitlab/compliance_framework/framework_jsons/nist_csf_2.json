@@ -1,0 +1,154 @@
+{
+  "name": "NIST CSF 2.0",
+  "description": "NIST CSF 2.0 compliance requirements",
+  "color": "#1F3264",
+  "requirements": [
+    {
+      "name": "ID.RA-01 - Identity - Risk Assessment: The cybersecurity risk to the organization, assets, and individuals is understood by the organization.",
+      "description": "Vulnerabilities in assets are identified, validated, and recorded.",
+      "controls": [
+        {
+          "name": "scanner_dep_scanning_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_dep_scanning_running",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "scanner_container_scanning_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_container_scanning_running",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "ID.RA-07 - Identity - Risk Assessment: The cybersecurity risk to the organization, assets, and individuals is understood by the organization.",
+      "description": "Changes and exceptions are managed, assessed for risk impact, recorded, and tracked.",
+      "controls": [
+        {
+          "name": "default_branch_protected",
+          "control_type": "internal",
+          "expression": {
+            "field": "default_branch_protected",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "PR.AA-05 - Protect - Identity Management, Authentication, and Access Control - Access to physical and logical assets is limited to authorized users, services, and hardware and managed commensurate with the assessed risk of unauthorized access.",
+      "description": "Access permissions, entitlements, and authorizations are defined in a policy, managed, enforced, and reviewed, and incorporate the principles of least privilege and separation of duties.",
+      "controls": [
+        {
+          "name": "minimum_approvals_required_2",
+          "control_type": "internal",
+          "expression": {
+            "field": "minimum_approvals_required",
+            "operator": ">=",
+            "value": 2
+          }
+        },
+        {
+          "name": "merge_request_prevent_author_approval",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_request_prevent_author_approval",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "merge_request_prevent_committers_approval",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_request_prevent_committers_approval",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "merge_requests_approval_rules_prevent_editing",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_requests_approval_rules_prevent_editing",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "PR.PS-06 - Protect - Platform Security - Management of hardware, software, and services aligned with risk strategy.",
+      "description": "Secure software development practices are integrated, and their performance is monitored throughout the software development lifecycle.",
+      "controls": [
+        {
+          "name": "scanner_dep_scanning_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_dep_scanning_running",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "scanner_container_scanning_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_container_scanning_running",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "scanner_sast_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_sast_running",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "scanner_dast_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_dast_running",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "scanner_api_security_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_api_security_running",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "PR.PS-06 - Protect - Platform Security - Management of hardware, software, and services aligned with risk strategy. 1",
+      "description": "Secure software development practices are integrated, and their performance is monitored throughout the software development life cycle.",
+      "controls": [
+        {
+          "name": "scanner_secret_detection_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_secret_detection_running",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    }
+  ]
+}

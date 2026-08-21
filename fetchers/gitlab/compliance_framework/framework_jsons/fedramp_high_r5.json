@@ -1,0 +1,337 @@
+{
+  "name": "FedRAMP High",
+  "description": "FedRAMP High compliance requirements",
+  "color": "#00529B",
+  "requirements": [
+    {
+      "name": "AC-5: Separation of Duties",
+      "description": "Separate duties of individuals to prevent malevolent activity without collusion; document separation of duties; and define system access authorizations to support separation of duties.",
+      "controls": [
+        {
+          "name": "minimum_approvals_required_2",
+          "control_type": "internal",
+          "expression": {
+            "field": "minimum_approvals_required",
+            "operator": ">=",
+            "value": 2
+          }
+        },
+        {
+          "name": "merge_request_prevent_author_approval",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_request_prevent_author_approval",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "merge_request_prevent_committers_approval",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_request_prevent_committers_approval",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "merge_requests_approval_rules_prevent_editing",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_requests_approval_rules_prevent_editing",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "CM-3: Configuration Change Control",
+      "description": "Determine types of configuration-controlled changes; review and approve changes with security/privacy impact analysis; document decisions; implement approved changes; retain records; monitor activities associated with changes; and coordinate change control oversight through designated elements.",
+      "controls": [
+        {
+          "name": "default_branch_protected",
+          "control_type": "internal",
+          "expression": {
+            "field": "default_branch_protected",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "minimum_approvals_required_2",
+          "control_type": "internal",
+          "expression": {
+            "field": "minimum_approvals_required",
+            "operator": ">=",
+            "value": 2
+          }
+        },
+        {
+          "name": "merge_request_prevent_author_approval",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_request_prevent_author_approval",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "merge_request_prevent_committers_approval",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_request_prevent_committers_approval",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "merge_requests_approval_rules_prevent_editing",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_requests_approval_rules_prevent_editing",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "CM-3(1): Automated Documentation, Notification, and Prohibition of Changes",
+      "description": "Use automated mechanisms to document proposed changes to the system; notify organization-defined approval authorities; highlight change approvals that have not been received by organization-defined time period; prohibit changes to the system until designated approvals are received; and document all changes to the system.",
+      "controls": [
+        {
+          "name": "minimum_approvals_required_2",
+          "control_type": "internal",
+          "expression": {
+            "field": "minimum_approvals_required",
+            "operator": ">=",
+            "value": 2
+          }
+        },
+        {
+          "name": "merge_request_prevent_author_approval",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_request_prevent_author_approval",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "merge_request_prevent_committers_approval",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_request_prevent_committers_approval",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "merge_requests_approval_rules_prevent_editing",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_requests_approval_rules_prevent_editing",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "CM-5: Access Restrictions for Change",
+      "description": "Define, document, approve, and enforce physical and logical access restrictions associated with changes to the system.",
+      "controls": [
+        {
+          "name": "default_branch_protected",
+          "control_type": "internal",
+          "expression": {
+            "field": "default_branch_protected",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "minimum_approvals_required_2",
+          "control_type": "internal",
+          "expression": {
+            "field": "minimum_approvals_required",
+            "operator": ">=",
+            "value": 2
+          }
+        }
+      ]
+    },
+    {
+      "name": "CM-6: Configuration Settings",
+      "description": "Establish and document secure configuration settings for system components; implement these settings; identify, document, and approve deviations based on operational requirements; and monitor and control changes to configurations according to organizational policies.",
+      "controls": [
+        {
+          "name": "merge_request_prevent_author_approval",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_request_prevent_author_approval",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "CM-7: Least Functionality",
+      "description": "Configure the system to provide only organization-defined mission essential capabilities; and Prohibit or restrict the use of the following functions, ports, protocols, software, and/or services: organization-defined prohibited or restricted functions, system ports, protocols, software, and/or services.",
+      "controls": [
+        {
+          "name": "merge_request_prevent_committers_approval",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_request_prevent_committers_approval",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "merge_requests_approval_rules_prevent_editing",
+          "control_type": "internal",
+          "expression": {
+            "field": "merge_requests_approval_rules_prevent_editing",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "CM-10: Software Usage Restrictions",
+      "description": "Use software and associated documentation in accordance with contract agreements and copyright laws; track the use of software and associated documentation protected by quantity licenses to control copying and distribution; and control and document the use of peer-to-peer file sharing technology to ensure that this capability is not used for the unauthorized distribution, display, performance, or reproduction of copyrighted work.",
+      "controls": [
+        {
+          "name": "scanner_license_compliance_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_license_compliance_running",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "IA-2(12): Acceptance of PIV Credentials",
+      "description": "Accept and electronically verify Personal Identity Verification (PIV) credentials.",
+      "controls": [
+        {
+          "name": "auth_sso_enabled",
+          "control_type": "internal",
+          "expression": {
+            "operator": "=",
+            "field": "auth_sso_enabled",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "IA-5(7): No Embedded Unencrypted Static Authenticators",
+      "description": "Ensure that unencrypted static authenticators are not embedded in applications or other forms of static storage.",
+      "controls": [
+        {
+          "name": "scanner_secret_detection_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_secret_detection_running",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "IA-8(1): Acceptance of PIV Credentials From Other Agencies",
+      "description": "Accept and electronically verify Personal Identity Verification (PIV) credentials from other federal agencies.",
+      "controls": [
+        {
+          "name": "auth_sso_enabled",
+          "control_type": "internal",
+          "expression": {
+            "operator": "=",
+            "field": "auth_sso_enabled",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "RA-5: Vulnerability Monitoring and Scanning",
+      "description": "Scan for vulnerabilities in the system and hosted applications; employ vulnerability scanning tools and techniques; analyze vulnerability scan reports and results; remediate legitimate vulnerabilities; and share vulnerability information.",
+      "controls": [
+        {
+          "name": "scanner_dep_scanning_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_dep_scanning_running",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "scanner_container_scanning_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_container_scanning_running",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "scanner_dast_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_dast_running",
+            "operator": "=",
+            "value": true
+          }
+        },
+        {
+          "name": "scanner_api_security_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_api_security_running",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "SA-11(1): Static Code Analysis",
+      "description": "Require the developer of the system, system component, or system service to employ static code analysis tools to identify common flaws and document the results of the analysis.",
+      "controls": [
+        {
+          "name": "scanner_sast_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_sast_running",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "SA-11(8): Dynamic Code Analysis",
+      "description": "Require the developer of the system, system component, or system service to employ dynamic code analysis tools to identify common flaws and document the results of the analysis.",
+      "controls": [
+        {
+          "name": "scanner_dast_running",
+          "control_type": "internal",
+          "expression": {
+            "field": "scanner_dast_running",
+            "operator": "=",
+            "value": true
+          }
+        }
+      ]
+    }
+  ]
+}

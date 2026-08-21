@@ -1,0 +1,133 @@
+name: gitlab_compliance_framework
+version: 0.1.0
+description: >
+  GitLab compliance-framework evidence. Optionally reconciles a committed
+  template (FedRAMP 20x, FedRAMP High, NIST 800-53, NIST CSF, or SOC 2) onto
+  the project's group, then records the framework definition and per-project
+  requirement/control pass-fail status. Single-target per invocation; runner
+  does fanout. Read-only unless sync is enabled.
+category: gitlab
+
+supports_targets: true
+
+target_schema:
+  project_id:
+    type: string
+    required: true
+    env: GITLAB_PROJECT_ID
+    description: GitLab project path, e.g. "group/project"
+  url:
+    type: string
+    required: true
+    env: GITLAB_URL
+    description: GitLab instance URL
+  template:
+    type: string
+    required: false
+    default: fedramp_20x
+    env: GITLAB_COMPLIANCE_TEMPLATE
+    description: >
+      Bundled template key (fedramp_20x, fedramp_high_r5, nist_800-53_r5,
+      nist_csf_2, soc2), a bundled filename, or a path to a GitLab-importer
+      JSON file. Default fedramp_20x.
+  framework_name:
+    type: string
+    required: false
+    env: GITLAB_COMPLIANCE_FRAMEWORK_NAME
+    description: >
+      Override the framework name taken from the template JSON. Use when the
+      group already has a framework under a different name than the template.
+  sync:
+    type: boolean
+    required: false
+    default: false
+    env: GITLAB_COMPLIANCE_SYNC
+    description: >
+      When true, create/update the group framework from the template and apply
+      it to this project (requires api scope and Owner on the group). Default
+      false is read-only.
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: gitlab_compliance_framework.json
+  aggregation: per_target
+
+secrets:
+- name: api_token
+  env: GITLAB_API_TOKEN
+  per_target: true
+  description: >
+    GitLab token that can read the project's group compliance frameworks.
+    Project access tokens usually cannot query group GraphQL — use a group
+    access token or PAT. read_api is enough for read-only; api + Owner is
+    required when sync is true.
+
+ksis:
+  - KSI-CMT-LMC
+  - KSI-CMT-RMV
+  - KSI-CMT-RVP
+  - KSI-CMT-VTD
+  - KSI-CNA-DFP
+  - KSI-CNA-EIS
+  - KSI-CNA-IBP
+  - KSI-CNA-MAT
+  - KSI-IAM-AAM
+  - KSI-IAM-APM
+  - KSI-IAM-ELP
+  - KSI-IAM-JIT
+  - KSI-IAM-SNU
+  - KSI-INR-RIR
+  - KSI-INR-RPI
+  - KSI-MLA-EVC
+  - KSI-MLA-LET
+  - KSI-PIY-GIV
+  - KSI-PIY-RSD
+  - KSI-SCR-MIT
+  - KSI-SCR-MON
+  - KSI-SVC-ACM
+  - KSI-SVC-ASM
+  - KSI-SVC-EIS
+  - KSI-SVC-SIN
+  - KSI-SVC-VCM
+  - KSI-SVC-VRI
+
+validators:
+  - id: framework_applied
+    regex: '"applied_to_project":\s*true'
+    proves: The selected compliance framework is applied to the target project.
+    failure_modes:
+      - Framework exists on the group but was never applied to this project
+      - Template name does not match the framework on the group
+      - Token cannot see group-level frameworks (project-scoped token)
+  - id: no_sync_failures
+    regex: '"sync_failed_action_count":\s*0'
+    proves: >
+      Every sync action fully applied (or sync was off). A GitLab rejection of
+      a control shows up as ok:false rather than vanishing.
+    failure_modes:
+      - GitLab silently dropped a control the template asked for
+      - Token lacks permission to create/update frameworks
+      - Instance rejected a control that is Ultimate-only or unknown
+  - id: no_failing_controls
+    regex: '"failing_control_count":\s*0'
+    proves: No automated compliance control is currently FAIL on this project.
+    failure_modes:
+      - A GitLab control expression is not met on the project
+      - Status API is Ultimate-only; Premium fills UNAVAILABLE, not FAIL
+
+evidence_set:
+  reference_id: EVD-GITLAB-COMPLIANCE-FRAMEWORK
+  name: GitLab Compliance Framework Status
+  instructions: >
+    Script: fetchers/gitlab/compliance_framework/fetcher.py. Commands executed:
+    GitLab GraphQL queries for the project's group compliance framework
+    (definition, requirement/control coverage, per-project control and
+    requirement status). When GITLAB_COMPLIANCE_SYNC=true, also runs
+    createComplianceFramework / createComplianceRequirement /
+    updateComplianceRequirement / projectUpdateComplianceFrameworks to
+    reconcile the committed template onto the group and apply it to the
+    project.
