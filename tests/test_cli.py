@@ -1022,3 +1022,137 @@ def test_programs_target_errors_when_no_entry_takes_a_program(stub_programs, tmp
         "programs", "target", "--program", "Beta", "-f", str(path), "--json",
     ]))
     assert "No manifest entry takes a program" in rep["errors"][0]
+
+
+# --------------------------------------------------------------------------- #
+# Manifest discovery — the file this command edits is chosen, never assumed.
+#
+# `-f` used to default to the literal "manifest.yaml" resolved against the CWD,
+# and read_manifest() reads a missing file as an *empty* manifest: from a
+# subdirectory, or with a bare name whose file lives under manifests/, the
+# command silently found nothing and blamed the contents ("no entry takes a
+# program"), then forked a new manifest at the wrong path on the write.
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def manifest_dir(tmp_path, in_repo, monkeypatch):
+    """Point discovery at a scratch manifests/ dir so a picker test doesn't
+    depend on what the working tree holds. The real list_manifests() still does
+    the discovering — only its root moves."""
+    (tmp_path / "manifests").mkdir()
+    real = api.list_manifests
+    monkeypatch.setattr(api, "list_manifests", lambda root: real(tmp_path))
+    return tmp_path / "manifests"
+
+
+def _ver_manifest_at(path, root):
+    """A `ver_manifest` at an arbitrary path: entry added, secret wired, no
+    targets yet."""
+    m = api.init_manifest(str(path.parent / "out"))
+    api.add_entry(m, _VER_FETCHER)
+    api.set_secret(m, _VER_FETCHER, "api_token", "PARAMIFY_API_TOKEN")
+    api.dump_manifest(m, path, root)
+    return path
+
+
+def test_programs_target_offers_the_discovered_manifests(stub_programs, manifest_dir, in_repo, tty):
+    """Manifest names carry no convention to guess from, so the command offers
+    the discovered set and edits the one picked."""
+    first = _ver_manifest_at(manifest_dir / "aaa-first.yaml", in_repo)
+    second = _ver_manifest_at(manifest_dir / "zzz-second.yaml", in_repo)
+    result = runner.invoke(
+        app, ["programs", "target", _VER_FETCHER, "--program", "Beta", *_SHARED_ARGS],
+        input="2\n",
+    )
+    assert result.exit_code == 0, result.output
+    for name in ("aaa-first.yaml", "zzz-second.yaml"):
+        assert name in result.output, "every discovered manifest is offered"
+    assert _entry(api.read_manifest(second), _VER_FETCHER)["targets"], "the pick got the target"
+    assert not _entry(api.read_manifest(first), _VER_FETCHER).get("targets"), \
+        "the manifest not picked is untouched"
+
+
+def test_programs_target_annotates_which_manifests_take_a_program(
+    stub_programs, manifest_dir, in_repo, tty
+):
+    """The pick list says which candidates this command can actually act on —
+    that's the difference between choosing and guessing."""
+    _ver_manifest_at(manifest_dir / "has-programs.yaml", in_repo)
+    api.dump_manifest(api.init_manifest("./out"), manifest_dir / "no-programs.yaml", in_repo)
+    result = runner.invoke(
+        app, ["programs", "target", _VER_FETCHER, "--program", "Beta", *_SHARED_ARGS],
+        input="1\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "1 program entry" in result.output
+    assert "no program entries" in result.output
+
+
+def test_programs_target_uses_the_only_discovered_manifest(
+    stub_programs, manifest_dir, in_repo, tty
+):
+    """One candidate is no choice at all: it's used without a prompt, but named,
+    so the write is never a surprise."""
+    only = _ver_manifest_at(manifest_dir / "whatever-name.yaml", in_repo)
+    result = runner.invoke(
+        app, ["programs", "target", _VER_FETCHER, "--program", "Beta", *_SHARED_ARGS]
+    )
+    assert result.exit_code == 0, result.output  # a prompt with no input would abort
+    assert "whatever-name.yaml" in result.output
+    assert _entry(api.read_manifest(only), _VER_FETCHER)["targets"]
+
+
+def test_programs_target_wants_f_when_it_cannot_prompt(stub_programs, manifest_dir, in_repo):
+    """--json has no way to answer the picker: name the candidates and stop
+    rather than picking one on the caller's behalf."""
+    _ver_manifest_at(manifest_dir / "one.yaml", in_repo)
+    _ver_manifest_at(manifest_dir / "two.yaml", in_repo)
+    rep = _json_err(runner.invoke(app, [
+        "programs", "target", _VER_FETCHER, "--program", "Beta", *_SHARED_ARGS, "--json",
+    ]))
+    assert rep["path"] is None
+    assert "-f" in rep["errors"][0]
+    for name in ("one.yaml", "two.yaml"):
+        assert name in rep["errors"][0]
+
+
+def test_programs_target_reports_no_manifests_at_all(stub_programs, manifest_dir, in_repo):
+    """An empty workspace is its own message, not "no entry takes a program"."""
+    rep = _json_err(runner.invoke(app, [
+        "programs", "target", _VER_FETCHER, "--program", "Beta", *_SHARED_ARGS, "--json",
+    ]))
+    assert "No manifests found" in rep["errors"][0]
+
+
+def test_programs_target_rejects_a_missing_f_instead_of_reading_it_empty(
+    stub_programs, tmp_path, in_repo
+):
+    """A -f that resolves to nothing is an error — and writes nothing, so a typo
+    can't fork a second manifest."""
+    ghost = tmp_path / "ghost.yaml"
+    rep = _json_err(runner.invoke(app, [
+        "programs", "target", _VER_FETCHER, "--program", "Beta", *_SHARED_ARGS,
+        "-f", str(ghost), "--json",
+    ]))
+    assert "no such manifest" in rep["errors"][0]
+    assert not ghost.exists(), "a bad -f must not create a manifest"
+
+
+def test_programs_target_resolves_a_bare_manifest_name(stub_programs, in_repo):
+    """`-f <name>` finds manifests/<name>.yaml from anywhere in the tree, with or
+    without the extension — a bare name is what people type."""
+    name = "_parity_bare_name_test"
+    target = REPO_ROOT / "manifests" / f"{name}.yaml"
+    if target.exists():
+        target.unlink()
+    try:
+        _ver_manifest_at(target, REPO_ROOT)
+        for arg in (f"{name}.yaml", name):
+            rep = _json(runner.invoke(app, [
+                "programs", "target", _VER_FETCHER, "--program", "Beta", *_SHARED_ARGS,
+                "-f", arg, "--json",
+            ]))
+            assert rep["path"] == str(target), f"-f {arg} landed on {rep['path']}"
+    finally:
+        if target.exists():
+            target.unlink()
