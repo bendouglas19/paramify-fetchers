@@ -521,6 +521,32 @@ def test_validate_flags_an_issue_report_with_no_assessment(tmp_path):
     assert any("assessments select" in e for e in errors), errors
 
 
+def test_one_unwired_report_does_not_block_the_others(tmp_path):
+    """A report with no assessment_id is a warning, not a gate.
+
+    upload_run already isolates that file and sends the rest, so failing the
+    preflight stranded reports that were correctly wired — and blocked --dry-run
+    from showing what would have gone.
+    """
+    reports = tmp_path / ISSUE_REPORTS_DIR
+    reports.mkdir(parents=True)
+    for name in ("wired.csv", "unwired.csv"):
+        (reports / name).write_bytes(RAW_CSV)
+    (reports / "_issue_reports.json").write_text(json.dumps({
+        "schema_version": "1.0", "run_id": "r1", "reports": [
+            {"file": "wired.csv", "fetcher_name": "fa", "run_id": "r1",
+             "status": "success", "format": "csv", "assessment_id": "A-1"},
+            {"file": "unwired.csv", "fetcher_name": "fb", "run_id": "r1",
+             "status": "success", "format": "csv", "assessment_id": None},
+        ],
+    }))
+
+    pf = api.issues_upload_preflight(tmp_path, REPO_ROOT, None, dry_run=True)
+    assert pf["ok"], pf["errors"]
+    assert pf["missing_assessment"] == ["fb"]
+    assert any("fb" in w and "assessments select" in w for w in pf["warnings"]), pf
+
+
 def test_validate_passes_once_an_assessment_is_set(tmp_path):
     write_issue_report_fetcher(tmp_path)
     manifest = {"run": {"output_dir": str(tmp_path / "out"), "fetchers": [

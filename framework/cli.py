@@ -379,6 +379,10 @@ def _upload_stage(
         raise typer.Exit(1)
 
     if not json_out:
+        # Non-gating problems worth seeing before a batch runs (a report with no
+        # assessment, say). `.get` because the evidence preflight has no such key.
+        for warning in preflight.get("warnings") or []:
+            _err(f"  {style.mark('WARN')}  {warning}")
         typer.echo(f"Uploading to {preflight['base_url_label']}: {preflight['base_url']}")
 
     try:

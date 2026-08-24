@@ -1135,9 +1135,11 @@ def issues_upload_preflight(
 ) -> dict:
     """Inspect issue-report upload readiness without making Paramify API calls.
 
-    Beyond the evidence preflight's checks this reports how many reports have no
-    assessment to go to — the one failure worth surfacing before a batch starts,
-    since it is fixed in the manifest rather than by retrying.
+    Beyond the evidence preflight's checks this reports which reports have no
+    assessment to go to, in `missing_assessment` and as `warnings`. It is worth
+    surfacing before a batch starts, since it is fixed in the manifest rather than
+    by retrying — but it does not gate `ok`, because the uploader isolates those
+    files and sends the rest.
     """
     uploader = _load_paramify_issues_uploader(root)
     uploader.load_dotenv()
@@ -1147,6 +1149,7 @@ def issues_upload_preflight(
 
     run_path = Path(run_dir)
     errors: List[str] = []
+    warnings: List[str] = []
     file_count = 0
     missing_assessment: List[str] = []
     if not run_path.is_dir():
@@ -1171,7 +1174,11 @@ def issues_upload_preflight(
                 r.get("fetcher_name") or "?" for r in reports if not r.get("assessment_id")
             })
             for name in missing_assessment:
-                errors.append(
+                # A warning, not an error. upload_run already isolates this per
+                # file and sends the rest, so gating the batch on it stranded
+                # reports that were correctly wired — and blocked --dry-run from
+                # showing what would have gone.
+                warnings.append(
                     f"{name}: no assessment_id, so its report cannot be intaken "
                     f"(fix: paramify assessments select {name})"
                 )
@@ -1193,6 +1200,7 @@ def issues_upload_preflight(
         "base_url_label": describe_base_url(base_url),
         "file_count": file_count,
         "missing_assessment": missing_assessment,
+        "warnings": warnings,
         "token_present": token_present,
         "token_source": token_source,
         "dry_run": dry_run,

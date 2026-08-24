@@ -241,6 +241,10 @@ class UploadPage(Vertical):
             palette.pill("present", "ok") if preflight["token_present"]
             else palette.pill("missing", "fail"),
         )
+        # Non-gating: a report with no assessment is skipped by the uploader, not
+        # a reason to refuse the batch. Shown so it is not a surprise afterwards.
+        for warning in preflight.get("warnings") or []:
+            table.add_row("warning", Text(warning, style=palette.WARN))
         if preflight["ok"]:
             submit.disabled = False
         else:
