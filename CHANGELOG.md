@@ -22,9 +22,9 @@ schemas and the `paramify` CLI — not the internal code.
   (`paramify assessments list` / `select`), the same way `paramify programs
   target` picks a program UUID without anyone typing one. Start from
   [`fetchers/_template_issue_report/`](fetchers/_template_issue_report/) and
-  [`docs/issue_report_fetchers.md`](docs/issue_report_fetchers.md). The Paramify
-  REST API spec 0.6.0 is vendored at
-  [`framework/reference/paramify_api_0.6.0.json`](framework/reference/paramify_api_0.6.0.json).
+  [`docs/issue_report_fetchers.md`](docs/issue_report_fetchers.md). Written
+  against Paramify REST API v0 spec 0.6.0
+  ([API documentation](https://app.paramify.com/api/documentation/)).
 
 ### Changed
 

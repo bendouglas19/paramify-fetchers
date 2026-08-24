@@ -26,7 +26,7 @@ Two behaviors differ from the evidence uploader, both forced by the endpoint:
 
 Auth: PARAMIFY_UPLOAD_API_TOKEN (source-agnostic env — .env, secret manager, CI).
 
-Endpoint contract per framework/reference/paramify_api_0.6.0.json.
+Endpoint contract per Paramify REST API v0 spec 0.6.0 (https://app.paramify.com/api/documentation/).
 """
 
 import argparse

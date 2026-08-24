@@ -4,42 +4,45 @@ Vendored copies of external sources of truth. Nothing here is ours to author —
 each file is transcribed or downloaded from an upstream authority, and the point
 of committing it is that the version we built against is pinned and diffable.
 
+The bar for landing a file here is that **code reads it**. An upstream document
+we only consult by eye gets cited by URL and version instead — see the note at
+the bottom on the Paramify API spec, which is the case that tested this rule.
+
 | File | Upstream | Read by |
 |---|---|---|
 | `ksis.yaml` | [FedRAMP consolidated rules](https://github.com/FedRAMP/rules/blob/main/fedramp-consolidated-rules.json) | `api.ksi_coverage()`, `tools/gen_ksi_*.py` |
-| `paramify_api_0.6.0.json` | `https://app.paramify.com/api/v0/documentation.json` | nobody at runtime — human reference |
 
 `ksis.yaml` carries its own header explaining how to re-transcribe it and which
 of its fields are FedRAMP's versus our judgment. Read that before touching it.
 
-## `paramify_api_<version>.json`
+## What is deliberately *not* here: the Paramify REST API spec
 
-The Paramify REST API OpenAPI 3.1 spec. **No code loads this** — it is the
-contract the uploaders were written against, committed so that "which spec did
-this behavior come from" has an answer inside the repo instead of requiring a
-login. [`uploaders/paramify_issues/`](../../uploaders/paramify_issues/) cites it
-by path.
+The uploaders were written against **Paramify REST API v0, spec version 0.6.0**.
+Read it at <https://app.paramify.com/api/documentation/> — in the app, Help (?) →
+API Documentation. The machine-readable OpenAPI 3.1 document behind that page is
+`https://app.paramify.com/api/v0/documentation.json`.
 
-Refresh by downloading a newer spec **alongside** the existing one rather than
-over it:
+That spec used to be vendored here and was removed on purpose. Please don't
+re-add it:
+
+- **Nothing loads it.** It was human reference only, so the repo paid for it
+  without any code depending on it.
+- **It is 2.4 MB / ~54,000 lines pretty-printed** — roughly a fifth of the
+  tracked repo, and the convention that made it readable (a new file per
+  version, never overwritten) meant paying that again on every version bump.
+- **It is public.** Unlike `ksis.yaml`, it needs no login to read, so committing
+  it bought no access we didn't already have.
+
+What actually needed pinning was the *version*, and a version is one line. Cite
+it as "Paramify REST API v0 spec 0.6.0" plus the URL above, the way
+[`uploaders/paramify_issues/`](../../uploaders/paramify_issues/) does, and bump
+that string when the behavior is rewritten against a newer spec.
+
+If you need to review what changed between two versions, diff the live document
+against a saved copy in a scratch directory — outside the repo:
 
 ```bash
 curl -sSfL https://app.paramify.com/api/v0/documentation.json \
-  -o framework/reference/paramify_api_<new-version>.json
+  | python3 -m json.tool > /tmp/paramify_api_new.json
+diff /tmp/paramify_api_old.json /tmp/paramify_api_new.json
 ```
-
-In the app the same file is reachable via Help (?) → API Documentation, then the
-`/api/v0/documentation.json` link.
-
-Two conventions worth keeping:
-
-- **Version in the filename, new file per version.** Overwriting in place gives
-  you a 50,000-line diff of everything that moved in the spec *and* everything
-  that moved in the formatting, which is unreadable. A new file beside the old
-  one makes `git diff --no-index` between the two the upgrade review, and lets a
-  bug report against an older release still point at the spec it shipped with.
-- **Pretty-printed, not minified.** It roughly doubles the file size and is the
-  only reason the diff above is legible.
-
-Once a version is no longer cited by anything, delete it — this directory pins
-what we build against, not a changelog.
