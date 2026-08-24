@@ -362,7 +362,18 @@ def upload_run(
     })
 
     client = None if dry_run else ParamifyClient(token, base_url)
-    already = {} if dry_run else read_intake_log(run_dir)
+    # Read the log in dry-run too. Skipping it made the preview promise to send
+    # files the real run skips as duplicates — and since the endpoint adds rather
+    # than replaces, predicting duplicates is the main thing a preview is for. A
+    # corrupt log must still not crash a preview, so that case degrades to
+    # "cannot predict duplicates" rather than propagating.
+    try:
+        already = read_intake_log(run_dir)
+    except ValueError as e:
+        if not dry_run:
+            raise
+        logger.warning("%s — this dry-run cannot predict duplicates", e)
+        already = {}
     results: List[Dict] = []
     uploaded = skipped_dup = skipped_failed = errors = 0
     halted: Optional[str] = None

@@ -320,6 +320,33 @@ def test_dry_run_sends_nothing_and_writes_no_log(tmp_path):
     assert not (run_dir / "issue-reports" / "_intake_log.json").exists()
 
 
+def test_dry_run_predicts_duplicates(tmp_path):
+    """A preview that ignores the log promises to send what the real run skips.
+
+    Predicting duplicates is the main thing a preview is for here: the endpoint
+    adds rather than replaces, so "would this re-run duplicate?" is the question
+    being asked.
+    """
+    run_dir = make_run(tmp_path, [{"name": "a.csv"}, {"name": "b.csv"}])
+    run_upload(run_dir, FakeClient(raise_501_on="b.csv"))  # only a.csv lands
+
+    client = FakeClient()
+    summary = _upload(run_dir, _client=client, dry_run=True)
+    assert client.sent == [], "a dry-run still sends nothing"
+    outcomes = {r["file"]: r["outcome"] for r in summary["results"]}
+    assert outcomes == {"a.csv": "skipped_duplicate", "b.csv": "would_upload"}
+    assert summary["skipped_duplicate"] == 1
+
+
+def test_dry_run_survives_a_corrupt_log(tmp_path):
+    """A real run refuses an unreadable log; a preview must not crash on one, so
+    it degrades to "cannot predict duplicates" instead."""
+    run_dir = make_run(tmp_path, [{"name": "scan.csv"}])
+    (run_dir / "issue-reports" / "_intake_log.json").write_text("{not json")
+    summary = _upload(run_dir, _client=FakeClient(), dry_run=True)
+    assert summary["results"][0]["outcome"] == "would_upload"
+
+
 def test_corrupt_intake_log_refuses_rather_than_re_uploading(tmp_path):
     """Treating an unreadable log as empty would silently duplicate everything."""
     run_dir = make_run(tmp_path, [{"name": "scan.csv"}])
