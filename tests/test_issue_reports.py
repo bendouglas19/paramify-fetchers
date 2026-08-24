@@ -273,6 +273,39 @@ def test_a_fixed_filename_collapses_a_fanout_run(tmp_path):
     assert records[0]["sha256"] == hashlib.sha256(body.encode()).hexdigest()
 
 
+def test_run_summary_counts_collected_reports(tmp_path):
+    """A run that collected reports says so, because `paramify upload` cannot see
+    them and stopping at the evidence stage leaves them unsent."""
+    write_issue_report_fetcher(tmp_path)
+    manifest = {"run": {"output_dir": str(tmp_path / "out"),
+                        "fetchers": [{"use": "t_vuln_scan"}]}}
+    summary = api.run(manifest, tmp_path)
+    assert summary["issue_reports"] == 1
+
+
+def test_run_summary_reports_zero_for_an_evidence_only_run(tmp_path):
+    """The count must not fire on the common case, or the hint becomes noise."""
+    fdir = tmp_path / "fetchers" / "testcat" / "ev"
+    fdir.mkdir(parents=True)
+    (fdir / "fetcher.yaml").write_text(
+        "name: t_ev\nversion: 0.1.0\ndescription: d\ncategory: testcat\n"
+        "runtime:\n  type: python\n  entry: fetcher.py\n"
+        "output:\n  type: json\n  path: ev.json\n"
+        "secrets: []\n"
+        "evidence_set:\n  reference_id: EVD-T\n  name: T\n"
+    )
+    (fdir / "fetcher.py").write_text(
+        "import json, os\nfrom pathlib import Path\n"
+        'Path(os.environ["EVIDENCE_DIR"], "ev.json").write_text(json.dumps({"a": 1}))\n'
+    )
+    _stage_schemas(tmp_path)
+    summary = api.run(
+        {"run": {"output_dir": str(tmp_path / "out"), "fetchers": [{"use": "t_ev"}]}},
+        tmp_path,
+    )
+    assert summary["issue_reports"] == 0
+
+
 def test_json_issue_report_is_not_enveloped(tmp_path):
     """The case an extension-based guard gets wrong: a JSON scan report is still a
     scan report, and enveloping it would break intake exactly as for a CSV."""

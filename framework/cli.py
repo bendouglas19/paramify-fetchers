@@ -255,6 +255,14 @@ def _human_run_printer():
             )
         elif kind == "run_complete":
             typer.echo(f"\n_run_metadata.json → {style.path(ev['metadata_path'])}")
+            # `paramify upload` cannot see these, so a run that collected reports
+            # and stops at the evidence stage leaves them unsent with no warning.
+            if ev.get("issue_reports"):
+                typer.echo(
+                    f"{ev['issue_reports']} issue report(s) collected — send them "
+                    f"with {style.head('paramify issues upload')} "
+                    f"{style.dim('(paramify upload handles evidence only)')}"
+                )
         # log_line is intentionally not printed (matches prior non-streaming CLI)
     return on_event
 
@@ -750,9 +758,13 @@ def runs_cmd(
             status = "ok"
         when = r.get("started_at") or "?"
         tone = style.ok if status == "ok" else style.warn if status == "incomplete" else style.fail
+        # Reports are called out separately: they need `paramify issues upload`,
+        # and a bare file count gives no hint that a second stage is pending.
+        reports = f"  {r['issue_reports']} report(s)" if r.get("issue_reports") else ""
         typer.echo(
             f"  {style.name('{:26s}'.format(r['run_id']))} {style.dim(when)}  "
-            f"{r['ok']}/{total} ok  {style.dim(str(len(r['files'])) + ' files')}  [{tone(status)}]"
+            f"{r['ok']}/{total} ok  {style.dim(str(len(r['files'])) + ' files')}"
+            f"{style.warn(reports)}  [{tone(status)}]"
         )
 
 

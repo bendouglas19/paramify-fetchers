@@ -1008,6 +1008,13 @@ def run(
         "started_at": started_at,
         "completed_at": completed_at,
         "invocations": metadata["invocations"],
+        # Issue reports go to a different endpoint, so a run that collected any is
+        # not finished after `paramify upload`. Counted here so every front-end can
+        # say so without re-reading the run dir.
+        "issue_reports": sum(
+            1 for r in all_results for name in r.outputs
+            if name.startswith(f"{ISSUE_REPORTS_DIR}/")
+        ),
     }
     emit({"event": "run_complete", **summary})
     return summary
