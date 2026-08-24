@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -47,11 +48,19 @@ def _registered():
     return top, manifest, scripts
 
 
+def _subcommands(group: str) -> set:
+    """Subcommand names registered under one top-level group."""
+    return set(get_command(app).commands[group].commands.keys())
+
+
 EXPECTED_TOP = {
     "list", "catalog", "describe", "ksi", "doctor", "manifests", "runs",
-    "evidence", "validate", "run", "upload", "manifest", "scripts", "programs", "tui",
+    "evidence", "validate", "run", "upload", "manifest", "scripts", "programs",
+    "assessments", "issues", "tui",
 }
 EXPECTED_PROGRAMS = {"list", "target"}
+EXPECTED_ASSESSMENTS = {"list", "select"}
+EXPECTED_ISSUES = {"upload"}
 EXPECTED_MANIFEST = {
     "init", "new", "add", "remove", "set-config", "set-secret",
     "add-target", "remove-target", "set-platform-config",
@@ -76,6 +85,59 @@ def test_programs_subcommands_registered():
     """
     programs = set(get_command(app).commands["programs"].commands.keys())
     assert EXPECTED_PROGRAMS <= programs, f"missing programs subcommands: {EXPECTED_PROGRAMS - programs}"
+
+
+def test_assessments_and_issues_subcommands_registered():
+    """Same guard as above for the issue-report groups: a decorator that never
+    runs leaves the group visible but every subcommand missing at dispatch."""
+    assessments = _subcommands("assessments")
+    issues = _subcommands("issues")
+    assert EXPECTED_ASSESSMENTS <= assessments, (
+        f"missing assessments subcommands: {EXPECTED_ASSESSMENTS - assessments}"
+    )
+    assert EXPECTED_ISSUES <= issues, f"missing issues subcommands: {EXPECTED_ISSUES - issues}"
+
+
+def test_workspace_lookups_read_token_from_dotenv(tmp_path, monkeypatch):
+    """`paramify assessments list` (and `programs list`) must see a token in
+    `.env` the same way `paramify upload` does. Otherwise a working `.env` looks
+    unset and the command fails before it ever hits the API."""
+    monkeypatch.delenv("PARAMIFY_API_TOKEN", raising=False)
+    monkeypatch.delenv("PARAMIFY_UPLOAD_API_TOKEN", raising=False)
+    monkeypatch.delenv("PARAMIFY_API_BASE_URL", raising=False)
+
+    def fake_load_dotenv(*_a, **_k):
+        os.environ["PARAMIFY_UPLOAD_API_TOKEN"] = "from-dotenv"
+        os.environ["PARAMIFY_API_BASE_URL"] = "https://example.test/api/v0"
+        return True
+
+    monkeypatch.setattr("dotenv.load_dotenv", fake_load_dotenv)
+
+    seen: dict = {}
+
+    class _Resp:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {"assessments": []}
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        seen["auth"] = (headers or {}).get("Authorization")
+        seen["url"] = url
+        return _Resp()
+
+    monkeypatch.setattr("requests.get", fake_get)
+    api.list_assessments()
+    assert seen["auth"] == "Bearer from-dotenv"
+    assert seen["url"].startswith("https://example.test/api/v0/")
+
+
+def test_issues_upload_accepts_force():
+    """--force is the supported way to re-intake; if the flag disappears, the
+    only remaining option is deleting the log, which re-sends every file."""
+    cmd = get_command(app).commands["issues"].commands["upload"]
+    assert "force" in {p.name for p in cmd.params}
 
 
 def test_doctor_json_ok_without_manifest():
@@ -293,6 +355,15 @@ API_TO_CLI = {
     "scripts_sync": "scripts sync",
     "list_runs": "runs",
     "read_evidence": "evidence",
+    "read_issue_report": "evidence",
+    "preview_issue_report": "evidence",
+    "issues_upload_preflight": "issues upload",
+    "issues_upload_run": "issues upload",
+    "list_assessments": "assessments list",
+    "set_assessment": "assessments select",
+    # Read-only label helper: how an assessment is named in the picker. The CLI
+    # applies the same function to its own list output.
+    "assessment_display_name": "<implicit: assessment label>",
 }
 
 
@@ -317,7 +388,12 @@ def test_parity_every_tui_api_call_has_a_cli_home():
 def test_parity_mapped_commands_actually_exist():
     """Every concrete command named in API_TO_CLI is really registered."""
     top, manifest, scripts = _registered()
-    groups = {"manifest": manifest, "scripts": scripts}
+    groups = {
+        "manifest": manifest,
+        "scripts": scripts,
+        "assessments": _subcommands("assessments"),
+        "issues": _subcommands("issues"),
+    }
     for api_fn, where in API_TO_CLI.items():
         if where.startswith("<implicit"):
             continue
@@ -400,6 +476,10 @@ def test_describe_json(in_repo, fetchers):
     name = fetchers["any"]["name"]
     data = _json(runner.invoke(app, ["describe", name, "--json"]))
     assert data["name"] == name
+    # Existing fetchers omit `kind` in fetcher.yaml, which must still describe as
+    # evidence so a front-end does not treat them as issue reports.
+    assert data["kind"] == "evidence"
+    assert "issue_report" not in data
 
 
 def test_describe_unknown_exits_1(in_repo):
@@ -1156,3 +1236,168 @@ def test_programs_target_resolves_a_bare_manifest_name(stub_programs, in_repo):
     finally:
         if target.exists():
             target.unlink()
+
+# --------------------------------------------------------------------------- #
+# `assessments select` — the command that writes an assessment UUID into a
+# manifest. Tested at the CLI layer because that is where the decisions are:
+# api.resolve_assessment and api.set_assessment are covered in
+# tests/test_issue_reports.py, but the ~90 lines choosing which to call with what
+# are the ones where a wrong answer files a scan against the wrong system.
+#
+# No issue-report fetcher ships in the repo yet, so the discovery pass is stubbed
+# with a synthetic one rather than waiting on a vendor fetcher to exist.
+# --------------------------------------------------------------------------- #
+
+_ASSESSMENTS = [
+    {"id": "11111111-1111-4111-8111-111111111111", "name": "Production Vuln Scan",
+     "type": "VULNERABILITY", "frequency": "MONTHLY", "reference_id": "AS-1",
+     "mechanism_name": "Tenable", "cycle_count": 3},
+    {"id": "22222222-2222-4222-8222-222222222222", "name": "Production Config Posture",
+     "type": "CONFIGURATION", "frequency": "WEEKLY", "reference_id": "AS-2",
+     "mechanism_name": "Wiz", "cycle_count": 1},
+    {"id": "33333333-3333-4333-8333-333333333333", "name": "Staging Vuln Scan",
+     "type": "VULNERABILITY", "frequency": "MONTHLY", "reference_id": "AS-3",
+     "mechanism_name": "Tenable", "cycle_count": 0},
+]
+
+
+def _mk_report_fetcher(name, assessment_type="VULNERABILITY"):
+    from framework.contract import Fetcher, IssueReport
+    return Fetcher(
+        name=name, version="0.1.0", description="d", category="testcat",
+        runtime_type="python", runtime_entry="fetcher.py", runtime_timeout=None,
+        output_type="csv", output_path="scan.csv", output_aggregation=None,
+        secrets=[], supports_targets=False, target_schema={},
+        path=Path("/nonexistent") / name, config_schema={}, evidence_set=None,
+        kind="issue_report",
+        issue_report=IssueReport(assessment_type=assessment_type, title="T"),
+    )
+
+
+@pytest.fixture
+def stub_assessments(monkeypatch):
+    """Stub the workspace lookup, recording the type filter it was asked for."""
+    calls = []
+
+    def _list(assessment_type=None):
+        calls.append(assessment_type)
+        if assessment_type:
+            return [a for a in _ASSESSMENTS if a["type"] == assessment_type]
+        return list(_ASSESSMENTS)
+
+    monkeypatch.setattr(api, "list_assessments", _list)
+    return calls
+
+
+@pytest.fixture
+def report_manifest(tmp_path, in_repo, monkeypatch):
+    """A manifest holding one issue-report entry and one evidence entry.
+
+    `api.validate` is stubbed out: the synthetic fetcher is not on disk, so real
+    validation would report it as unknown and bury the assertion under noise.
+    Validation has its own tests.
+    """
+    report = _mk_report_fetcher("testcat_vuln_scan")
+    config = _mk_report_fetcher("testcat_cspm", assessment_type="CONFIGURATION")
+    evidence = next(iter(api.discover_fetchers(in_repo).values()))
+
+    monkeypatch.setattr(api, "discover", lambda root: {
+        "fetchers": {report.name: report, config.name: config,
+                     evidence.name: evidence},
+        "platforms": {},
+    })
+    monkeypatch.setattr(api, "validate", lambda *a, **k: [])
+
+    path = tmp_path / "reports.yaml"
+    m = api.init_manifest(str(tmp_path / "out"))
+    for use in (report.name, evidence.name):
+        m["run"]["fetchers"].append({"use": use})
+    path.write_text(__import__("yaml").safe_dump(m, sort_keys=False))
+    return path
+
+
+def _select(manifest, *args, json_out=True):
+    argv = ["assessments", "select", *args, "-f", str(manifest)]
+    if json_out:
+        argv.append("--json")
+    return runner.invoke(app, argv)
+
+
+def _entry_config(manifest, use):
+    m = __import__("yaml").safe_load(Path(manifest).read_text())
+    return next(e.get("config", {}) for e in m["run"]["fetchers"] if e["use"] == use)
+
+
+def test_assessments_select_writes_id_and_name(stub_assessments, report_manifest):
+    """Both fields: the UUID is authoritative, the name makes the manifest
+    readable and a stale UUID noticeable."""
+    rep = _json(_select(report_manifest, "testcat_vuln_scan", "-a", "Production Vuln Scan"))
+    assert rep["ok"] is True
+    cfg = _entry_config(report_manifest, "testcat_vuln_scan")
+    assert cfg["assessment_id"] == _ASSESSMENTS[0]["id"]
+    assert cfg["assessment_name"] == "Production Vuln Scan"
+
+
+def test_assessments_select_filters_by_the_declared_type(stub_assessments, report_manifest):
+    """The fetcher declares CONFIGURATION, so only configuration assessments may
+    be offered — this is what makes pointing a CSPM report at a vulnerability
+    assessment impossible rather than merely discouraged."""
+    _select(report_manifest, "testcat_cspm", "-a", "Production Config Posture")
+    assert stub_assessments == ["CONFIGURATION"]
+
+
+def test_assessments_select_cannot_reach_a_mismatched_assessment(stub_assessments, report_manifest):
+    """A vulnerability assessment is not merely deprioritised for a CONFIGURATION
+    fetcher — it is not in the list, so naming it fails."""
+    rep = _json_err(_select(report_manifest, "testcat_cspm", "-a", "Production Vuln Scan"))
+    assert "no assessment matches" in rep["errors"][0].lower()
+
+
+def test_assessments_select_defaults_to_every_report_entry(stub_assessments, report_manifest):
+    """No fetcher argument means every issue-report entry in the manifest, and
+    only those — the evidence entry must not acquire an assessment."""
+    rep = _json(_select(report_manifest, "-a", "Production Vuln Scan"))
+    assert rep["ok"] is True
+    assert _entry_config(report_manifest, "testcat_vuln_scan")["assessment_id"]
+    evidence = next(
+        e["use"] for e in __import__("yaml").safe_load(report_manifest.read_text())
+        ["run"]["fetchers"] if e["use"] != "testcat_vuln_scan"
+    )
+    assert "assessment_id" not in _entry_config(report_manifest, evidence)
+
+
+def test_assessments_select_refuses_an_evidence_fetcher(stub_assessments, report_manifest):
+    """Writing an assessment onto an evidence entry would sit in the manifest
+    doing nothing; a silent no-op is worse than a refusal."""
+    evidence = next(
+        e["use"] for e in __import__("yaml").safe_load(report_manifest.read_text())
+        ["run"]["fetchers"] if e["use"] != "testcat_vuln_scan"
+    )
+    rep = _json_err(_select(report_manifest, evidence, "-a", "Production Vuln Scan"))
+    assert "not issue-report fetchers" in rep["errors"][0]
+
+
+def test_assessments_select_refuses_an_unknown_fetcher(stub_assessments, report_manifest):
+    rep = _json_err(_select(report_manifest, "nope_not_real", "-a", "Production Vuln Scan"))
+    assert "unknown fetcher" in rep["errors"][0]
+
+
+def test_assessments_select_refuses_an_ambiguous_name(stub_assessments, report_manifest):
+    """"Vuln Scan" matches two. Intaking into the wrong assessment creates issues
+    against the wrong system, so an ambiguous pick must never resolve silently."""
+    rep = _json_err(_select(report_manifest, "testcat_vuln_scan", "-a", "Vuln Scan"))
+    assert "ambiguous" in rep["errors"][0]
+    assert "assessment_id" not in _entry_config(report_manifest, "testcat_vuln_scan")
+
+
+def test_assessments_select_needs_an_explicit_pick_under_json(stub_assessments, report_manifest):
+    """--json cannot answer a prompt, so it must fail with the flag that fixes it
+    rather than hanging a CI job."""
+    rep = _json_err(_select(report_manifest, "testcat_vuln_scan"))
+    assert "--assessment" in rep["errors"][0]
+
+
+def test_assessments_select_accepts_an_id_directly(stub_assessments, report_manifest):
+    rep = _json(_select(report_manifest, "testcat_vuln_scan", "-a", _ASSESSMENTS[2]["id"]))
+    assert rep["ok"] is True
+    assert _entry_config(report_manifest, "testcat_vuln_scan")["assessment_name"] == "Staging Vuln Scan"
