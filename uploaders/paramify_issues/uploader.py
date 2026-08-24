@@ -66,6 +66,18 @@ logger = logging.getLogger("paramify_issues_uploader")
 # 10 GB, and a full Nessus export is routinely hundreds of megabytes.
 _REQUEST_TIMEOUT = 600
 
+# requests buffers the entire multipart body in memory — RequestEncodingMixin
+# ._encode_files calls .read() on file objects and hands the result to
+# encode_multipart_formdata — so peak RSS is roughly twice the report and passing
+# a file handle instead of bytes changes nothing. The endpoint accepts 10 GB; we
+# refuse well below that so an oversized export is one clear message rather than
+# an OOM kill partway through a batch.
+#
+# Lifting this means streaming the body: requests_toolbelt.MultipartEncoder (a new
+# entry in pyproject.toml — it is not currently a declared dependency), or a
+# hand-rolled generator body with an explicit multipart boundary.
+_MAX_REPORT_BYTES = 512 * 1024 * 1024
+
 # Content types the intake endpoint accepts, keyed by the fetcher's declared
 # `output.type`. A report whose format is not here cannot be intaken at all, which
 # the fetcher schema already refuses — this is the second line of that fence.
@@ -453,6 +465,24 @@ def upload_run(
                 )
                 add_result({"file": name, "outcome": "would_upload",
                             "assessment_id": assessment_id, "title": meta["title"]})
+                continue
+
+            size = path.stat().st_size
+            if size > _MAX_REPORT_BYTES:
+                logger.error(
+                    "%s: %d bytes exceeds the in-memory intake limit", name, size
+                )
+                errors += 1
+                add_result({
+                    "file": name,
+                    "outcome": "error",
+                    "reason": (
+                        f"{size / 1048576:.0f} MB exceeds the "
+                        f"{_MAX_REPORT_BYTES // 1048576} MB limit for a single report "
+                        f"(the upload is buffered in memory; streaming intake is not "
+                        f"implemented)"
+                    ),
+                })
                 continue
 
             # Read as bytes and post unchanged — the whole point of an issue

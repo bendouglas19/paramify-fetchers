@@ -407,6 +407,27 @@ def test_failed_collection_can_be_opted_in(tmp_path):
     assert summary["uploaded"] == 1
 
 
+def test_oversized_report_is_one_clear_error_not_an_oom(tmp_path):
+    """requests buffers the whole multipart body, so an enormous export would be
+    an OOM kill partway through a batch. It is refused with a message instead,
+    and the siblings still go."""
+    run_dir = make_run(tmp_path, [{"name": "huge.csv"}, {"name": "small.csv"}])
+    monkeyed = uploader._MAX_REPORT_BYTES
+    uploader._MAX_REPORT_BYTES = 10  # RAW_CSV is larger than this
+    try:
+        (run_dir / "issue-reports" / "small.csv").write_bytes(b"x")
+        client = FakeClient()
+        summary = run_upload(run_dir, client)
+    finally:
+        uploader._MAX_REPORT_BYTES = monkeyed
+
+    outcomes = {r["file"]: r["outcome"] for r in summary["results"]}
+    assert outcomes == {"huge.csv": "error", "small.csv": "uploaded"}
+    reason = next(r["reason"] for r in summary["results"] if r["file"] == "huge.csv")
+    assert "exceeds" in reason and "streaming" in reason
+    assert [x["file"] for x in client.sent] == ["small.csv"]
+
+
 def test_report_listed_but_missing_from_disk_is_an_error(tmp_path):
     run_dir = make_run(tmp_path, [{"name": "gone.csv", "on_disk": False}])
     client = FakeClient()
