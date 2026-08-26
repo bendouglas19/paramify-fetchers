@@ -72,3 +72,6 @@ fetchers/demo/vuln_scan/
 
 # --- Manifests ---
 manifests/*
+
+# Downloaded third-party CrowdStrike response captures (tools/crowdstrike_corpus.py)
+tests/fixtures/crowdstrike_corpus/
