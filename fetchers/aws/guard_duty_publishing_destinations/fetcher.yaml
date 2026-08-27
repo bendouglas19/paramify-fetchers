@@ -1,0 +1,62 @@
+name: aws_guard_duty_publishing_destinations
+version: 0.1.0
+description: >
+  Collects the S3 destinations GuardDuty exports its findings to — the bucket
+  ARN (partition-correct, so commercial and GovCloud both work), derived bucket
+  name and key prefix, the KMS key ARN encrypting the exported objects, and the
+  destination's publishing status. Emits a flat results.destination_arns list of
+  just the bucket ARNs for consumers that only need the endpoint. Complements
+  aws_guard_duty (detector configuration) and aws_guard_duty_findings (finding
+  detail). No detectors is valid evidence that GuardDuty is not enabled;
+  detectors with no publishing destination is valid evidence that findings are
+  not being exported to S3 — neither is a collection failure.
+category: aws
+
+supports_targets: true
+
+runtime:
+  type: bash
+  entry: fetcher.sh
+
+output:
+  type: json
+  path: aws_guard_duty_publishing_destinations.json
+  aggregation: per_target
+
+target_schema:
+  region:
+    type: string
+    required: false
+    env: AWS_DEFAULT_REGION
+    description: Optional. AWS region to collect from; falls back to the ambient region (AWS_REGION / instance) when omitted.
+  profile:
+    type: string
+    required: false
+    env: AWS_PROFILE
+    description: Optional. AWS named profile for multi-account fanout; falls back to the ambient identity (IRSA / instance role / SSO / env) when omitted.
+
+# The AWS credential chain is declared once in fetchers/_categories/aws.yaml
+# (optional static keys + passthrough_env), so this fetcher declares none.
+secrets: []
+
+# Suggested / related — this evidence speaks to these indicators, it does not
+# satisfy them alone. OSM: findings are exported to a centralized, durable,
+# KMS-encrypted store rather than left in GuardDuty's own retention. RVL: the
+# export destination is what makes the findings reviewable and auditable
+# downstream, which is also where the sibling GuardDuty fetchers map.
+ksis:
+  - KSI-MLA-OSM
+  - KSI-MLA-RVL
+
+evidence_set:
+  reference_id: EVD-GUARD-DUTY-PUB-DEST
+  name: GuardDuty Findings Publishing Destinations
+  instructions: >
+    Script: fetcher.sh. Commands executed: aws sts get-caller-identity, aws
+    guardduty list-detectors, aws guardduty list-publishing-destinations (per
+    detector), aws guardduty describe-publishing-destination (per destination —
+    expands DestinationProperties.DestinationArn, DestinationProperties.KmsKeyArn,
+    DestinationType, Status, and PublishingFailureStartTimestamp). The S3 bucket
+    ARN is taken verbatim from the API response rather than constructed, so the
+    partition is correct in both aws and aws-us-gov; bucket_name and key_prefix
+    are parsed from that ARN.

@@ -194,7 +194,7 @@ python tools/gen_ksi_mapping.py
 
 *Controls:* `ac-17.1`, `ac-20.1`, `au-2`, `au-3`, `au-3.1`, `au-4`, `au-5`, `au-6.1`, `au-6.3`, `au-7`, `au-7.1`, `au-8`, `au-9`, `au-11`, `ir-4.1`, `si-4.2`, `si-4.4`, `si-7.7`
 
-*6 fetchers:* [`aws_cloudtrail_configuration`](../fetchers/aws/cloudtrail_configuration), [`aws_securityhub_status`](../fetchers/aws/securityhub_status), [`datadog_log_archives`](../fetchers/datadog/log_archives), [`datadog_siem_configuration`](../fetchers/datadog/siem_configuration), [`datadog_siem_detection_rules`](../fetchers/datadog/siem_detection_rules), [`gcp_cloud_logging_configuration`](../fetchers/gcp/cloud_logging_configuration)
+*7 fetchers:* [`aws_cloudtrail_configuration`](../fetchers/aws/cloudtrail_configuration), [`aws_guard_duty_publishing_destinations`](../fetchers/aws/guard_duty_publishing_destinations), [`aws_securityhub_status`](../fetchers/aws/securityhub_status), [`datadog_log_archives`](../fetchers/datadog/log_archives), [`datadog_siem_configuration`](../fetchers/datadog/siem_configuration), [`datadog_siem_detection_rules`](../fetchers/datadog/siem_detection_rules), [`gcp_cloud_logging_configuration`](../fetchers/gcp/cloud_logging_configuration)
 
 #### ✅ `KSI-MLA-RVL` — Reviewing Logs
 
@@ -202,7 +202,7 @@ python tools/gen_ksi_mapping.py
 
 *Controls:* `ac-2.4`, `ac-6.9`, `au-2`, `au-6`, `au-6.1`, `si-4`, `si-4.4`
 
-*9 fetchers:* [`aws_cloudwatch_high_availability`](../fetchers/aws/cloudwatch_high_availability), [`aws_guard_duty`](../fetchers/aws/guard_duty), [`aws_guard_duty_findings`](../fetchers/aws/guard_duty_findings), [`azure_activity_log_alerts`](../fetchers/azure/activity_log_alerts), [`datadog_monitors_list`](../fetchers/datadog/monitors_list), [`datadog_siem_detection_rules`](../fetchers/datadog/siem_detection_rules), [`datadog_siem_signals`](../fetchers/datadog/siem_signals), [`sentinelone_activities`](../fetchers/sentinelone/activities), [`sentinelone_cloud_detection_rules`](../fetchers/sentinelone/cloud_detection_rules)
+*10 fetchers:* [`aws_cloudwatch_high_availability`](../fetchers/aws/cloudwatch_high_availability), [`aws_guard_duty`](../fetchers/aws/guard_duty), [`aws_guard_duty_findings`](../fetchers/aws/guard_duty_findings), [`aws_guard_duty_publishing_destinations`](../fetchers/aws/guard_duty_publishing_destinations), [`azure_activity_log_alerts`](../fetchers/azure/activity_log_alerts), [`datadog_monitors_list`](../fetchers/datadog/monitors_list), [`datadog_siem_detection_rules`](../fetchers/datadog/siem_detection_rules), [`datadog_siem_signals`](../fetchers/datadog/siem_signals), [`sentinelone_activities`](../fetchers/sentinelone/activities), [`sentinelone_cloud_detection_rules`](../fetchers/sentinelone/cloud_detection_rules)
 
 ### IAM — Identity and Access Management  (6/6)
 
@@ -429,9 +429,9 @@ python tools/gen_ksi_mapping.py
 
 ## By fetcher
 
-171 of 176 fetchers carry a mapping.
+172 of 173 fetchers carry a mapping.
 
-### aws  (80)
+### aws  (81)
 
 | Fetcher | Indicators |
 |---|---|
@@ -476,6 +476,7 @@ python tools/gen_ksi_mapping.py
 | [`aws_glue_encryption_status`](../fetchers/aws/glue_encryption_status) | `KSI-SVC-SIN` |
 | [`aws_guard_duty`](../fetchers/aws/guard_duty) | `KSI-MLA-RVL` |
 | [`aws_guard_duty_findings`](../fetchers/aws/guard_duty_findings) | `KSI-MLA-RVL`, `KSI-SVC-EIS` |
+| [`aws_guard_duty_publishing_destinations`](../fetchers/aws/guard_duty_publishing_destinations) | `KSI-MLA-OSM`, `KSI-MLA-RVL` |
 | [`aws_iam_identity_center`](../fetchers/aws/iam_identity_center) | `KSI-IAM-AAM`, `KSI-IAM-JIT` |
 | [`aws_iam_mfa_status`](../fetchers/aws/iam_mfa_status) | `KSI-IAM-APM` |
 | [`aws_iam_password_policy`](../fetchers/aws/iam_password_policy) | `KSI-IAM-APM` |
@@ -664,4 +665,4 @@ python tools/gen_ksi_mapping.py
 
 ### Unmapped
 
-[`demo_access_review`](../fetchers/demo/access_review), [`demo_audit_logging`](../fetchers/demo/audit_logging), [`demo_encryption_at_rest`](../fetchers/demo/encryption_at_rest), [`demo_hello`](../fetchers/demo/hello), [`demo_vuln_scan`](../fetchers/demo/vuln_scan) — deliberately carry no mapping.
+[`demo_hello`](../fetchers/demo/hello) — deliberately carry no mapping.
