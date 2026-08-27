@@ -1,0 +1,86 @@
+name: sentinelone_vulnerabilities
+version: 0.1.0
+description: >
+  Collects vulnerability findings from SentinelOne Singularity Application Risk /
+  Vulnerability Management (/web/api/v2.1/application-management/risks) for
+  FedRAMP 20x CR26 VER-RPT-VDT reporting. One API record per
+  (CVE x application x endpoint); the fetcher groups them into per-vulnerability
+  entries carrying every field the endpoint exposes plus the affected-endpoint
+  list, and stamps an explicit report_period. Zero vulnerabilities is valid
+  evidence, not a failure — the payload distinguishes "API returned an empty
+  list" from "API call failed". Facts only: severity, scores, and status come
+  verbatim from SentinelOne; no pass/fail or risk judgment is computed.
+category: sentinelone
+
+supports_targets: false
+
+runtime:
+  type: python
+  entry: fetcher.py
+  timeout: 900
+
+output:
+  type: json
+  path: sentinelone_vulnerabilities.json
+
+secrets:
+- name: api_token
+  env: SENTINELONE_API_TOKEN
+  description: >-
+    SentinelOne API token from a service user with Account-level scope and the
+    Viewer role (Application Risk needs Applications -> viewRisks). See
+    fetchers/sentinelone/README.md for the service-user walkthrough.
+- name: api_url
+  env: SENTINELONE_API_URL
+  description: >-
+    SentinelOne management console base URL, no trailing slash. Tenant-specific
+    and region-sharded; any host works, the fetcher appends the API path and
+    never assumes a domain. Commercial: https://usea1-019.sentinelone.net .
+    GovCloud / FedRAMP: https://usgovwe1-901.s1gov.net (s1gov.net domain).
+
+config_schema:
+  reporting_period_days:
+    type: integer
+    default: 30
+    env: SENTINELONE_REPORTING_PERIOD_DAYS
+    description: >
+      Lookback window in days used to derive the report_period.start/end stamped
+      on the payload. VER-RPT-PER requires the reporting window to be explicit
+      and contiguous with the prior report. Note: this does NOT drop older
+      findings — every currently-open vulnerability is collected and each is
+      flagged with detected_in_report_period so a still-open older finding is
+      never silently omitted from the report.
+  scope_ids:
+    type: string
+    required: false
+    env: SENTINELONE_SCOPE_IDS
+    description: >
+      Optional comma-separated SentinelOne Site IDs to constrain scope; sent as
+      the siteIds query param. Omit to collect the full scope the API token can
+      see. UNVERIFIED: account-level scoping (accountIds) has not been confirmed
+      against a live tenant — see the fetcher.py docstring.
+  include_accepted:
+    type: boolean
+    default: false
+    env: SENTINELONE_INCLUDE_ACCEPTED
+    description: >
+      When false (default), vulnerabilities SentinelOne reports as risk-accepted
+      are excluded — VER-RPT-VDT covers non-accepted vulnerabilities, accepted
+      ones belong in VER-RPT-AVI. Excluded records are still counted in
+      collection.records_excluded_accepted so nothing disappears silently.
+
+ksis:
+  - KSI-SVC-EIS
+
+evidence_set:
+  reference_id: EVD-SENTINELONE-VULN-DETAIL
+  name: SentinelOne Vulnerability Scan
+  instructions: >
+    Script: fetcher.py. Calls GET /web/api/v2.1/application-management/risks with
+    Authorization: ApiToken <token>, limit=1000, optional siteIds, and cursor
+    pagination via pagination.nextCursor. Groups the flattened API records by
+    (cveId, application vendor, application name) into per-vulnerability entries
+    with an affected_endpoints list and endpoint_count, retains the verbatim API
+    records under raw_records, and stamps report_period.start/end derived from
+    reporting_period_days. Every API failure is appended to api_failures with
+    endpoint, params, exception type, and message; a non-empty ledger exits 1.

@@ -1,0 +1,49 @@
+# SentinelOne vulnerability detail -> FedRAMP 20x CR26 VER-RPT-VDT source evidence.
+#
+# Collection only. This produces the raw vulnerability facts; the VER-RPT-VDT
+# report wrapper is a separate mapper stage (see uploaders/paramify_issues/) and
+# is NOT built by this manifest.
+#
+# Set before running:
+#   export SENTINELONE_API_TOKEN=<console API token>
+#     Required console permission: Applications -> viewRisks (Application Risk).
+#     A token without it returns 401/403, which lands in api_failures and exits 1.
+#
+# api_url is a SECRET here, matching the convention every SentinelOne fetcher
+# shares (fetchers/sentinelone/README.md). Console hostnames are tenant-specific
+# and region-sharded. Any host works; the fetcher appends the API path and never
+# assumes a domain:
+#   commercial          https://usea1-019.sentinelone.net
+#   GovCloud / FedRAMP  https://usgovwe1-901.s1gov.net     (s1gov.net domain)
+# Replace the placeholder below with your own, or hoist it into a
+# platforms.sentinelone.config block if you add more fetchers that need it.
+#
+# Run:
+#   .venv/bin/paramify validate examples/sentinelone_vulnerabilities.yaml
+#   .venv/bin/paramify run      examples/sentinelone_vulnerabilities.yaml
+#
+# !! The API contract for /web/api/v2.1/application-management/risks is
+# !! reconstructed from third-party integrations, not vendor docs. Read the
+# !! "UNVERIFIED API CONTRACT" block at the top of
+# !! fetchers/sentinelone/vulnerabilities/fetcher.py before trusting a run
+# !! against a real tenant.
+
+run:
+  output_dir: ./evidence
+
+  fetchers:
+    - use: sentinelone_vulnerabilities
+      secrets:
+        api_token: ${env:SENTINELONE_API_TOKEN}
+        api_url: ${env:SENTINELONE_API_URL}
+      config:
+        # Reporting window stamped on the payload as report_period.start/end.
+        # Findings are not truncated to it — see the fetcher's report_period.note.
+        reporting_period_days: 30
+        # Optional: comma-separated Site IDs to constrain scope. Omit to collect
+        # everything the token can see.
+        # scope_ids: "225494730938493804,225494730938493915"
+        #
+        # VER-RPT-VDT covers non-accepted vulnerabilities; accepted ones belong
+        # in VER-RPT-AVI. Flip to true to collect the accepted set instead.
+        include_accepted: false
