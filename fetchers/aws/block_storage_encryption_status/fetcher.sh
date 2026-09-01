@@ -40,6 +40,8 @@ ACCOUNT_ID=$(echo "$CALLER_IDENTITY" | jq -r '.Account // "unknown"')
 ARN=$(echo "$CALLER_IDENTITY" | jq -r '.Arn // "unknown"')
 DATETIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+# --output text renders the API's boolean as `True`/`False`, not `true`/`false`,
+# so the comparison below downcases before testing it.
 ebs_encryption_default=$(aws ec2 get-ebs-encryption-by-default --query "EbsEncryptionByDefault" --output text 2>/dev/null)
 if [ $? -ne 0 ]; then
     echo "aws ec2 get-ebs-encryption-by-default failed" >> "$_FAILURE_LOG"
@@ -116,7 +118,7 @@ jq -n \
         metadata: {profile: $profile, region: $region, datetime: $datetime, account_id: $account_id, arn: $arn},
         results: {
             ebs_default_settings: {
-                encryption_enabled_by_default: (($ebs_default  | ascii_downcase) == "true"),
+                encryption_enabled_by_default: (($ebs_default | ascii_downcase) == "true"),
                 default_kms_key_id: $ebs_kms
             },
             storage_inventory: {ebs: $ebs, efs: $efs},
