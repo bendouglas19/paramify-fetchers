@@ -73,6 +73,44 @@ schemas and the `paramify` CLI — not the internal code.
 
 ### Fixed
 
+- **One unreadable KMS key no longer fails the whole collection.**
+  `aws_kms_key_rotation` exited non-zero when it could not read a single key's
+  rotation status — an AWS-managed key such as `alias/aws/acm`, or a customer key
+  whose policy scopes out the collecting role. The per-key `AccessDenied` was
+  already handled, but every failure landed in one bucket that was checked as
+  "any failure at all", so one unreadable key out of forty failed a run whose
+  evidence was otherwise complete.
+
+  An unreadable key now stays in the payload carrying the reason AWS gave
+  (`rotation_status: "unreadable"`, `collection_error: "AccessDeniedException on
+  GetKeyRotationStatus"`), and the run succeeds. This follows the contract's own
+  guidance that a reader of the evidence file should be able to see the
+  collection was incomplete; the exit code stays the only failure signal.
+
+  Two payload changes come with it. `rotation_enabled` is now `null` for a key
+  that could not be read — it was `false`, which asserted "not rotated" about a
+  key nobody had read and dragged `rotation_percentage` down with it. And that
+  percentage is now taken over the keys actually read, with
+  `readable_keys` / `unreadable_keys` added to the summary beside `total_keys`.
+  A validator keying on the old shape should be checked. This is payload, not
+  contract, so no bump ([`docs/versioning.md`](docs/versioning.md)).
+
+  Collection still fails where the evidence would be empty or wrong: the caller
+  identity, `kms list-keys`, or **every** key being unreadable — that last guard
+  is new, so a broken identity cannot report "0 of 0 keys rotated" as a clean
+  run. Reported by [@jazzl0ver](https://github.com/jazzl0ver) (#44, fixed in #46).
+
+- **EBS encryption-by-default was reported as disabled on accounts where it is
+  enabled.** `aws_block_storage_encryption_status` read the setting with
+  `--output text`, which renders the API's boolean as `True`, and compared it to
+  a lowercase `"true"` that could never match. Any control keyed on
+  `encryption_enabled_by_default` read as unimplemented on a correctly
+  configured account — a false negative in the evidence, not a display quirk.
+
+  This was the only site with the problem: it is the one place in the repo that
+  reads a boolean through `--query … --output text` and compares it to a
+  lowercase literal. Fixed by [@jazzl0ver](https://github.com/jazzl0ver) (#47).
+
 - **`docs/porting_playbook.md` no longer tells you to derive `reference_id` from
   a KSI id.** It offered `reference_id: <stable id, e.g. KSI-IAM-01>` as the
   example, which is precisely the advice that cannot survive a renumbering —
