@@ -141,9 +141,10 @@ fetcher-defined. Error data goes in exactly these three places and nowhere else:
   back and the run is unaffected.
 
   **Call the shared helper; do not write this block yourself.** The write is nine
-  lines of stdlib — which is exactly why it got copy-pasted into 26 entry scripts
-  under three different names, while six whole categories never copied it and so
-  report nothing at all. One name, one implementation per runtime:
+  lines of stdlib — which is exactly why it got copy-pasted 27 times under two
+  names (`report_failure` 25 times, `write_status` twice), while seven whole
+  categories never copied it and so reported nothing at all. One name, one
+  implementation per runtime:
 
   - **Python** — `sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "_lib"))`, then
     `from fetcher_status import report_failure`. Same mechanism as a category
@@ -151,9 +152,10 @@ fetcher-defined. Error data goes in exactly these three places and nowhere else:
   - **Bash** — `source "$(dirname "$0")/../../_lib/status.sh"`, then
     `report_failure "<reason>" [code]`.
 
-  The name is `report_failure`. `write_status`, `report_status`, and an inline
-  `os.environ.get("FETCHER_STATUS_FILE")` are prior art, not alternatives. A
-  category-shared module may re-export it; it must not reimplement it.
+  The name is `report_failure`. `write_status` (the deprecated alias in
+  `azure_common` and `gcp_common`) and a hand-rolled
+  `os.environ.get("FETCHER_STATUS_FILE")` write are prior art, not alternatives.
+  A category-shared module may re-export it; it must not reimplement it.
 
 - **The runner never reads inside your `payload`.** **Exit code is the only failure
   signal**, and `metadata.status` derives from it alone. Consulting your own payload
@@ -264,13 +266,20 @@ These are accepted violations during the porting period. Each is tracked, scoped
   `error`/`error_code` the runner already read from `$FETCHER_STATUS_FILE`. The
   classification reaches every evidence envelope but not the run index, so
   "what failed in this run, and why" still means opening each file. Additive fix.
-- **103 of 183 fetchers predate the reporting clause above.** `aws` (80), `okta`
-  (8), `knowbe4` (4), `k8s` (3), `paramify` (3), `rippling` (3), and `checkov` (2)
-  write no `$FETCHER_STATUS_FILE` at all, so every one of their failures reaches an
-  operator as a stderr tail. The bash families additionally keep a `_FAILURE_LOG`
-  whose only reader is `wc -l`, so the causes they *do* record are counted and
-  discarded. Backfilling them is what the clause above exists to define, not
-  something it describes as already true.
+- **The `aws` family reports a reason but not a classification.** All 80 write
+  `$FETCHER_STATUS_FILE`, and all 80 pass `partial_failure` as the `code`: they
+  count and quote the calls that broke rather than classifying why. The reason
+  text carries that information; the `code` does not yet discriminate
+  `auth_failed` from `rate_limited` from `not_authorized`. The other bash
+  families already classify (`knowbe4` uses `bad_config` and `internal_error`,
+  `k8s` uses `target_unreachable`, `checkov` uses `bad_config`), so this is an
+  `aws` gap, not a runtime limitation — and it is what the not-enabled work
+  needs.
+- **The payload failure ledger is not emitted by the bash families.**
+  `metadata.partial_failure` + `metadata.api_failures[]` (§ Output) is a SHOULD,
+  and `azure`/`gcp` emit it; the 80 `aws` payloads carry neither. Adding keys to
+  80 payloads can move what a live validator matches on, so it belongs in its own
+  change rather than alongside the status-channel backfill.
 - **`output.path` semantics** for per-target fanout (relative filename vs. base name vs. template) aren't pinned by the schema. v0.x convention: the fetcher derives its own per-target filename from the target identifier.
 
 ---
@@ -285,9 +294,11 @@ When in doubt, mirror the shape of one of these:
   `build_payload` — the canonical `metadata.partial_failure` + `metadata.api_failures`
   shape, plus `classify_failure_code` for picking the `code`. It still spells the
   status write `write_status`; that is the rename the clause above calls for.
-- **Single-target bash:** none yet. Every bash fetcher in the tree predates the
-  reporting clause (see Interim clauses), so there is nothing to mirror. Follow
-  § Output directly and you will be the reference.
+- **Single-target bash:** [`fetchers/aws/guard_duty_findings/`](../fetchers/aws/guard_duty_findings/)
+  — sources `aws/_shared/aws.sh` (which re-exports `report_failure`), accumulates
+  each failed call into `$_FAILURE_LOG`, and reports the count plus the first
+  three reasons on exit. Mirror its failure path; note that it passes a fixed
+  `partial_failure` code rather than classifying (see Interim clauses).
 
 Two fetchers were cited here until this revision — `okta/phishing_resistant_mfa`
 (single-target Python) and `okta/authenticators` (single-target bash). Neither
