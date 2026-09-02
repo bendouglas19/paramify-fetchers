@@ -1,0 +1,26 @@
+name: servicenow_cases
+version: 0.1.0
+description: Pulls customer service cases from the ServiceNow Paramify Evidence API and writes the raw JSON response as evidence.
+category: servicenow
+
+supports_targets: false
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: servicenow_cases.json
+
+secrets:
+- name: api_token
+  env: SERVICENOW_API_TOKEN
+  description: Bearer token for authenticating to the ServiceNow REST API.
+- name: instance_url
+  env: SERVICENOW_CASES_INSTANCE_URL
+  description: Base URL of the ServiceNow instance, e.g. https://humanifygdev.servicenowservices.com
+- name: last_run
+  env: SERVICENOW_CASES_LAST_RUN
+  required: false
+  description: "Watermark timestamp (YYYY-MM-DD HH:MM:SS). When set, only cases modified since this time are returned. Omit for a full pull."

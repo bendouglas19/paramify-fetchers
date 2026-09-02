@@ -1,0 +1,26 @@
+name: servicenow_changes
+version: 0.1.0
+description: Pulls ITSM change records from the ServiceNow Paramify ITSM API and writes the raw JSON response as evidence.
+category: servicenow
+
+supports_targets: false
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: servicenow_changes.json
+
+secrets:
+- name: api_token
+  env: SERVICENOW_API_TOKEN
+  description: Bearer token for authenticating to the ServiceNow REST API.
+- name: instance_url
+  env: SERVICENOW_CHANGES_INSTANCE_URL
+  description: Base URL of the ServiceNow instance, e.g. https://humanifygdev.service-now.com
+- name: last_run
+  env: SERVICENOW_CHANGES_LAST_RUN
+  required: false
+  description: "Watermark timestamp (YYYY-MM-DD HH:MM:SS). When set, only changes modified since this time are returned. Omit for a full pull."
