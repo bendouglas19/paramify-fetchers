@@ -13,10 +13,11 @@ PYTHONPATH, so `framework` is not importable from here.
 
 Why this file exists at all: the write below is nine lines, and an earlier
 revision of the porting playbook printed those nine lines and told authors to
-paste them. The result was 26 private copies under three different names
-(`report_failure`, `write_status`, and an inline `os.environ.get(...)`), plus six
-whole categories that never pasted anything and so reported nothing. See
-docs/fetcher_contract.md § Output.
+paste them. The result was 27 copies under two names: `report_failure` 25 times
+(22 fetchers, falcon_client, and both templates) and `write_status` twice
+(azure_common, gcp_common) — plus seven whole categories (aws, okta, knowbe4,
+k8s, paramify, rippling, checkov) that never pasted anything and so reported
+nothing. See docs/fetcher_contract.md § Output.
 """
 
 from __future__ import annotations
