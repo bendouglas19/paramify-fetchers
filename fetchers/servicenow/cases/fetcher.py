@@ -44,9 +44,14 @@ def main() -> int:
     # Runner + secret resolver will replace this when the framework lands.
     load_dotenv()
 
-    api_token = os.environ.get("SERVICENOW_API_TOKEN", "").strip()
-    if not api_token:
-        report_failure("SERVICENOW_API_TOKEN is not set", "bad_config")
+    username = os.environ.get("SERVICENOW_USERNAME", "").strip()
+    if not username:
+        report_failure("SERVICENOW_USERNAME is not set", "bad_config")
+        return 1
+
+    password = os.environ.get("SERVICENOW_PASSWORD", "").strip()
+    if not password:
+        report_failure("SERVICENOW_PASSWORD is not set", "bad_config")
         return 1
 
     instance_url = (
@@ -60,13 +65,13 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     url = f"{instance_url}/api/sn_customerservice/paramify_evidence/cases"
-    headers = {"Authorization": f"Bearer {api_token}", "Accept": "application/json"}
+    headers = {"Accept": "application/json"}
 
     last_run = os.environ.get("SERVICENOW_CASES_LAST_RUN", "").strip()
     params = {"sysparm_last_run": last_run} if last_run else {}
 
     try:
-        resp = requests.get(url, headers=headers, params=params, timeout=60)
+        resp = requests.get(url, headers=headers, params=params, auth=(username, password), timeout=60)
     except requests.RequestException as e:
         report_failure(
             f"could not reach ServiceNow cases endpoint: {e}", "target_unreachable"
