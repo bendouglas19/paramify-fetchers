@@ -20,9 +20,12 @@ secrets:
 - name: password
   env: SERVICENOW_PASSWORD
   description: ServiceNow password for basic auth.
-- name: instance_url
-  env: SERVICENOW_CHANGES_INSTANCE_URL
-  description: Base URL of the ServiceNow instance, e.g. https://humanifygdev.service-now.com
+- name: api_url
+  env: SERVICENOW_CHANGES_API_URL
+  description: >-
+    Full URL of the changes endpoint, including the scoped-app path — the path is
+    not assumed, because the scope prefix differs per instance. For example
+    https://<instance>.example.com/api/<scope>/paramify_itsm/changes
 
 config_schema:
   last_run:

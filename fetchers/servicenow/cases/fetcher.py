@@ -54,24 +54,21 @@ def main() -> int:
         report_failure("SERVICENOW_PASSWORD is not set", "bad_config")
         return 1
 
-    instance_url = (
-        os.environ.get("SERVICENOW_CASES_INSTANCE_URL", "").strip().rstrip("/")
-    )
-    if not instance_url:
-        report_failure("SERVICENOW_CASES_INSTANCE_URL is not set", "bad_config")
+    api_url = os.environ.get("SERVICENOW_CASES_API_URL", "").strip().rstrip("/")
+    if not api_url:
+        report_failure("SERVICENOW_CASES_API_URL is not set", "bad_config")
         return 1
 
     output_dir = Path(os.environ.get("EVIDENCE_DIR", "./evidence"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    url = f"{instance_url}/api/sn_customerservice/paramify_evidence/cases"
     headers = {"Accept": "application/json"}
 
     last_run = os.environ.get("SERVICENOW_CASES_LAST_RUN", "").strip()
     params = {"sysparm_last_run": last_run} if last_run else {}
 
     try:
-        resp = requests.get(url, headers=headers, params=params, auth=(username, password), timeout=60)
+        resp = requests.get(api_url, headers=headers, params=params, auth=(username, password), timeout=60)
     except requests.RequestException as e:
         report_failure(
             f"could not reach ServiceNow cases endpoint: {e}", "target_unreachable"

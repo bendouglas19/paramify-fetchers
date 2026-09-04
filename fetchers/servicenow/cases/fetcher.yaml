@@ -20,9 +20,12 @@ secrets:
 - name: password
   env: SERVICENOW_PASSWORD
   description: ServiceNow password for basic auth.
-- name: instance_url
-  env: SERVICENOW_CASES_INSTANCE_URL
-  description: Base URL of the ServiceNow instance, e.g. https://humanifygdev.servicenowservices.com
+- name: api_url
+  env: SERVICENOW_CASES_API_URL
+  description: >-
+    Full URL of the cases endpoint, including the scoped-app path — the path is
+    not assumed, because the scope prefix differs per instance. For example
+    https://<instance>.example.com/api/sn_customerservice/paramify_evidence/cases
 
 config_schema:
   last_run:
