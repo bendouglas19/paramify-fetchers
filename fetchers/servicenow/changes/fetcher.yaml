@@ -23,7 +23,13 @@ secrets:
 - name: instance_url
   env: SERVICENOW_CHANGES_INSTANCE_URL
   description: Base URL of the ServiceNow instance, e.g. https://humanifygdev.service-now.com
-- name: last_run
-  env: SERVICENOW_CHANGES_LAST_RUN
-  required: false
-  description: "Watermark timestamp (YYYY-MM-DD HH:MM:SS). When set, only changes modified since this time are returned. Omit for a full pull."
+
+config_schema:
+  last_run:
+    type: string
+    required: false
+    env: SERVICENOW_CHANGES_LAST_RUN
+    description: >-
+      Watermark timestamp (YYYY-MM-DD HH:MM:SS). When set, only changes modified
+      since this time are returned. Omit for a full pull — the fetcher persists
+      no watermark of its own, so an incremental pull yields partial evidence.
