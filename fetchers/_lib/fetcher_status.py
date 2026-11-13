@@ -17,7 +17,11 @@ paste them. The result was 27 copies under two names: `report_failure` 25 times
 (22 fetchers, falcon_client, and both templates) and `write_status` twice
 (azure_common, gcp_common) — plus seven whole categories (aws, okta, knowbe4,
 k8s, paramify, rippling, checkov) that never pasted anything and so reported
-nothing. See docs/fetcher_contract.md § Output.
+nothing.
+
+The `write_status` alias is gone: azure_common and gcp_common re-export
+`report_failure`, and all 46 of their fetchers call it by that name. There is
+one spelling now. See docs/fetcher_contract_guide.md, step 6.
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ from typing import Optional
 
 __all__ = ["report_failure", "STATUS_CODES"]
 
-# The contract's closed set for `code` (docs/fetcher_contract.md § Output).
+# The contract's closed set for `code`.
 # Exit codes stay binary (0 / non-zero); the category goes here, so the
 # exit-code space — shared with the shell and with signals — stays uncarved.
 STATUS_CODES = frozenset(
@@ -44,6 +48,8 @@ STATUS_CODES = frozenset(
         "bad_config",
         "partial_failure",
         "internal_error",
+        # A comparator's input failed or is missing; that input's evidence holds the cause.
+        "input_failed",
     }
 )
 

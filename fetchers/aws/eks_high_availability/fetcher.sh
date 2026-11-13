@@ -23,7 +23,7 @@ _TARGET_ID="$(aws_target_id "$REGION")"
 OUTPUT_JSON="$OUTPUT_DIR/aws_eks_high_availability_${_TARGET_ID}.json"
 _FETCHER_TMP_JSON="$(mktemp -t aws_eks_high_availability.XXXXXX.json)"
 _FAILURE_LOG="$(mktemp -t aws_eks_high_availability_fail.XXXXXX)"
-trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG"' EXIT
+trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG" "$_AWS_ERR_LOG"' EXIT
 
 log_info() { printf '%s INFO aws_eks_high_availability %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_error() { printf '%s ERROR aws_eks_high_availability %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
@@ -123,13 +123,4 @@ if [ -f "$OUTPUT_JSON" ]; then
     log_info "Total EKS Clusters Validated: $total_clusters"
 fi
 
-failure_count=$(wc -l < "$_FAILURE_LOG" 2>/dev/null | tr -d ' ')
-failure_count=${failure_count:-0}
-if [ "$failure_count" -gt 0 ]; then
-    _reasons="$(head -n 3 "$_FAILURE_LOG" | tr '\n' '; ')"
-    [ "$failure_count" -gt 3 ] && _reasons="${_reasons}(+$((failure_count - 3)) more)"
-    report_failure "$failure_count AWS API failure(s); first: $_reasons" partial_failure
-    exit 1
-fi
-
-log_info "Evidence saved to $OUTPUT_JSON"
+aws_finish

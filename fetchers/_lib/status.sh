@@ -8,7 +8,7 @@
 #       exit 1
 #   fi
 #
-# See docs/fetcher_contract.md § Output. The Python twin is fetcher_status.py in
+# See docs/fetcher_contract_guide.md, step 6. The Python twin is fetcher_status.py in
 # this directory; keep the two behaviours identical.
 
 # _fetcher_label <path-to-entry-script> -- "<category>_<name>", matching the
@@ -75,7 +75,7 @@ report_failure() {
   # Only the contract's closed set is allowed through; anything else is dropped
   # rather than written, so a typo can't invent a category downstream code reads.
   case "$code" in
-    auth_failed|not_authorized|target_unreachable|rate_limited|bad_config|partial_failure|internal_error) ;;
+    auth_failed|not_authorized|target_unreachable|rate_limited|bad_config|partial_failure|internal_error|input_failed) ;;
     "") ;;
     *)
       printf '%s WARNING %s dropping unrecognized status code %s\n' \

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # One implementation per runtime lives in fetchers/_lib; a category-shared module
-# may RE-EXPORT it and must not reimplement it (docs/fetcher_contract.md § Output).
+# may RE-EXPORT it and must not reimplement it (docs/fetcher_contract_guide.md, step 6).
 # Same mechanism a fetcher uses, one directory further up: this file is
 # fetchers/gcp/_shared/, so fetchers/_lib is parents[2] / "_lib".
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_lib"))
@@ -114,12 +114,6 @@ def _one_line(text: Any, limit: int = 800) -> str:
     """
     collapsed = " ".join(str(text).split())
     return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"
-
-
-# Deprecated alias: the standard name is `report_failure` (docs/fetcher_contract.md
-# § Output). Kept only so the gcp fetchers that import `write_status` keep working
-# until they are moved over; new code must import `report_failure`.
-write_status = report_failure
 
 
 # Substrings mapping a recorded failure onto a STATUS_CODES category, matched

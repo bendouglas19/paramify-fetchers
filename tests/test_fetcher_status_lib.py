@@ -2,7 +2,7 @@
 
 Both runtimes must behave identically, because a fetcher author picks one by
 language and the contract promises the same thing either way
-(docs/fetcher_contract.md § Output). So every behavioural test here runs against
+(docs/fetcher_contract_guide.md, step 6). So every behavioural test here runs against
 the Python helper AND the bash one, from the same table.
 """
 
@@ -26,6 +26,7 @@ CODES = {
     "bad_config",
     "partial_failure",
     "internal_error",
+    "input_failed",
 }
 
 
