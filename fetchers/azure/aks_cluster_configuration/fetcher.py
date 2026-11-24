@@ -10,6 +10,7 @@ cluster mid-provision or in a failed state is exactly the one a reviewer needs t
 
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from azure_common import (  # noqa: E402
     NOT_REGISTERED,
     REGISTRATION_UNKNOWN,
     Collector,
+    arm_client_kwargs,
     build_payload,
     classify_failure_code,
     coverage_percentage,
@@ -28,18 +30,25 @@ from azure_common import (  # noqa: E402
     failure_reason,
     model_attr,
     provider_registration_status,
+    report_failure,
     resolve_subscription,
     resource_group_from_id,
     sanitize_for_filename,
     write_evidence,
-    write_status,
 )
+from resource_exclusions import ResourceExclusions  # noqa: E402
 
 logger = logging.getLogger("azure_aks_cluster_configuration")
 
 # auto_upgrade_profile.upgrade_channel: "none" is the literal for "no automatic
 # upgrades"; an absent field means the same thing.
 UPGRADE_CHANNEL_NONE = "none"
+# auto_upgrade_profile.node_os_upgrade_channel values that replace node images (or apply security patches to them)
+# on their own. Unmanaged leaves node images alone but lets the node OS's own updater install security updates, such
+# as Ubuntu's nightly unattended upgrades with no automatic reboot; None installs nothing.
+NODE_OS_AUTO_UPGRADE_CHANNELS = frozenset({"securitypatch", "nodeimage"})
+NODE_OS_UNMANAGED_CHANNEL = "unmanaged"
+KINDS = ("cluster",)
 
 
 # --- projection: the only code that touches an azure-mgmt model ---
@@ -57,8 +66,24 @@ def project_agent_pool_profile(profile) -> dict:
         "os_disk_type": model_attr(profile, "os_disk_type"),
         "enable_encryption_at_host": model_attr(profile, "enable_encryption_at_host"),
         "enable_auto_scaling": model_attr(profile, "enable_auto_scaling"),
+        "min_count": model_attr(profile, "min_count"),
         "orchestrator_version": model_attr(profile, "orchestrator_version"),
         "vnet_subnet_id": model_attr(profile, "vnet_subnet_id"),
+        # Node security: FIPS image, the node image build, and the pool's security profile
+        # (Trusted Launch flags and SSH access). Each is left None when Azure omits it, so a
+        # FIPS claim reads "unknown", never a false "not FIPS", when the field was not returned.
+        "enable_fips": model_attr(profile, "enable_fips"),
+        "node_image_version": model_attr(profile, "node_image_version"),
+        "security_profile": project_agent_pool_security_profile(model_attr(profile, "security_profile")),
+    }
+
+
+def project_agent_pool_security_profile(security_profile) -> dict:
+    """Read an `AgentPoolSecurityProfile`: Trusted Launch (secure boot, vTPM) and SSH access."""
+    return {
+        "enable_secure_boot": model_attr(security_profile, "enable_secure_boot"),
+        "enable_vtpm": model_attr(security_profile, "enable_vtpm"),
+        "ssh_access": model_attr(security_profile, "ssh_access"),
     }
 
 
@@ -144,9 +169,32 @@ def agent_pool_record(profile: dict) -> dict:
         "os_disk_type": profile.get("os_disk_type"),
         "enable_encryption_at_host": bool(profile.get("enable_encryption_at_host") or False),
         "enable_auto_scaling": bool(profile.get("enable_auto_scaling") or False),
+        "min_count": profile.get("min_count"),
         "orchestrator_version": profile.get("orchestrator_version"),
         "vnet_subnet_id": profile.get("vnet_subnet_id"),
+        # Tri-state on purpose (see project_agent_pool_profile): True, False, or None for not returned.
+        "enable_fips": _tri_state(profile.get("enable_fips")),
+        "node_image_version": profile.get("node_image_version"),
+        "secure_boot_enabled": _tri_state((profile.get("security_profile") or {}).get("enable_secure_boot")),
+        "vtpm_enabled": _tri_state((profile.get("security_profile") or {}).get("enable_vtpm")),
+        # "Disabled" or "LocalUser" (the AKS enum); None when the pool predates the field.
+        "ssh_access": (profile.get("security_profile") or {}).get("ssh_access"),
     }
+
+
+def _tri_state(value):
+    """A boolean Azure returned, or None when it returned nothing: never coerce unknown to False.
+
+    A string is read by its text ("true"/"false"), never by truthiness: bool("false") is True.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        return True if text in ("true", "1", "yes") else False if text in ("false", "0", "no") else None
+    return bool(value)
 
 
 def cluster_record(cluster: dict) -> dict:
@@ -168,6 +216,13 @@ def cluster_record(cluster: dict) -> dict:
         "resource_group": resource_group_from_id(resource_id),
         "provisioning_state": cluster.get("provisioning_state"),
         "sku_tier": cluster.get("sku_tier"),
+        # SDK-projected values before normalization, not the raw HTTP response.
+        # None means no value was supplied, not explicit false or an empty list.
+        "configuration_observations": {
+            key: cluster.get(key)
+            for key in ("rbac_enabled", "local_accounts_disabled",
+                        "enable_private_cluster", "authorized_ip_ranges")
+        },
         # --- API server exposure ---
         "public_fqdn": cluster.get("public_fqdn"),
         "private_fqdn": private_fqdn,
@@ -216,8 +271,71 @@ def cluster_record(cluster: dict) -> dict:
     }
 
 
-def summarize(clusters: list[dict]) -> dict:
-    """Coverage counts across the cluster estate, one per Prowler AKS check."""
+EXPECTED_POOLS_ENV = "AZURE_AKS_EXPECTED_AUTOSCALING_POOLS"
+_POOL = re.compile(r"^[a-z][a-z0-9]{0,11}$")
+_CLUSTER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$")
+
+
+def parse_expected_pools(value: str | None) -> tuple[list[dict] | None, list[str]]:
+    """`pool` or `cluster/pool` entries; None when unset. A bound entry is checked only in that cluster, an unbound one
+    in every in-scope cluster, because pool names are unique only within a cluster."""
+    if not (value or "").strip():
+        return None, []
+    expected, invalid = [], []
+    for entry in (e.strip() for e in (value or "").split(",")):
+        if not entry:
+            continue
+        cluster, _, pool = entry.rpartition("/")
+        pool = pool.lower()
+        if _POOL.match(pool) and (not cluster or _CLUSTER.match(cluster)):
+            expected.append({"cluster": cluster or None, "pool": pool})
+        else:
+            invalid.append(entry)
+    return expected, invalid
+
+
+def expected_pool_checks(clusters: list[dict], expected: list[dict]) -> list[dict]:
+    """Each expected pool in each cluster it applies to: present, autoscaling, and its node count. A pool at zero
+    nodes stays expected and is judged like any other; a bound cluster that wasn't found leaves its pools missing."""
+    out = []
+    for c in clusters:
+        name = (c.get("name") or "").lower()
+        pools = {(p.get("name") or "").lower(): p for p in c["agent_pool_profiles"]}
+        for e in expected:
+            if e["cluster"] is not None and e["cluster"].lower() != name:
+                continue
+            p = pools.get(e["pool"])
+            out.append({"cluster": c.get("name"), "pool": e["pool"], "cluster_found": True, "present": p is not None,
+                        "autoscaling": p["enable_auto_scaling"] if p else None, "node_count": p.get("count") if p else None,
+                        "min_count": p.get("min_count") if p else None})
+    names = {(c.get("name") or "").lower() for c in clusters}
+    out += [{"cluster": e["cluster"], "pool": e["pool"], "cluster_found": False, "present": False, "autoscaling": None,
+             "node_count": None, "min_count": None}
+            for e in expected if e["cluster"] is not None and e["cluster"].lower() not in names]
+    return out
+
+
+def summarize_expected_pools(clusters: list[dict] | None, expected: list[dict] | None) -> dict:
+    keys = ("expected_autoscaling_pools", "expected_autoscaling_pools_missing", "expected_autoscaling_pools_missing_names",
+            "expected_autoscaling_pools_not_autoscaling", "expected_autoscaling_pools_not_autoscaling_names",
+            "expected_autoscaling_pools_at_zero_nodes", "all_expected_pools_autoscaling")
+    if clusters is None or expected is None:
+        return dict.fromkeys(keys)
+    checks = expected_pool_checks(clusters, expected)
+    missing = sorted(f"{k['cluster']}/{k['pool']}" for k in checks if not k["present"])
+    off = sorted(f"{k['cluster']}/{k['pool']}" for k in checks if k["present"] and not k["autoscaling"])
+    return dict(zip(keys, (len(checks), len(missing), missing, len(off), off,
+                           sum(1 for k in checks if k["present"] and k["node_count"] == 0),
+                           bool(checks) and not missing and not off)))
+
+
+def summarize(clusters: list[dict] | None, expected_pools: list[dict] | None = None) -> dict:
+    """Coverage counts across the cluster estate, one per Prowler AKS check.
+
+    `clusters` None means the list could not be read: every count is null, never 0.
+    """
+    if clusters is None:
+        return dict.fromkeys(summarize([], []))
     total = len(clusters)
     private = sum(1 for c in clusters if c["private_cluster"])
     restricted = sum(1 for c in clusters if c["api_server_access_restricted"])
@@ -246,16 +364,55 @@ def summarize(clusters: list[dict]) -> dict:
         ),
         "clusters_with_public_node_ips": sum(1 for c in clusters if c["node_public_ip_pools"]),
         "total_agent_pools": sum(len(c["agent_pool_profiles"]) for c in clusters),
+        "autoscaling_agent_pools": sum(1 for c in clusters for p in c["agent_pool_profiles"] if p.get("enable_auto_scaling") is True),
+        # SecurityPatch and NodeImage update node images automatically. Unmanaged is counted apart: the node OS may
+        # still install its own updates, which this count must not read as "no patching".
+        "node_os_auto_upgrade_clusters": sum(
+            1 for c in clusters if str(c.get("node_os_upgrade_channel") or "").lower() in NODE_OS_AUTO_UPGRADE_CHANNELS
+        ),
+        "node_os_unmanaged_clusters": sum(
+            1 for c in clusters if str(c.get("node_os_upgrade_channel") or "").lower() == NODE_OS_UNMANAGED_CHANNEL
+        ),
+        "node_os_upgrade_channel_unknown_clusters": sum(1 for c in clusters if c.get("node_os_upgrade_channel") is None),
+        **summarize_node_security([p for c in clusters for p in c["agent_pool_profiles"]]),
         # Sorted unique: the version spread at a glance, and a byte-stable payload.
         "kubernetes_versions": sorted(
             {c["kubernetes_version"] for c in clusters if c["kubernetes_version"]}
         ),
+        **summarize_expected_pools(clusters, expected_pools),
+    }
+
+
+def summarize_node_security(pools: list[dict]) -> dict:
+    """Node pool FIPS, Trusted Launch and SSH posture. Unknown pools are counted apart, never as failing."""
+    def count(key, value):
+        return sum(1 for p in pools if p.get(key) is value)
+
+    total = len(pools)
+    fips_unknown = count("enable_fips", None)
+    ssh = [p.get("ssh_access") for p in pools]
+    return {
+        "fips_enabled_agent_pools": count("enable_fips", True),
+        "fips_disabled_agent_pools": count("enable_fips", False),
+        "fips_unknown_agent_pools": fips_unknown,
+        # All pools FIPS, judged only when every pool answered; None while any pool is unknown, and None when there
+        # are no pools, since there is nothing to judge (as the description and CHANGELOG say).
+        "all_agent_pools_fips": None if fips_unknown or total == 0 else count("enable_fips", True) == total,
+        "secure_boot_enabled_agent_pools": count("secure_boot_enabled", True),
+        "vtpm_enabled_agent_pools": count("vtpm_enabled", True),
+        "trusted_launch_unknown_agent_pools": sum(
+            1 for p in pools if p.get("secure_boot_enabled") is None and p.get("vtpm_enabled") is None),
+        "ssh_disabled_agent_pools": sum(1 for v in ssh if isinstance(v, str) and v.lower() == "disabled"),
+        "ssh_local_user_agent_pools": sum(1 for v in ssh if isinstance(v, str) and v.lower() == "localuser"),
+        "ssh_access_unknown_agent_pools": sum(1 for v in ssh if v is None),
+        # Sorted unique node image builds across the estate: a spread here means pools on old images.
+        "node_image_versions": sorted({p["node_image_version"] for p in pools if p.get("node_image_version")}),
     }
 
 
 # --- collection (lazy azure imports) ---
 
-def collect_clusters(subscription_id, cred, collector: Collector) -> list[dict]:
+def collect_clusters(subscription_id, cred, collector: Collector) -> list[dict] | None:
     """One subscription-wide managed_clusters.list().
 
     The list response carries the whole projection (no per-cluster GET needed) and is an
@@ -267,20 +424,19 @@ def collect_clusters(subscription_id, cred, collector: Collector) -> list[dict]:
     def _client():
         from azure.mgmt.containerservice import ContainerServiceClient  # lazy
 
-        return ContainerServiceClient(credential=cred, subscription_id=subscription_id)
+        return ContainerServiceClient(credential=cred, subscription_id=subscription_id, **arm_client_kwargs())
 
     client = collector.guard("containerservice.ContainerServiceClient (init)", _client)
     if client is None:
-        return []
+        return None
 
     clusters = collector.guard(
         "containerservice.managed_clusters.list",
         lambda: [
             cluster_record(project_managed_cluster(c)) for c in client.managed_clusters.list()
         ],
-        default=[],
     )
-    return sorted(clusters, key=lambda r: r.get("id") or "")
+    return None if clusters is None else sorted(clusters, key=lambda r: r.get("id") or "")
 
 
 def main() -> int:
@@ -300,7 +456,13 @@ def main() -> int:
     subscription_id = sub["subscription_id"]
     cred = collector.guard("azure.identity.DefaultAzureCredential", credential)
 
-    clusters: list[dict] = []
+    clusters: list[dict] | None = None
+    expected_pools, invalid_pools = parse_expected_pools(os.environ.get(EXPECTED_POOLS_ENV))
+    if invalid_pools:
+        collector.record(f"config {EXPECTED_POOLS_ENV}", ValueError(
+            f"invalid setting {EXPECTED_POOLS_ENV}: {', '.join(invalid_pools)} not pool or cluster/pool"))
+    exclusions = ResourceExclusions.from_env()
+    excluded: list[dict] = []
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
         # Asked BEFORE the list call, so a zero-cluster result is legible: Azure
@@ -315,6 +477,8 @@ def main() -> int:
                 subscription_id,
             )
         clusters = collect_clusters(subscription_id, cred, collector)
+        if clusters is not None:
+            clusters, excluded = exclusions.split(clusters, "cluster")
     elif not subscription_id:
         collector.record(
             "resolve_subscription",
@@ -324,6 +488,13 @@ def main() -> int:
             ),
         )
 
+    exclusions.record_invalid(collector)
+    listed = clusters is not None
+    if not listed:
+        exclusions.mark_unread()
+    exclusions.warn_unmatched(logger)
+    clusters = clusters or []
+
     evidence = build_payload(
         subscription_id=subscription_id,
         subscription_source=sub["subscription_source"],
@@ -331,8 +502,14 @@ def main() -> int:
         results={
             "clusters": clusters,
             "provider_registration_status": registration,
+            "excluded": excluded,
+            "expected_autoscaling_pools": expected_pool_checks(clusters, expected_pools) if listed and expected_pools is not None else None,
         },
-        summary={**summarize(clusters), "provider_registration_status": registration},
+        summary={
+            **summarize(clusters if listed else None, expected_pools),
+            "provider_registration_status": registration,
+            **exclusions.summary(excluded, KINDS, {"clusters": len(clusters) if listed else None}),
+        },
     )
 
     filename = (
@@ -342,10 +519,7 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        logger.error(
-            "Encountered %d Azure API failure(s) during collection", len(collector.failures)
-        )
-        write_status(
+        report_failure(
             failure_reason(collector.failures), classify_failure_code(collector.failures)
         )
         return 1

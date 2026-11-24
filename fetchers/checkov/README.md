@@ -1,17 +1,18 @@
 # Checkov
 
-Checkov fetchers scan Terraform and Kubernetes infrastructure-as-code repositories for security misconfigurations. The fetcher clones the target repo via git, runs the `checkov` CLI against it, and writes a findings report with pass/fail/skipped check counts and per-check details.
+Checkov fetchers scan Terraform, Kubernetes and Bicep/ARM infrastructure-as-code repositories for security misconfigurations. The fetcher clones the target repo via git, runs the `checkov` CLI against it, and writes a findings report with pass/fail/skipped check counts and per-check details. `checkov_bicep` can also download an Azure DevOps TFVC folder instead of cloning; see [its README](bicep/README.md#tfvc-source).
 
 ## Prerequisites
 
-Checkov must be installed in the environment running the fetcher:
+The `checkov` CLI must be on the `PATH` of the environment running the fetcher. Install it in its own environment, not the one paramify runs in: checkov pins exact versions of libraries that other fetchers also use, such as boto3, and would hold them back.
 
 ```bash
-pip install checkov
-# Already included if you used: pip install -e '.[all]'
+pipx install checkov
 ```
 
-Checkov is also included in the [Docker image](../../deploy/README.md).
+`checkov_bicep` also needs `pip install -e '.[checkov]'` (azure-identity) in the paramify environment for its Entra sign-in to TFVC.
+
+Checkov is included in the [Docker image](../../deploy/README.md), in its own virtualenv.
 
 ## Environment variables
 
@@ -30,6 +31,8 @@ Checkov fetchers work with any git host that supports HTTPS token authentication
 **GitLab:** Create a Project Access Token with `read_repository` scope (see [`../gitlab/README.md`](../gitlab/README.md) for steps). The same token works for both the GitLab fetchers and Checkov.
 
 **GitHub:** Create a Personal Access Token (classic) or a fine-grained PAT with `Contents: Read` permission on the target repository.
+
+**Azure DevOps:** Create a PAT with `Code (Read)` scope. Use the clone URL without the `<org>@` prefix (`checkov_bicep` drops it for you).
 
 ## Wiring into a manifest
 

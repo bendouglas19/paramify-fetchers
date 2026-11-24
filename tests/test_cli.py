@@ -30,6 +30,7 @@ from typer.testing import CliRunner
 
 from framework import api, cli
 from framework.cli import app
+from tests.paramify_fake import reads_through
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 runner = CliRunner()
@@ -56,15 +57,17 @@ def _subcommands(group: str) -> set:
 EXPECTED_TOP = {
     "list", "catalog", "describe", "ksi", "doctor", "manifests", "runs",
     "evidence", "validate", "run", "upload", "manifest", "scripts", "programs",
-    "assessments", "issues", "tui",
+    "assessments", "capabilities", "artifacts", "issues", "tui", "stacks",
 }
 EXPECTED_PROGRAMS = {"list", "target"}
 EXPECTED_ASSESSMENTS = {"list", "select"}
+EXPECTED_CAPABILITIES = {"list", "show"}
+EXPECTED_ARTIFACTS = {"list", "pull"}
 EXPECTED_ISSUES = {"upload"}
 EXPECTED_MANIFEST = {
     "init", "new", "add", "remove", "set-config", "set-secret",
     "add-target", "remove-target", "set-platform-config",
-    "set-passthrough", "set-output-dir", "show",
+    "set-passthrough", "set-output-dir", "set-stack", "set-owner", "show",
 }
 EXPECTED_SCRIPTS = {"sync"}
 
@@ -111,7 +114,7 @@ def test_workspace_lookups_read_token_from_dotenv(tmp_path, monkeypatch):
         os.environ["PARAMIFY_API_BASE_URL"] = "https://example.test/api/v0"
         return True
 
-    monkeypatch.setattr("dotenv.load_dotenv", fake_load_dotenv)
+    monkeypatch.setattr(api, "load_dotenv", fake_load_dotenv)
 
     seen: dict = {}
 
@@ -127,10 +130,22 @@ def test_workspace_lookups_read_token_from_dotenv(tmp_path, monkeypatch):
         seen["url"] = url
         return _Resp()
 
-    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("framework.paramify.client.requests.Session", lambda: reads_through(fake_get))
     api.list_assessments()
     assert seen["auth"] == "Bearer from-dotenv"
     assert seen["url"].startswith("https://example.test/api/v0/")
+
+
+def test_capabilities_and_artifacts_subcommands_registered():
+    """Same decorator guard as the groups above."""
+    capabilities = _subcommands("capabilities")
+    artifacts = _subcommands("artifacts")
+    assert EXPECTED_CAPABILITIES <= capabilities, (
+        f"missing capabilities subcommands: {EXPECTED_CAPABILITIES - capabilities}"
+    )
+    assert EXPECTED_ARTIFACTS <= artifacts, (
+        f"missing artifacts subcommands: {EXPECTED_ARTIFACTS - artifacts}"
+    )
 
 
 def test_issues_upload_accepts_force():
@@ -138,6 +153,12 @@ def test_issues_upload_accepts_force():
     only remaining option is deleting the log, which re-sends every file."""
     cmd = get_command(app).commands["issues"].commands["upload"]
     assert "force" in {p.name for p in cmd.params}
+
+
+@pytest.fixture(autouse=True)
+def _no_dotenv(monkeypatch):
+    """No test here reads the developer's own `.env`: doctor, `run` and set-stack load it."""
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
 
 
 def test_doctor_json_ok_without_manifest():
@@ -328,7 +349,14 @@ def _tui_api_calls() -> set[str]:
 # by every command (repo discovery / manifest read+write plumbing) rather than
 # its own command. Keep this in sync with the TUI; the test below enforces it.
 API_TO_CLI = {
+    "paramify_status": "status",
+    "sync_validators": "validators sync",
+    "list_artifacts": "artifacts list",
     "find_repo_root": "<implicit: every command>",
+    "update_notice": "update",
+    "update_plan": "update",
+    "apply_update": "update",
+    "rollback_update": "update",
     "discover": "<implicit: one fetcher-tree scan shared across a redraw>",
     "catalog": "list / catalog / describe",
     "list_manifests": "manifests",
@@ -339,17 +367,41 @@ API_TO_CLI = {
     "effective_config": "<implicit: manifest render>",
     "init_manifest": "manifest init",
     "new_manifest_path": "manifest new",
+    # The name check new_manifest_path runs first; the TUI asks it alone so a
+    # taken name is refused before the stack step.
+    "new_manifest_target": "manifest new",
     "add_entry": "manifest add",
     "set_secret": "manifest set-secret",
     "set_fetcher_config": "manifest set-config",
+    # The entry form's pattern-list box: a whole list at once, which exclude/unexclude/set-config write piecewise.
+    "set_pattern_list": "manifest exclude / manifest unexclude / manifest set-config",
+    "category_patterns": "<implicit: the inherited list the form opens on; manifest show prints it>",
+    "grammar_text": "describe",
     "set_output_dir": "manifest set-output-dir",
     "remove_entry": "manifest remove",
     "add_target": "manifest add-target",
+    "set_target": "manifest set-target",
     "remove_target": "manifest remove-target",
     "dump_manifest": "<implicit: every mutator>",
     "validate": "validate",
     "run": "run",
     "upload_preflight": "upload",
+    "plan_upload": "upload",
+    "list_stacks": "stacks",
+    "set_stack": "manifest set-stack",
+    "set_owner": "manifest set-owner",
+    "generate_env": "env",
+    "set_schedule": "manifest set-frequency",
+    "validator_results": "artifacts list",
+    "latest_validator_results": "<implicit: the newest result per validator, from artifacts list>",
+    "result_for": "<implicit: one validator's row of artifacts list>",
+    "newest_pipeline_files": "<implicit: the files a local validator test reads; paramify runs lists the runs>",
+    "entry_frequency": "<implicit: the entry detail's frequency row; upload --plan shows the result>",
+    "default_upload_values": "<implicit: the default upload.yaml the frequency row reads; upload reads it too>",
+    "list_channel_owners": "manifest set-owner",  # and `validate --online`, and the TUI's owner picker
+    "owner_notes": "validate",  # --online
+    "manifest_owners": "validate",  # --online: only a manifest that sets an owner lists the owners
+    "upload_readiness": "manifest set-stack",  # its token check; `doctor` reports it too
     "upload_run": "upload",
     "scripts_sync_preflight": "scripts sync",
     "scripts_sync": "scripts sync",
@@ -361,9 +413,24 @@ API_TO_CLI = {
     "issues_upload_run": "issues upload",
     "list_assessments": "assessments list",
     "set_assessment": "assessments select",
+    "set_close_cycle": "assessments select",  # --close-cycle
+    "issues_jobs": "issues jobs",
+    "preset_sheet": "preset",
+    "render_preset_sheet": "preset",
+    "issues_job_action": "issues jobs",  # --retry / --cancel
+    "issues_close": "issues close",
+    "latest_run": "upload",  # and `issues upload`: the run picked with no run-dir
     # Read-only label helper: how an assessment is named in the picker. The CLI
     # applies the same function to its own list output.
     "assessment_display_name": "<implicit: assessment label>",
+    # Backs -f / -m on every manifest-taking CLI command, and --manifest on the
+    # console. The two resolving differently is what let a bare name fork a
+    # manifest, so both front ends deliberately call the same function.
+    "resolve_manifest_path": "<implicit: -f / --manifest resolution>",
+    # Not a call — the exception resolve_manifest_path raises, caught in the
+    # console's launch path. The walker collects every api.<name> attribute,
+    # which is the right breadth, so an exception type has to be mapped too.
+    "ManifestNotFound": "<implicit: the -f / --manifest error path>",
 }
 
 
@@ -393,6 +460,8 @@ def test_parity_mapped_commands_actually_exist():
         "scripts": scripts,
         "assessments": _subcommands("assessments"),
         "issues": _subcommands("issues"),
+        "validators": _subcommands("validators"),
+        "artifacts": _subcommands("artifacts"),
     }
     for api_fn, where in API_TO_CLI.items():
         if where.startswith("<implicit"):
@@ -422,7 +491,17 @@ def fetchers():
     cat = api.catalog(api.find_repo_root(REPO_ROOT))
     allf = [f for c in cat["categories"] for f in c["fetchers"]]
     assert allf, "no fetchers discovered — cannot run parity smoke tests"
-    with_secret = next((f for f in allf if f["secrets"] and not f["supports_targets"]), None)
+    # A fetcher whose only requirements are its secrets: wiring them must make the
+    # manifest valid. One with required config that has no default (a portal URL,
+    # a course list) would still be invalid, so it is skipped.
+    with_secret = next(
+        (
+            f for f in allf
+            if f["secrets"] and not f["supports_targets"]
+            and not any(c.get("required") and c.get("default") is None for c in f["config"])
+        ),
+        None,
+    )
     fanout = next((f for f in allf if f["supports_targets"]), None)
     return {"any": allf[0], "with_secret": with_secret, "fanout": fanout}
 
@@ -658,6 +737,21 @@ def test_human_run_printer_emits_contract(capsys):
     assert "SKIP  f3 (missing secret)" in err  # skips/errors go to stderr
 
 
+def test_human_run_printer_says_why_an_invocation_failed(capsys):
+    """A failed invocation's reason (the event's `error`) is printed under its
+    [FAIL] line, so the CLI says why, as the TUI does. A pass prints none."""
+    from framework.cli import _human_run_printer
+    cb = _human_run_printer()
+    cb({"event": "fetcher_result", "fetcher": "f1", "exit_code": 0, "duration_sec": 0.1, "target": None,
+        "error": "ignored on a pass"})
+    cb({"event": "fetcher_result", "fetcher": "f1", "exit_code": 1, "duration_sec": 0.1, "target": None,
+        "error": "overwrote demo_hello.json, which an earlier entry or target wrote in this run."})
+    cb({"event": "fetcher_result", "fetcher": "f2", "exit_code": 2, "duration_sec": 0.1, "target": None})
+    err = capsys.readouterr().err
+    assert "overwrote demo_hello.json, which an earlier entry or target wrote in this run." in err
+    assert "ignored on a pass" not in err
+
+
 # --------------------------------------------------------------------------- #
 # Manifest mutators — JSON contract + actual effects
 # --------------------------------------------------------------------------- #
@@ -751,6 +845,72 @@ def test_set_platform_config_bad_int_json(in_repo, tmp_path):
     out = json.loads(r.output)
     assert out["ok"] is False and out["errors"]
     assert "integer" in out["errors"][0]
+
+
+def test_set_config_keeps_env_reference_on_a_string_field(in_repo, tmp_path):
+    m = str(tmp_path / "m.yaml")
+    runner.invoke(app, ["manifest", "init", "-f", m])
+    runner.invoke(app, ["manifest", "add", "azure_storage_encryption_status", "-f", m])
+    _json(runner.invoke(app, ["manifest", "set-config", "azure_storage_encryption_status",
+                              "owner_tag_keys=${env:MY_VALUE}", "-f", m, "--json"]))
+    shown = _json(runner.invoke(app, ["manifest", "show", "-f", m, "--json"]))
+    assert _entry(shown, "azure_storage_encryption_status")["config"]["owner_tag_keys"] == "${env:MY_VALUE}"
+
+
+@pytest.mark.parametrize("command", [
+    ["set-config", "azure_front_door_origins", "metrics_lookback_days=${env:MY_VALUE}"],  # integer
+    ["set-config", "aws_iam_roles", "exclude_aws_managed_roles=${env:MY_VALUE}"],  # boolean
+    ["set-platform-config", "rippling", "page_size=${env:MY_VALUE}"],  # integer
+    ["set-platform-config", "azure", "metrics_lookback_days=${env:MY_VALUE}"],  # a fetcher's integer
+])
+def test_env_reference_on_a_typed_config_field_is_refused(in_repo, tmp_path, command):
+    m = str(tmp_path / "m.yaml")
+    runner.invoke(app, ["manifest", "init", "-f", m])
+    if command[0] == "set-config":
+        runner.invoke(app, ["manifest", "add", command[1], "-f", m])
+    r = runner.invoke(app, ["manifest", *command, "-f", m, "--json"])
+    assert r.exit_code == 1
+    assert "references work on string config fields only" in json.loads(r.output)["errors"][0]
+    shown = _json(runner.invoke(app, ["manifest", "show", "-f", m, "--json"]))
+    assert "MY_VALUE" not in json.dumps(shown)
+
+
+@pytest.mark.parametrize("command, message", [
+    (["set-config", "azure_storage_encryption_status", "owner_tag_keys=${env:PARAMIFY_UPLOAD_API_TOKEN}"],
+     "config 'owner_tag_keys' reads ${env:PARAMIFY_UPLOAD_API_TOKEN}, which holds a secret"),
+    (["set-platform-config", "azure", "owner_tag_keys=${env:AZURE_CLIENT_SECRET}"],
+     "config 'owner_tag_keys' reads ${env:AZURE_CLIENT_SECRET}, which holds a secret"),
+    (["set-config", "azure_storage_encryption_status", "owner_tag_keys=Owner ${env:MY_VALUE}"],
+     "a ${env:} reference must be the whole value"),
+    (["set-config", "azure_front_door_tls", "scope_exclusions=${env:MY_VALUE}"],
+     "${env:} references aren't read for a pattern list"),
+    (["set-platform-config", "azure", "resource_exclusions=${env:AZURE_RESOURCE_EXCLUSIONS}"],
+     "${env:} references aren't read for a pattern list"),
+])
+def test_env_reference_to_a_secret_or_inside_a_value_is_refused(in_repo, tmp_path, command, message):
+    m = str(tmp_path / "m.yaml")
+    runner.invoke(app, ["manifest", "init", "-f", m])
+    if command[0] == "set-config":
+        runner.invoke(app, ["manifest", "add", command[1], "-f", m])
+    r = runner.invoke(app, ["manifest", *command, "-f", m, "--json"])
+    assert r.exit_code == 1
+    assert message in json.loads(r.output)["errors"][0]
+    shown = _json(runner.invoke(app, ["manifest", "show", "-f", m, "--json"]))
+    assert "${env:" not in json.dumps(shown)
+
+
+def test_env_reference_in_a_target_field_is_refused(in_repo, tmp_path):
+    m = str(tmp_path / "m.yaml")
+    runner.invoke(app, ["manifest", "init", "-f", m])
+    runner.invoke(app, ["manifest", "add", "azure_front_door_origins", "-f", m])
+    r = runner.invoke(app, ["manifest", "add-target", "azure_front_door_origins", "production_tag=${env:TAG}",
+                            "-f", m, "--json"])
+    assert r.exit_code == 1 and "target fields aren't resolved" in json.loads(r.output)["errors"][0]
+    _json(runner.invoke(app, ["manifest", "add-target", "azure_front_door_origins", "production_tag=env=prod",
+                              "-f", m, "--json"]))
+    r = runner.invoke(app, ["manifest", "set-target", "azure_front_door_origins", "0", "production_tag=${env:TAG}",
+                            "-f", m, "--json"])
+    assert r.exit_code == 1 and "target fields aren't resolved" in json.loads(r.output)["errors"][0]
 
 
 # --------------------------------------------------------------------------- #
@@ -1401,3 +1561,519 @@ def test_assessments_select_accepts_an_id_directly(stub_assessments, report_mani
     rep = _json(_select(report_manifest, "testcat_vuln_scan", "-a", _ASSESSMENTS[2]["id"]))
     assert rep["ok"] is True
     assert _entry_config(report_manifest, "testcat_vuln_scan")["assessment_name"] == "Staging Vuln Scan"
+
+
+# --------------------------------------------------------------------------- #
+# One manifest identity across every command that takes one
+#
+# Sixteen sites resolved -f with a bare Path(x).resolve() while two used a
+# ladder. A bare name therefore resolved against the process cwd, so
+# `manifest add -f demo` read ./demo as an empty manifest and WROTE a new one
+# there while manifests/demo.yaml sat untouched.
+# --------------------------------------------------------------------------- #
+
+# (argv, whether --json is accepted) for every command that takes a manifest.
+MANIFEST_COMMANDS = [
+    (["doctor", "MANIFEST", "--json"], True),
+    (["validate", "MANIFEST"], False),
+    (["run", "MANIFEST", "--json"], True),
+    (["validators", "sync", "-m", "MANIFEST", "--dry-run"], False),
+    (["scripts", "sync", "MANIFEST"], False),
+    (["manifest", "show", "-f", "MANIFEST"], False),
+    (["manifest", "add", "demo_hello", "-f", "MANIFEST"], False),
+    (["manifest", "remove", "demo_hello", "-f", "MANIFEST"], False),
+    (["manifest", "set-output-dir", "./x", "-f", "MANIFEST"], False),
+]
+
+
+@pytest.fixture
+def sandbox(tmp_path, monkeypatch):
+    """cwd in a scratch dir, but discovery still pointed at the real repo.
+
+    These tests drive commands that WRITE. Running them with cwd = the repo
+    root means a regression writes into the repo — which is exactly what
+    happened while developing this: a run against the pre-fix code left a
+    stray manifest named after the test's own sentinel in the repo root, and
+    later runs then found it and passed for the wrong reason.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(api, "find_repo_root", lambda *a, **k: REPO_ROOT)
+    return tmp_path
+
+
+@pytest.mark.parametrize("argv,_json_ok", MANIFEST_COMMANDS,
+                         ids=[" ".join(a[:3]) for a, _ in MANIFEST_COMMANDS])
+def test_a_manifest_that_does_not_exist_is_refused(sandbox, argv, _json_ok):
+    """Not one of these may treat an absent manifest as an empty one.
+
+    An empty manifest validates clean, so the old behaviour reported a typo'd
+    filename as a passing preflight (doctor), a silent no-op (validators sync),
+    or a brand-new file at the wrong path (the mutators).
+    """
+    result = runner.invoke(app, [a.replace("MANIFEST", "no-such-manifest-here") for a in argv])
+    assert result.exit_code == 1, f"{argv} exited {result.exit_code}, not 1"
+    assert "no such manifest" in result.output
+    assert list(sandbox.iterdir()) == [], "a refused command must not write anything"
+
+
+def test_a_refused_mutation_creates_nothing(sandbox):
+    """The failure mode was a new file at the wrong path, so assert on the disk."""
+    result = runner.invoke(app, ["manifest", "add", "demo_hello", "-f", "ghost", "--json"])
+
+    assert result.exit_code == 1
+    assert list(sandbox.iterdir()) == [], "a refused mutation must not write anything"
+
+
+@pytest.fixture
+def workspace(tmp_path, monkeypatch):
+    """A self-contained repo-shaped tree holding manifests/demo.yaml.
+
+    Deliberately NOT the real repo: .gitignore ignores manifests/*, so this
+    repo's own manifests are untracked local state. A test that reads them
+    passes on a developer's machine and fails in CI, where the directory does
+    not exist at all — which is exactly what happened.
+    """
+    for d in ("fetchers", "framework", "manifests"):
+        (tmp_path / d).mkdir()
+    (tmp_path / "manifests" / "demo.yaml").write_text(
+        "run:\n  output_dir: ./evidence\n  fetchers:\n  - use: demo_hello\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+@pytest.mark.parametrize("spelling", ["demo", "demo.yaml", "manifests/demo.yaml"])
+def test_a_bare_name_finds_the_manifest(workspace, spelling):
+    """All three spellings must reach manifests/demo.yaml. A bare name used to
+    resolve against cwd, so it found nothing and read as empty."""
+    result = runner.invoke(app, ["manifest", "show", "-f", spelling])
+    assert result.exit_code == 0, result.output
+    assert "demo_hello" in result.output, "did not read the manifest"
+
+
+def test_the_refusal_names_the_manifests_it_found(workspace):
+    """A path error should point at the way out, not just report failure."""
+    result = runner.invoke(app, ["manifest", "show", "-f", "ghost"])
+    assert "discovered:" in result.output
+    assert "demo.yaml" in result.output
+
+
+def test_manifest_init_still_creates(in_repo, tmp_path):
+    """Creation is the one path that must NOT require the file to exist."""
+    target = tmp_path / "fresh.yaml"
+    result = runner.invoke(app, ["manifest", "init", "-f", str(target), "--json"])
+    assert result.exit_code == 0, result.output
+    assert target.is_file()
+
+
+# --------------------------------------------------------------------------- #
+# Capabilities and artifacts — the workspace reads a validator author needs
+#
+# The payload fixtures below are trimmed from real GET responses, so the
+# normalizers are tested against the shapes the API actually serves rather than
+# the ones the spec implies. Two of those shapes are load-bearing: `referenceId`
+# comes back null on a workspace that has not renumbered its template
+# capabilities, and an artifact's `pathname` is a presigned S3 link.
+# --------------------------------------------------------------------------- #
+
+_CAPABILITY_PAYLOAD = {
+    "solutionCapabilities": [
+        {
+            "id": "4a00a453-5d12-4314-ba4c-d9e477d605c1",
+            "templateReferenceId": "RS-12-01-01",
+            "referenceId": None,
+            "name": "Audit Logging Criteria",
+            "implementationStatus": "IMPLEMENTED",
+            "family": "System Monitoring",
+            "subfamily": "Audit Logging",
+            "risk": "Observability",
+            "riskFamily": "TechOps",
+            "mainComponent": {"id": "5909", "referenceId": "RS-04-04-02", "name": "Log Management"},
+            "functions": [
+                {"type": "PROVIDER", "name": "Leveraged Component", "narrative": None,
+                 "implementationStatus": "IMPLEMENTED"},
+                {"type": "END_USER", "name": "Core Process",
+                 "narrative": "The role configures Log Management to include audit records.",
+                 "implementationStatus": "IMPLEMENTED",
+                 "validatorEvidencePairs": [
+                     {"validatorEvidencePairId": "p-1", "validatorId": "v-1", "evidenceId": "ev-1"},
+                 ]},
+            ],
+        }
+    ]
+}
+
+_EVIDENCE_PAYLOAD = {
+    "evidences": [
+        {"id": "ev-1", "referenceId": "EVD-1", "name": "SSP", "description": "",
+         "instructions": "", "artifactCount": 1, "automated": False, "frequency": "ANNUAL",
+         "validators": [{"validatorEvidencePairId": "p-1", "id": "v-1", "name": "VAL-1",
+                         "type": "AUTOMATED"}]},
+        {"id": "ev-2", "referenceId": "EVD-2", "name": "Empty set", "artifactCount": 0},
+    ]
+}
+
+_ARTIFACT_PAYLOAD = {
+    "artifacts": [
+        {"id": "aaaaaaaa-0000-0000-0000-000000000001", "title": "Older",
+         "originalFileName": "old.json", "pathname": "https://s3.example/old?X-Amz-Signature=x",
+         "isUrl": False, "fileType": "application/json", "createdAt": "2026-01-01T00:00:00.000Z",
+         "createdBy": {"username": "A", "email": "a@example.test"}, "validators": []},
+        {"id": "bbbbbbbb-0000-0000-0000-000000000002", "title": "Newer",
+         "originalFileName": "new.json", "pathname": "https://s3.example/new?X-Amz-Signature=y",
+         "isUrl": False, "fileType": "application/json", "createdAt": "2026-06-01T00:00:00.000Z",
+         "createdBy": {"username": "B", "email": "b@example.test"},
+         "validators": [{"name": "All encrypted", "result": "PASS"}]},
+    ]
+}
+
+
+class _Resp:
+    def __init__(self, body):
+        self._body = body
+        self.status_code = 200
+        self.text = "{}"
+
+    def json(self):
+        return self._body
+
+
+@pytest.fixture
+def workspace_reads(monkeypatch):
+    """Stub the read path with the real payload shapes, recording every GET."""
+    monkeypatch.setenv("PARAMIFY_API_TOKEN", "test-token")
+    monkeypatch.setenv("PARAMIFY_API_BASE_URL", "https://example.test/api/v0")
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: True)
+    seen = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        seen.append(url)
+        if url.endswith("/solution-capabilities"):
+            return _Resp(_CAPABILITY_PAYLOAD)
+        if url.endswith("/evidence"):
+            return _Resp(_EVIDENCE_PAYLOAD)
+        if url.endswith("/artifacts"):
+            return _Resp(_ARTIFACT_PAYLOAD)
+        raise AssertionError(f"unexpected GET {url}")
+
+    monkeypatch.setattr("framework.paramify.client.requests.Session", lambda: reads_through(fake_get))
+    return seen
+
+
+def test_capability_label_falls_back_to_the_template_reference_id():
+    """referenceId is null on a workspace that never renumbered its template
+    capabilities, and RS-12-01-01 is then the only identifier a user sees. A
+    label that skipped to the UUID would make the pick list unreadable."""
+    c = {"name": "", "reference_id": "", "template_reference_id": "RS-12-01-01", "id": "uuid"}
+    assert api.capability_display_name(c) == "RS-12-01-01"
+    assert api.capability_display_name({**c, "template_reference_id": ""}) == "uuid"
+
+
+def test_list_capabilities_normalizes_and_keeps_only_written_narratives(workspace_reads):
+    caps = api.list_capabilities()
+    assert len(caps) == 1
+    cap = caps[0]
+    assert cap["template_reference_id"] == "RS-12-01-01"
+    assert cap["reference_id"] == ""          # null collapses to "", never "None"
+    assert cap["main_component"] == "Log Management"
+    assert len(cap["functions"]) == 2         # both functions are kept …
+    written = api.capability_narratives(cap)
+    assert len(written) == 1                  # … but only one says anything
+    assert written[0]["type"] == "END_USER"
+
+
+def test_list_evidence_sets_keeps_each_paired_validator(workspace_reads):
+    """The pair id is how a set's validators are told apart from the registry's:
+    `paramify status` reads it to say which registry validators are paired."""
+    sets = {s["reference_id"]: s for s in api.list_evidence_sets()}
+    assert sets["EVD-1"]["validators"] == [
+        {"pair_id": "p-1", "id": "v-1", "name": "VAL-1", "type": "AUTOMATED"}
+    ]
+    assert sets["EVD-2"]["validators"] == []
+
+
+def test_list_capabilities_keeps_each_functions_pairs(workspace_reads):
+    functions = {f["type"]: f for f in api.list_capabilities()[0]["functions"]}
+    assert functions["END_USER"]["pairs"] == [
+        {"pair_id": "p-1", "validator_id": "v-1", "evidence_id": "ev-1"}
+    ]
+    assert functions["PROVIDER"]["pairs"] == []
+
+
+def test_capabilities_show_prints_the_narrative(workspace_reads):
+    """The narrative is the whole reason the command exists — a `show` that
+    printed only metadata would leave the author back at guessing the intent."""
+    result = runner.invoke(app, ["capabilities", "show", "RS-12-01-01"])
+    assert result.exit_code == 0, result.output
+    assert "Audit Logging Criteria" in result.output
+    assert "audit records" in result.output
+
+
+def test_capabilities_show_resolves_by_name_and_reports_a_miss(workspace_reads):
+    assert runner.invoke(app, ["capabilities", "show", "Audit Logging"]).exit_code == 0
+    miss = runner.invoke(app, ["capabilities", "show", "nope"])
+    assert miss.exit_code != 0
+    assert "no capability matches" in (miss.output + str(miss.stderr_bytes or b""))
+
+
+def test_artifacts_list_without_a_set_lists_every_set(workspace_reads):
+    result = runner.invoke(app, ["artifacts", "list", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert [e["reference_id"] for e in payload["evidence_sets"]] == ["EVD-1", "EVD-2"]
+    assert payload["evidence_sets"][1]["artifact_count"] == 0
+
+
+def test_artifacts_list_sorts_newest_first(workspace_reads):
+    """`pull` with no --artifact takes the first entry, so the ordering here is
+    what decides which artifact gets authored against."""
+    result = runner.invoke(app, ["artifacts", "list", "EVD-1", "--json"])
+    assert result.exit_code == 0, result.output
+    artifacts = json.loads(result.output)["artifacts"]
+    assert [a["title"] for a in artifacts] == ["Newer", "Older"]
+    # The validator id is kept (blank when the API leaves it out) so results match by id, then name.
+    assert artifacts[0]["validators"] == [{"id": "", "name": "All encrypted", "result": "PASS"}]
+
+
+def test_pull_artifact_does_not_send_the_api_token_to_s3(workspace_reads, tmp_path, monkeypatch):
+    """`pathname` is already presigned. S3 rejects a request carrying both
+    signatures ("Only one auth mechanism allowed"), so reusing the authenticated
+    read path here would fail on every artifact in the workspace."""
+    sent = {}
+
+    class _Download:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def iter_content(self, chunk_size=None):
+            yield b'{"schema_version":"1.0","metadata":{"exit_code":0},"payload":{"x":1}}'
+
+    def fake_download(url, stream=None, timeout=None, headers=None):
+        sent["headers"] = headers
+        sent["url"] = url
+        return _Download()
+
+    monkeypatch.setattr("requests.get", fake_download)
+    result = api.pull_artifact(
+        {"id": "ev-1", "reference_id": "EVD-1", "name": "SSP"},
+        {"id": "bbbbbbbb-0000-0000-0000-000000000002", "file_name": "new.json",
+         "file_type": "application/json", "is_url": False,
+         "download_url": "https://s3.example/new?X-Amz-Signature=y"},
+        tmp_path,
+    )
+    assert sent["headers"] is None, "presigned download must not carry an Authorization header"
+    assert result["enveloped"] is True
+    assert Path(result["path"]).name == "EVD-1_bbbbbbbb.json"
+
+
+def test_pull_artifact_flags_a_non_enveloped_file(workspace_reads, tmp_path, monkeypatch):
+    """A workspace is full of PDFs and screenshots. Authoring a regex validator
+    against one is the mistake this flag exists to stop."""
+    class _Download:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def iter_content(self, chunk_size=None):
+            yield b"%PDF-1.7 not json at all"
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: _Download())
+    result = api.pull_artifact(
+        {"id": "ev-1", "reference_id": "EVD-1"},
+        {"id": "cccccccc-0000-0000-0000-000000000003", "file_name": "ssp.pdf",
+         "file_type": "application/pdf", "is_url": False,
+         "download_url": "https://s3.example/ssp"},
+        tmp_path,
+    )
+    assert result["enveloped"] is False
+    assert Path(result["path"]).name == "EVD-1_cccccccc.pdf"
+
+
+def test_pull_artifact_names_the_missing_envelope_keys(workspace_reads, tmp_path, monkeypatch):
+    """A bare "not enveloped" is confusing on an artifact that plainly has
+    schema_version and metadata — an older or hand-built one carries both and
+    still is not readable as an envelope. Live example from a stage workspace:
+    `data` where `payload` should be. Naming the gap makes the verdict
+    actionable instead of flat."""
+    class _Download:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def iter_content(self, chunk_size=None):
+            yield b'{"schema_version":"0.1.0","metadata":{"exit_code":1},"data":{}}'
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: _Download())
+    result = api.pull_artifact(
+        {"id": "ev-1", "reference_id": "EVD-1"},
+        {"id": "e" * 8, "file_name": "old.json", "file_type": "application/json",
+         "is_url": False, "download_url": "https://s3.example/old"},
+        tmp_path,
+    )
+    assert result["enveloped"] is False
+    assert result["missing_envelope_keys"] == ["payload"]
+
+
+def test_pull_artifact_refuses_a_link_artifact():
+    """isUrl artifacts are a pasted link, not a file; downloading the pathname
+    would write the target page to disk and call it evidence."""
+    with pytest.raises(ValueError, match="link, not a file"):
+        api.pull_artifact(
+            {"id": "ev-1", "reference_id": "EVD-1"},
+            {"id": "d" * 8, "is_url": True, "download_url": "https://example.test/page"},
+            "/tmp",
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Default custom tags — the off switch is on every command that writes them
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("path", [["upload"], ["scripts", "sync"], ["validators", "sync"]])
+def test_no_tags_flag_on_every_tagging_command(path):
+    # Read the command's declared options rather than its rendered help: with
+    # colour forced (CI), rich styles the option name in pieces, so the literal
+    # "--no-tags" is not a substring of the output.
+    cmd = get_command(app)
+    for part in path:
+        cmd = cmd.commands[part]
+    opts = {opt for param in cmd.params for opt in getattr(param, "opts", [])}
+    assert "--no-tags" in opts
+
+
+# ---- paramify status ------------------------------------------------------- #
+
+def _status_fixture(second_ready: bool = False) -> dict:
+    def row(name, ref, set_id, arts, script, validators, ready):
+        return {"name": name, "kind": "evidence",
+                "evidence_set": {"reference_id": ref, "name": name, "id": set_id,
+                                 "exists": set_id is not None, "artifact_count": arts},
+                "script": script, "validators": validators, "pairs": [], "ready": ready}
+    return {
+        "workspace": {"base_url": "https://app.paramify.com/api/v0", "base_url_source": "default", "token": True},
+        "fetchers": [
+            row("demo_hello", "EVD-DEMO-HELLO", "ev-1", 2, "in_sync",
+                [{"key": "k", "role": "completeness", "name": "K", "paired": True}], True),
+            row("demo_policy_check", "EVD-DEMO-POLICY-CHECK", None, 0, "create", [], second_ready),
+        ],
+        "capabilities": [], "pipelines_count": 0, "skipped": [], "errors": {},
+    }
+
+
+@pytest.fixture
+def status_manifest(tmp_path):
+    path = tmp_path / "status.yaml"
+    path.write_text("run:\n  fetchers:\n    - use: demo_hello\n")
+    return str(path)
+
+
+def test_status_json_prints_the_status(monkeypatch, status_manifest):
+    monkeypatch.setattr(api, "paramify_status", lambda *a, **k: _status_fixture())
+    result = runner.invoke(app, ["status", status_manifest, "--json"])
+    assert json.loads(result.output) == _status_fixture()
+
+
+def test_status_exit_codes(monkeypatch, status_manifest):
+    monkeypatch.setattr(api, "paramify_status", lambda *a, **k: _status_fixture(second_ready=True))
+    assert runner.invoke(app, ["status", status_manifest]).exit_code == 0
+    monkeypatch.setattr(api, "paramify_status", lambda *a, **k: _status_fixture())
+    assert runner.invoke(app, ["status", status_manifest]).exit_code == 1
+
+    def broken(*a, **k):
+        raise ValueError("validators/x/y.yaml: schema validation failed")
+
+    monkeypatch.setattr(api, "paramify_status", broken)
+    result = runner.invoke(app, ["status", status_manifest])
+    assert result.exit_code == 2 and "schema validation failed" in result.output
+
+
+def test_status_table_has_the_totals_line(monkeypatch, status_manifest):
+    monkeypatch.setattr(api, "paramify_status", lambda *a, **k: _status_fixture())
+    out = runner.invoke(app, ["status", status_manifest]).output
+    assert "demo_policy_check" in out
+    assert "scripts 1/2" in out and "uploaded 1/2" in out
+
+
+def test_status_exits_2_when_it_cannot_tell(monkeypatch, status_manifest):
+    """2 is what waiting will not fix, so a wait-until-ready loop stops on it."""
+    def status_with(**changes):
+        s = _status_fixture(second_ready=True)
+        for key, value in changes.items():
+            if key == "token":
+                s["workspace"]["token"] = value
+            else:
+                s[key] = value
+        return s
+
+    cases = {
+        "a 401 on a read": status_with(errors={"evidence_sets": "Paramify rejected the token (HTTP 401)"}),
+        "no token": status_with(token=False),
+        "only an unknown fetcher": status_with(fetchers=[], skipped=["no_such_fetcher"]),
+        "an unknown fetcher beside ready ones": status_with(skipped=["no_such_fetcher"]),
+        "only scan reports": status_with(fetchers=[], pipelines_count=2),
+        "nothing at all": status_with(fetchers=[]),
+    }
+    for case, status in cases.items():
+        monkeypatch.setattr(api, "paramify_status", lambda *a, _s=status, **k: _s)
+        for args in ([], ["--json"]):
+            result = runner.invoke(app, ["status", status_manifest, *args])
+            assert result.exit_code == 2, (case, args, result.output)
+
+
+def test_status_shows_an_unreadable_config(monkeypatch, status_manifest, tmp_path):
+    """`--config typo.yaml` is a setup error, shown, not a bare "no API token"."""
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: True)
+    result = runner.invoke(app, ["status", status_manifest, "--config", str(tmp_path / "typo.yaml")])
+    out = result.output + str(result.stderr_bytes or b"")
+    assert result.exit_code == 2
+    assert "Could not read uploader config" in out and "typo.yaml" in out
+
+
+def test_status_shows_unknown_when_the_evidence_read_failed(monkeypatch, status_manifest):
+    s = _status_fixture()
+    s["errors"] = {"evidence_sets": "HTTP 401"}
+    row = s["fetchers"][1]
+    row["evidence_set"].update(exists=None, artifact_count=None)
+    monkeypatch.setattr(api, "paramify_status", lambda *a, **k: s)
+    out = runner.invoke(app, ["status", status_manifest]).output
+    line = next(ln for ln in out.splitlines() if ln.startswith("demo_policy_check"))
+    assert line.split() == ["demo_policy_check", "?", "create", "none", "?", "?"]
+    assert "evidence sets ?/2" in out and "uploaded ?/2" in out
+
+
+def test_status_leaves_the_totals_out_offline(monkeypatch, status_manifest):
+    s = _status_fixture()
+    s["workspace"]["token"] = False
+    monkeypatch.setattr(api, "paramify_status", lambda *a, **k: s)
+    out = runner.invoke(app, ["status", status_manifest]).output
+    assert "evidence sets" not in out and "uploaded" not in out
+    assert "PARAMIFY_UPLOAD_API_TOKEN" in out
+
+
+def test_status_exits_2_for_a_manifest_that_does_not_exist(monkeypatch, tmp_path):
+    """A wait-until-ready loop must stop on a typo, not spin on exit 1."""
+    monkeypatch.setattr(api, "paramify_status", lambda *a, **k: pytest.fail("no manifest to read"))
+    result = runner.invoke(app, ["status", str(tmp_path / "no-such.yaml")])
+    assert result.exit_code == 2
+
+
+def test_scripts_sync_refuses_a_missing_default_manifest(tmp_path, monkeypatch):
+    """Read as empty, the default manifest scoped the sweep to nothing; the
+    message points at the way out instead."""
+    monkeypatch.setattr(api, "find_repo_root", lambda *a, **k: tmp_path)
+    result = runner.invoke(app, ["scripts", "sync", "--dry-run", "--json"])
+    assert result.exit_code == 1
+    assert "--all" in json.loads(result.output)["errors"][0]

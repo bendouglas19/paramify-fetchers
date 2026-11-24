@@ -1,5 +1,5 @@
 name: datadog_apm_services
-version: 0.1.0
+version: 0.1.1
 description: Retrieves the Datadog APM service catalog to prove application services are registered and monitored with assigned owners.
 category: datadog
 
@@ -16,10 +16,20 @@ output:
 secrets:
 - name: api_key
   env: DATADOG_API_KEY
+  description: >-
+    Datadog API key, which identifies the organization (Organization Settings → API
+    Keys).
 - name: app_key
   env: DATADOG_APP_KEY
+  description: >-
+    Datadog application key of a service account with the Datadog Read Only role
+    (Organization Settings → Service Accounts → the account → New Key).
 - name: base_url
   env: DATADOG_BASE_URL
+  required: false
+  description: >-
+    Datadog API base URL. Defaults to https://api.ddog-gov.com (Datadog for Government);
+    set https://api.datadoghq.com for commercial US1, or your site's API host.
 
 ksis:
   - KSI-PIY-GIV
@@ -27,4 +37,4 @@ ksis:
 evidence_set:
   reference_id: EVD-DD-APM-SERVICES
   name: Datadog APM Services
-  instructions: 'Calls GET /api/v2/services/definitions with pagination. Extracts service name, team, tier, languages, and contact presence. Writes JSON catalog.'
+  instructions: 'Script: datadog/apm_services/fetcher.py. Calls GET /api/v2/services/definitions with pagination. Extracts service name, team, tier, languages, and contact presence. Writes JSON catalog.'

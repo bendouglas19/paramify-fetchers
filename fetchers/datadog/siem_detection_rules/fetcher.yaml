@@ -1,5 +1,5 @@
 name: datadog_siem_detection_rules
-version: 0.1.0
+version: 0.2.0
 description: Retrieves custom Datadog SIEM detection rules to prove active threat detection is configured.
 category: datadog
 
@@ -16,10 +16,20 @@ output:
 secrets:
 - name: api_key
   env: DATADOG_API_KEY
+  description: >-
+    Datadog API key, which identifies the organization (Organization Settings → API
+    Keys).
 - name: app_key
   env: DATADOG_APP_KEY
+  description: >-
+    Datadog application key of a service account with the Datadog Read Only role
+    (Organization Settings → Service Accounts → the account → New Key).
 - name: base_url
   env: DATADOG_BASE_URL
+  required: false
+  description: >-
+    Datadog API base URL. Defaults to https://api.ddog-gov.com (Datadog for Government);
+    set https://api.datadoghq.com for commercial US1, or your site's API host.
 
 ksis:
   - KSI-MLA-OSM
@@ -28,4 +38,4 @@ ksis:
 evidence_set:
   reference_id: EVD-DD-SIEM-RULES
   name: Datadog SIEM Detection Rules
-  instructions: 'Calls GET /api/v2/security_monitoring/rules with pagination, filtered to custom rules. Extracts rule name, type, severity, enabled state, and detection method. Writes JSON rules list.'
+  instructions: 'Script: datadog/siem_detection_rules/fetcher.py. Calls GET /api/v2/security_monitoring/rules with pagination. Keeps only custom Cloud SIEM rules: isDefault false and type log_detection or signal_correlation (summary.rules_excluded counts the others). Extracts rule name, type, severity, enabled state, and detection method (options.detectionMethod, the queries and the cases with their conditions and notifications). Writes JSON rules list.'

@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 
+from framework import api
+from framework.envelope import is_enveloped
 from framework.contract import (
     ConfigField,
     Fetcher,
@@ -31,7 +34,16 @@ from framework.contract import (
     TargetField,
     TargetInstance,
 )
-from framework.runner.executor import _apply_config, _build_env, run_entry
+from framework.runner.executor import (
+    _apply_config,
+    _build_env,
+    _emit_notes,
+    _emit_shadowed,
+    merged_config,
+    run_entry,
+)
+from framework.runner import manifest_loader
+from framework.secret_resolver import SecretResolutionError, UnsetSecretError
 
 # --------------------------------------------------------------------------- #
 # Builders
@@ -131,6 +143,386 @@ def test_required_config_without_value_raises(tmp_path):
     })
     with pytest.raises(RuntimeError, match="required config 'region'"):
         _apply_config({}, fetcher, None, None, ManifestEntry(use="x"))
+
+
+def test_config_env_reference_is_resolved(tmp_path, monkeypatch):
+    fetcher = make_fetcher(tmp_path, config_schema={"patterns": cfg("patterns", "PATTERNS")})
+    monkeypatch.setenv("MY_PATTERNS", "qa.*, *.sandbox.*")
+    env: dict = {}
+    _apply_config(env, fetcher, None, None, ManifestEntry(use="x", config={"patterns": "${env:MY_PATTERNS}"}))
+    assert env["PATTERNS"] == "qa.*, *.sandbox.*"
+
+
+def test_config_env_reference_unset_falls_back_to_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSET_VAR", raising=False)
+    fetcher = make_fetcher(tmp_path, config_schema={
+        "patterns": cfg("patterns", "PATTERNS"),
+        "region": cfg("region", "REGION", default="eastus"),
+    })
+    env: dict = {}
+    _apply_config(env, fetcher, None, None, ManifestEntry(
+        use="x", config={"patterns": "${env:UNSET_VAR}", "region": "${env:UNSET_VAR}"}))
+    assert "PATTERNS" not in env
+    assert env["REGION"] == "eastus"
+
+
+@pytest.mark.parametrize("field", [
+    cfg("days", "DAYS", default=7, type="integer"),
+    cfg("strict", "STRICT", default=False, type="boolean"),
+])
+def test_config_env_reference_on_a_typed_field_raises(tmp_path, monkeypatch, field):
+    monkeypatch.setenv("SET_VAR", "1")
+    fetcher = make_fetcher(tmp_path, config_schema={field.name: field})
+    for entry, platform in ((ManifestEntry(use="x", config={field.name: "${env:SET_VAR}"}), None),
+                            (ManifestEntry(use="x"), PlatformConfig(config={field.name: "${env:SET_VAR}"}))):
+        with pytest.raises(RuntimeError, match=f"config '{field.name}' is {field.type}; .*string config fields only"):
+            _apply_config({}, fetcher, None, platform, entry)
+
+
+def test_config_env_reference_unset_falls_back_to_platform_value(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSET_VAR", raising=False)
+    monkeypatch.setenv("PLATFORM_VAR", "from-platform-env")
+    field = cfg("patterns", "PATTERNS", default="from-default")
+    fetcher = make_fetcher(tmp_path, config_schema={"patterns": field})
+    entry = ManifestEntry(use="x", config={"patterns": "${env:UNSET_VAR}"})
+
+    env: dict = {}
+    _apply_config(env, fetcher, None, PlatformConfig(config={"patterns": "qa.*"}), entry)
+    assert env["PATTERNS"] == "qa.*"
+
+    env = {}
+    _apply_config(env, fetcher, None, PlatformConfig(config={"patterns": "${env:PLATFORM_VAR}"}), entry)
+    assert env["PATTERNS"] == "from-platform-env"
+
+    env = {}
+    _apply_config(env, fetcher, None, PlatformConfig(config={"patterns": "${env:UNSET_VAR}"}), entry)
+    assert env["PATTERNS"] == "from-default"
+
+
+def test_merged_config_lists_every_unset_reference(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSET_VAR", raising=False)
+    monkeypatch.delenv("OTHER_UNSET", raising=False)
+    monkeypatch.setenv("SET_VAR", "qa.*")
+    fetcher = make_fetcher(tmp_path, config_schema={
+        "patterns": cfg("patterns", "PATTERNS", default="from-default"),
+        "hosts": cfg("hosts", "HOSTS"),
+    })
+    merged = merged_config(fetcher, None, PlatformConfig(config={"patterns": "${env:OTHER_UNSET}"}), ManifestEntry(
+        use="x", config={"patterns": "${env:UNSET_VAR}", "hosts": "${env:SET_VAR}"}))
+    assert merged.unset == [("patterns", "UNSET_VAR"), ("patterns", "OTHER_UNSET")]
+    assert merged.values == {"patterns": "from-default", "hosts": "qa.*"}
+    assert merged.sources == {"patterns": "default", "hosts": "entry"}
+
+
+def test_config_env_reference_unset_emits_one_fetcher_note_per_entry(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSET_VAR", raising=False)
+    monkeypatch.delenv("OTHER_UNSET", raising=False)
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text("pass\n")
+    fetcher = make_fetcher(fdir, supports_targets=True,
+                           target_schema={"region": TargetField(name="region", type="string", env="REGION")},
+                           config_schema={"patterns": cfg("patterns", "PATTERNS", default="qa.*")})
+    entry = ManifestEntry(use="t_fetcher", config={"patterns": "${env:UNSET_VAR}"},
+                          targets=[TargetInstance(values={"region": r}, secrets={}) for r in ("a", "b")])
+    seen: list = []
+    run_entry(fetcher, entry, tmp_path / "out", None,
+              PlatformConfig(config={"patterns": "${env:OTHER_UNSET}"}), on_note=seen.append)
+    assert seen == ["2 config references unset: patterns (${env:UNSET_VAR}, ${env:OTHER_UNSET}) uses the default."]
+
+
+def test_merged_config_leaves_other_fetchers_keys_alone(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSET_VAR", raising=False)
+    monkeypatch.setenv("ASSESSMENT", "a-1")
+    fetcher = make_fetcher(tmp_path, config_schema={"patterns": cfg("patterns", "PATTERNS")})
+    platform = PlatformConfig(config={"sibling_days": "${env:lower}", "stale": "${env:UNSET_VAR}"})
+    merged = merged_config(fetcher, None, platform, ManifestEntry(use="x", config={"assessment_id": "${env:ASSESSMENT}"}))
+    assert (merged.errors, merged.unset) == ({}, [])
+    assert merged.values == {"sibling_days": "${env:lower}", "stale": "${env:UNSET_VAR}", "assessment_id": "a-1"}
+    env: dict = {}
+    _apply_config(env, fetcher, None, platform, ManifestEntry(use="x"))
+    assert "PATTERNS" not in env
+
+
+def test_config_is_merged_once_per_entry(tmp_path, monkeypatch):
+    from framework.runner import executor
+
+    calls = []
+    real = executor.merged_config
+    monkeypatch.setattr(executor, "merged_config", lambda *a: calls.append(1) or real(*a))
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text("pass\n")
+    fetcher = make_fetcher(fdir, supports_targets=True,
+                           target_schema={"region": TargetField(name="region", type="string", env="REGION")},
+                           config_schema={"patterns": cfg("patterns", "PATTERNS", default="qa.*")})
+    entry = ManifestEntry(use="t_fetcher",
+                          targets=[TargetInstance(values={"region": r}, secrets={}) for r in ("a", "b", "c")])
+    results = run_entry(fetcher, entry, tmp_path / "out")
+    assert len(results) == 3 and len(calls) == 1
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _manifest(use, config=None, platform=None, target=None):
+    m = api.init_manifest()
+    api.add_entry(m, use)
+    for k, v in (config or {}).items():
+        api.set_fetcher_config(m, use, k, v)
+    for k, v in (platform or {}).items():
+        api.set_platform_config(m, "azure", k, v)
+    if target:
+        api.add_target(m, use, target)
+    return m
+
+
+# A plain string config field; the exclusion fields are pattern lists, which take no references at all.
+STRING_FETCHER, STRING_FIELD = "azure_storage_encryption_status", "owner_tag_keys"
+
+
+@pytest.mark.parametrize("use, config, platform, target, message", [
+    pytest.param("azure_front_door_origins", {"metrics_lookback_days": "${env:DAYS}"}, None, None,
+                 "azure_front_door_origins: config 'metrics_lookback_days' is integer", id="typed-entry-field"),
+    pytest.param(STRING_FETCHER, {STRING_FIELD: "${env:lower}"}, None, None,
+                 f"{STRING_FETCHER}: config '{STRING_FIELD}': Malformed", id="malformed"),
+    pytest.param("azure_front_door_origins", None, None, {"production_tag": "${env:TAG}"},
+                 "azure_front_door_origins target[0]: production_tag is '${env:TAG}', but target fields aren't resolved",
+                 id="target-field"),
+    pytest.param("azure_front_door_origins", {"scope_exclusions": "${env:SCOPE_PATTERNS}"}, None, None,
+                 "azure_front_door_origins: config 'scope_exclusions': ${env:} references aren't read for a "
+                 "pattern list", id="pattern-list"),
+    pytest.param("azure_key_vault_configuration", None, {"resource_exclusions": "${env:AZURE_RESOURCE_EXCLUSIONS}"},
+                 None, "platforms.azure.config: config 'resource_exclusions': ${env:} references aren't read",
+                 id="platform-pattern-list"),
+])
+def test_validate_reports_references_the_runner_refuses(use, config, platform, target, message):
+    errors = api.validate(_manifest(use, config, platform, target), REPO_ROOT)
+    assert any(e.startswith(message) for e in errors), errors
+
+
+def test_validate_names_an_unset_assessment_reference(monkeypatch):
+    monkeypatch.delenv("WIZ_ASSESSMENT", raising=False)
+    m = _manifest("wiz_issues_report", {"assessment_id": "${env:WIZ_ASSESSMENT}", "close_cycle": "after_run"})
+    errors = [e for e in api.validate(m, REPO_ROOT) if "assessment_id" in e]
+    assert errors == ["wiz_issues_report: assessment_id reads ${env:WIZ_ASSESSMENT}, a reference unset in this "
+                      "environment"]
+
+
+def test_effective_config_shows_the_reference_and_whether_it_is_set(tmp_path, monkeypatch):
+    pytest.importorskip("textual", reason="TUI tests need the 'tui' extra")
+    from framework.tui import render
+
+    monkeypatch.setenv("SET_VAR", "secret-ish-value")
+    monkeypatch.delenv("UNSET_VAR", raising=False)
+    fetcher = make_fetcher(tmp_path, config_schema={"hosts": cfg("hosts", "HOSTS"),
+                                                    "patterns": cfg("patterns", "PATTERNS", default="qa.*")})
+    m = {"run": {"fetchers": [{"use": "t_fetcher", "config": {"hosts": "${env:SET_VAR}", "patterns": "${env:UNSET_VAR}"}}]}}
+    view = api.effective_config(m, ["t_fetcher"], tmp_path, {"t_fetcher": fetcher}, {})["t_fetcher"]
+    by_name = {f["name"]: f for f in view}
+    assert {k: by_name["hosts"][k] for k in ("value", "source", "reference", "reference_state")} == {
+        "value": "${env:SET_VAR}", "source": "entry", "reference": "${env:SET_VAR}", "reference_state": "set"}
+    assert "secret-ish-value" not in json.dumps(view)
+    assert {k: by_name["patterns"][k] for k in ("value", "source", "reference", "reference_state")} == {
+        "value": "qa.*", "source": "default", "reference": "${env:UNSET_VAR}", "reference_state": "unset"}
+
+    from rich.console import Console
+
+    console = Console(width=200, record=True)
+    console.print(render.entry_detail({"name": "t_fetcher", "secrets": [], "config": []}, m["run"]["fetchers"][0],
+                                      config_view=view))
+    shown = console.export_text()
+    assert "${env:SET_VAR}" in shown and "${env:UNSET_VAR}  (unset)" in shown
+    assert "secret-ish-value" not in shown
+
+
+def test_effective_config_skips_an_unset_reference_like_the_runner(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSET_VAR", raising=False)
+    fetcher = make_fetcher(tmp_path, config_schema={"patterns": cfg("patterns", "PATTERNS")})
+    m = {"run": {"fetchers": [{"use": "t_fetcher", "config": {"patterns": "${env:UNSET_VAR}"}}],
+                 "platforms": {"testcat": {"config": {"patterns": "qa.*"}}}}}
+    [field] = api.effective_config(m, ["t_fetcher"], tmp_path, {"t_fetcher": fetcher}, {})["t_fetcher"]
+    assert (field["value"], field["source"]) == ("qa.*", "platforms.testcat")
+
+
+def test_effective_config_keys_two_entries_of_one_fetcher_apart(tmp_path):
+    fetcher = make_fetcher(tmp_path, config_schema={"hosts": cfg("hosts", "HOSTS")})
+    m = {"run": {"fetchers": [{"use": "t_fetcher", "config": {"hosts": "first"}},
+                              {"use": "t_fetcher", "config": {"hosts": "second"}}]}}
+    view = api.effective_config(m, ["t_fetcher", "t_fetcher#1"], tmp_path, {"t_fetcher": fetcher}, {})
+    # The plain name is the first entry's key, the entry a write by fetcher name reaches.
+    assert [(k, [f["value"] for f in v]) for k, v in view.items()] == [
+        ("t_fetcher", ["first"]), ("t_fetcher#1", ["second"])]
+
+
+def test_validate_names_the_entry_an_error_is_about(tmp_path):
+    fetcher = make_fetcher(tmp_path, config_schema={"hosts": cfg("hosts", "HOSTS", required=True)})
+    m = {"run": {"fetchers": [{"use": "t_fetcher", "config": {"hosts": "h"}}, {"use": "t_fetcher"}]}}
+    errors = api.validate(m, REPO_ROOT, {"t_fetcher": fetcher}, {})
+    assert [e for e in errors if "'hosts'" in e] == [
+        f"t_fetcher#1: required config 'hosts' not set ({api.config_hint(fetcher, 'hosts')})"]
+
+
+LEAK_PROBE = "leak-probe-aaaaaaaa"
+
+
+@pytest.mark.parametrize("targets", [[], [{"subscription_id": "s"}]], ids=["ambient", "target"])
+def test_a_reference_to_a_credential_variable_is_refused_and_never_resolved(tmp_path, monkeypatch, targets):
+    monkeypatch.setenv("PARAMIFY_UPLOAD_API_TOKEN", LEAK_PROBE)
+    m = _manifest(STRING_FETCHER, {STRING_FIELD: "${env:PARAMIFY_UPLOAD_API_TOKEN}"})
+    m["run"]["output_dir"] = str(tmp_path / "evidence")
+    m["run"]["fetchers"][0]["targets"] = targets
+    refusal = (f"config '{STRING_FIELD}' reads ${{env:PARAMIFY_UPLOAD_API_TOKEN}}, which holds a secret; "
+               "config references can't read secrets")
+
+    assert f"{STRING_FETCHER}: {refusal}" in api.validate(m, REPO_ROOT)
+    [field] = [f for f in api.effective_config(m, [STRING_FETCHER], REPO_ROOT)[STRING_FETCHER]
+               if f["name"] == STRING_FIELD]
+    assert (field["value"], field["reference_state"]) == ("${env:PARAMIFY_UPLOAD_API_TOKEN}", "invalid")
+
+    events: list = []
+    summary = api.run(m, REPO_ROOT, on_event=events.append)
+    assert summary["ok"] is False
+    assert any(refusal in json.dumps(e) for e in events)
+    written = [f for f in Path(summary["run_dir"]).rglob("*") if f.is_file()]
+    assert [f.name for f in written] == ["_run_metadata.json"]
+    assert all(LEAK_PROBE not in f.read_text() for f in written)
+    assert LEAK_PROBE not in json.dumps(events) + json.dumps(field)
+
+
+def test_a_reference_to_one_of_the_fetchers_secrets_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("ACME_CLIENT_ID", "client-0123456789")
+    monkeypatch.setenv("ACME_LOGIN", "login-0123456789")
+    fetcher = make_fetcher(tmp_path, secrets=[Secret(name="client_id", env="ACME_CLIENT_ID")],
+                           config_schema={"patterns": cfg("patterns", "PATTERNS")})
+    for var, entry_secrets in (("ACME_CLIENT_ID", {}), ("ACME_LOGIN", {"client_id": "${env:ACME_LOGIN}"})):
+        merged = merged_config(fetcher, None, None, ManifestEntry(
+            use="x", config={"patterns": f"${{env:{var}}}"}, secrets=entry_secrets))
+        assert merged.errors == {"patterns": f"config 'patterns' reads ${{env:{var}}}, which holds a secret; "
+                                             f"config references can't read secrets"}
+        assert merged.values["patterns"] == f"${{env:{var}}}" and merged.referenced == {}
+        with pytest.raises(RuntimeError, match="which holds a secret"):
+            _apply_config({}, fetcher, None, None, ManifestEntry(use="x", config={"patterns": f"${{env:{var}}}"},
+                                                                 secrets=entry_secrets))
+
+
+@pytest.mark.parametrize("var, sibling", [
+    ("AZURE_DEVOPS_PAT", "azure_devops_audit_streams"),
+    ("DATADOG_API_KEY", None),
+    ("KNOWBE4_API_KEY", None),
+])
+def test_a_reference_to_another_fetchers_secret_is_refused(tmp_path, monkeypatch, var, sibling):
+    monkeypatch.setenv(var, LEAK_PROBE)
+    m = _manifest(STRING_FETCHER, {STRING_FIELD: f"${{env:{var}}}"})
+    if sibling:
+        api.add_entry(m, sibling)
+    m["run"]["output_dir"] = str(tmp_path / "evidence")
+    refusal = f"{STRING_FETCHER}: config '{STRING_FIELD}' reads ${{env:{var}}}, which holds a secret"
+    assert any(e.startswith(refusal) for e in api.validate(m, REPO_ROOT))
+    [field] = [f for f in api.effective_config(m, [STRING_FETCHER], REPO_ROOT)[STRING_FETCHER]
+               if f["name"] == STRING_FIELD]
+    assert field["reference_state"] == "invalid" and LEAK_PROBE not in json.dumps(field)
+    m["run"]["fetchers"] = [e for e in m["run"]["fetchers"] if e["use"] == STRING_FETCHER]
+    summary = api.run(m, REPO_ROOT)
+    assert summary["ok"] is False
+    assert all(LEAK_PROBE not in f.read_text() for f in Path(summary["run_dir"]).rglob("*") if f.is_file())
+
+
+def test_a_variable_a_sibling_entrys_secret_reads_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("MY_DEVOPS_LOGIN", LEAK_PROBE)
+    m = _manifest(STRING_FETCHER, {STRING_FIELD: "${env:MY_DEVOPS_LOGIN}"})
+    api.add_entry(m, "azure_devops_audit_streams")
+    m["run"]["fetchers"][-1]["secrets"] = {"pat": "${env:MY_DEVOPS_LOGIN}"}
+    assert any("reads ${env:MY_DEVOPS_LOGIN}, which holds a secret" in e for e in api.validate(m, REPO_ROOT))
+    view = api.effective_config(m, [STRING_FETCHER], REPO_ROOT)[STRING_FETCHER]
+    assert next(f for f in view if f["name"] == STRING_FIELD)["reference_state"] == "invalid"
+
+
+@pytest.mark.parametrize("name, refused", [
+    ("ACME_API_KEY", True), ("ACME_APP_KEY", True), ("GITHUB_PAT", True), ("ACME_APIKEY", True),
+    ("DB_PASS", True), ("STORAGE_SAS", True), ("ACME_CONNECTION_STRING", True), ("ACME_KEY_FILE", False),
+    ("SCOPE_PATTERNS", False), ("PATH_PREFIX", False), ("KEYVAULT_NAME", False), ("PROD_TAG", False),
+])
+def test_config_references_refuse_credential_like_names(name, refused):
+    from framework.runner.executor import _is_sensitive_env_name, is_credential_env_name
+
+    assert is_credential_env_name(name) is refused
+    # The masking heuristic is unchanged, so selectors such as AWS_ACCESS_KEY_ID stay readable in output.
+    assert _is_sensitive_env_name("AWS_ACCESS_KEY_ID") is False and is_credential_env_name("AWS_ACCESS_KEY_ID") is True
+
+
+def test_shared_config_state_compares_references_as_the_runner_reads_them(tmp_path, monkeypatch):
+    fetchers = {n: make_fetcher(tmp_path, name=n, config_schema={"tag": cfg("tag", "TAG")}) for n in ("t_a", "t_b")}
+    m = {"run": {"fetchers": [{"use": "t_a", "config": {"tag": "${env:PROD_TAG}"}},
+                              {"use": "t_b", "config": {"tag": "Environment"}}]}}
+    monkeypatch.setenv("PROD_TAG", "Environment")
+    state = api.shared_config_state(m, ["t_a", "t_b"], "tag", tmp_path, fetchers=fetchers, platforms={})
+    assert (state["conflict"], state["value"]) == (False, "${env:PROD_TAG}")
+    monkeypatch.setenv("PROD_TAG", "Owner")
+    state = api.shared_config_state(m, ["t_a", "t_b"], "tag", tmp_path, fetchers=fetchers, platforms={})
+    assert (state["conflict"], state["value"]) == (True, None)
+
+
+def test_tui_reads_a_referenced_close_cycle(monkeypatch):
+    pytest.importorskip("textual", reason="TUI tests need the 'tui' extra")
+    from rich.console import Console
+
+    from framework.tui import kinds, render
+
+    monkeypatch.setenv("CLOSE_POLICY", "after_run")
+    m = _manifest("wiz_issues_report", {"assessment_id": "A-1", "close_cycle": "${env:CLOSE_POLICY}"})
+    view = api.effective_config(m, ["wiz_issues_report"], REPO_ROOT)["wiz_issues_report"]
+    cell = render.destination_cell({"kind": kinds.SCAN_REPORT}, view).plain
+    assert cell == "A-1 · after_run"
+    console = Console(width=200, record=True)
+    console.print(render._destination({"kind": kinds.SCAN_REPORT}, view, in_manifest=True))
+    assert "after each complete run" in console.export_text()
+    monkeypatch.setenv("CLOSE_POLICY", "weekly")
+    assert render.destination_cell({"kind": kinds.SCAN_REPORT}, view).plain == "A-1 · close unset"
+
+
+@pytest.mark.parametrize("value", ["qa.* ${env:MY_PATTERNS}", "qa.*,${env:MY_PATTERNS}"])
+def test_a_reference_that_is_only_part_of_the_value_is_refused(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("MY_PATTERNS", "webdav*")
+    fetcher = make_fetcher(tmp_path, config_schema={"patterns": cfg("patterns", "PATTERNS")})
+    with pytest.raises(RuntimeError, match="must be the whole value"):
+        _apply_config({}, fetcher, None, None, ManifestEntry(use="x", config={"patterns": value}))
+    errors = api.validate(_manifest(STRING_FETCHER, {STRING_FIELD: value}), REPO_ROOT)
+    assert (f"{STRING_FETCHER}: config '{STRING_FIELD}': a ${{env:}} reference must be the whole value, "
+            "not part of it") in errors
+
+
+def test_an_allowed_reference_reaches_the_fetcher_and_is_masked_in_its_output(tmp_path, monkeypatch):
+    monkeypatch.setenv("MY_PATTERNS", "qa.*, *.sandbox.example.com")
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text(
+        "import json, os, sys\n"
+        "patterns = os.environ['PATTERNS']\n"
+        "print('patterns: ' + patterns, file=sys.stderr)\n"
+        "print('patterns: ' + patterns)\n"
+        "open(os.path.join(os.environ['EVIDENCE_DIR'], 'out.json'), 'w').write(json.dumps({'patterns': patterns}))\n"
+    )
+    fetcher = make_fetcher(fdir, config_schema={"patterns": cfg("patterns", "PATTERNS")})
+    lines: list = []
+    [result] = run_entry(fetcher, ManifestEntry(use="t_fetcher", config={"patterns": "${env:MY_PATTERNS}"}),
+                         tmp_path / "out", on_line=lines.append)
+    assert result.exit_code == 0
+    assert result.stderr.strip() == result.stdout.strip() == lines[0] == "patterns: ***REDACTED***"
+    assert json.loads((tmp_path / "out" / "out.json").read_text()) == {"patterns": "qa.*, *.sandbox.example.com"}
+
+
+def test_required_config_env_reference_unset_raises(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSET_VAR", raising=False)
+    fetcher = make_fetcher(tmp_path, config_schema={"region": cfg("region", "REGION", required=True)})
+    with pytest.raises(RuntimeError, match=r"required config 'region' reads \$\{env:UNSET_VAR\}"):
+        _apply_config({}, fetcher, None, None, ManifestEntry(use="x", config={"region": "${env:UNSET_VAR}"}))
+
+
+def test_config_malformed_env_reference_raises(tmp_path):
+    fetcher = make_fetcher(tmp_path, config_schema={"patterns": cfg("patterns", "PATTERNS")})
+    with pytest.raises(RuntimeError, match="config 'patterns'.*Malformed"):
+        _apply_config({}, fetcher, None, None, ManifestEntry(use="x", config={"patterns": "${env:lower}"}))
 
 
 def test_passthrough_env_only_passes_vars_actually_set(tmp_path, monkeypatch):
@@ -233,6 +625,104 @@ def test_build_env_optional_per_target_secret_without_target_does_not_raise(tmp_
         secrets=[Secret(name="tok", env="TOK", per_target=True, required=False)],
     )
     env = _build_env(fetcher, ManifestEntry(use="x"), None, tmp_path)
+    assert "TOK" not in env
+
+
+def test_build_env_optional_secret_with_unresolvable_ref_is_not_injected(tmp_path, monkeypatch):
+    """A reference the manifest carries but cannot resolve is an omission when the
+    secret is optional — the ambient-deployment case.
+
+    The TUI auto-wires every optional secret to its default env var on add, so a
+    manifest built there arrives in an ECS task / IRSA pod holding refs for keys
+    that deployment deliberately does not set. Raising would fail the entry at
+    setup, before the fetcher runs, over credentials it never needed.
+    """
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    fetcher = make_fetcher(
+        tmp_path,
+        secrets=[Secret(name="access_key_id", env="AWS_ACCESS_KEY_ID", required=False)],
+    )
+    entry = ManifestEntry(use="x", secrets={"access_key_id": "${env:AWS_ACCESS_KEY_ID}"})
+    env = _build_env(fetcher, entry, None, tmp_path)
+    assert "AWS_ACCESS_KEY_ID" not in env
+
+
+def test_build_env_skipped_optional_secret_is_recorded_for_the_operator(tmp_path, monkeypatch):
+    """The skip must not be silent: a typo'd var name is indistinguishable from an
+    ambient deployment, so the operator has to see which credential was dropped."""
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    fetcher = make_fetcher(
+        tmp_path,
+        secrets=[Secret(name="access_key_id", env="AWS_ACCESS_KEY_ID", required=False)],
+    )
+    entry = ManifestEntry(use="x", secrets={"access_key_id": "${env:AWS_ACCESS_KEY_ID}"})
+    notes = []
+    _build_env(fetcher, entry, None, tmp_path, note_sink=notes)
+    assert notes == [("access_key_id", "AWS_ACCESS_KEY_ID")]
+
+
+def test_emit_notes_coalesces_a_whole_credential_set_into_one_line(monkeypatch):
+    """A cloud category declares several static-key secrets and an ambient
+    deployment drops all of them at once. One line per invocation, or the run
+    output fills with text nobody reads."""
+    seen = []
+    _emit_notes(
+        [("access_key_id", "AWS_ACCESS_KEY_ID"),
+         ("secret_access_key", "AWS_SECRET_ACCESS_KEY"),
+         ("session_token", "AWS_SESSION_TOKEN")],
+        seen.append,
+    )
+    assert len(seen) == 1
+    assert "3 optional secrets" in seen[0]
+    for name in ("access_key_id", "secret_access_key", "session_token"):
+        assert name in seen[0]
+    assert "ambient identity" in seen[0]
+
+
+def test_emit_notes_says_nothing_when_no_secret_was_dropped():
+    """The channel stays quiet on a normal run."""
+    seen = []
+    _emit_notes([], seen.append)
+    assert seen == []
+
+
+def test_build_env_optional_secret_with_malformed_ref_still_raises(tmp_path):
+    """Optionality excuses an unset var, never a broken reference. A lowercase
+    name is the usual typo, and passing it through would hand the fetcher the
+    literal string as its credential."""
+    fetcher = make_fetcher(
+        tmp_path,
+        secrets=[Secret(name="access_key_id", env="AWS_ACCESS_KEY_ID", required=False)],
+    )
+    entry = ManifestEntry(use="x", secrets={"access_key_id": "${env:aws_access_key_id}"})
+    with pytest.raises(SecretResolutionError, match="Malformed secret reference"):
+        _build_env(fetcher, entry, None, tmp_path)
+
+
+def test_build_env_required_secret_with_unresolvable_ref_still_raises(tmp_path, monkeypatch):
+    """The fallback is scoped to optional secrets. A required credential that
+    cannot be resolved is still a hard failure before the fetcher runs."""
+    monkeypatch.delenv("API_TOKEN", raising=False)
+    fetcher = make_fetcher(tmp_path, secrets=[Secret(name="api_token", env="API_TOKEN")])
+    entry = ManifestEntry(use="x", secrets={"api_token": "${env:API_TOKEN}"})
+    # Re-raised as-is, not reclassified: the operator needs to see which var was
+    # empty, and UnsetSecretError carries it.
+    with pytest.raises(UnsetSecretError, match="could not be resolved") as e:
+        _build_env(fetcher, entry, None, tmp_path)
+    assert e.value.env_var == "API_TOKEN"
+
+
+def test_build_env_optional_per_target_secret_with_unresolvable_ref_is_skipped(tmp_path, monkeypatch):
+    """The per_target branch shares the fallback — add_target wires per-target
+    secrets the same way, so the same refs arrive on targets."""
+    monkeypatch.delenv("TOK", raising=False)
+    fetcher = make_fetcher(
+        tmp_path,
+        secrets=[Secret(name="tok", env="TOK", per_target=True, required=False)],
+    )
+    target = TargetInstance(values={}, secrets={"tok": "${env:TOK}"})
+    entry = ManifestEntry(use="x", targets=[target])
+    env = _build_env(fetcher, entry, target, tmp_path)
     assert "TOK" not in env
 
 
@@ -447,3 +937,589 @@ def test_no_status_file_written_is_not_an_error(tmp_path):
     r = run_entry(make_fetcher(fdir), ManifestEntry(use="t_fetcher"), tmp_path / "out")[0]
     assert r.exit_code == 1
     assert r.error is None and r.error_code is None
+
+
+# --------------------------------------------------------------------------- #
+# Timeout containment. The runner's own timeout is the only ceiling on a run,
+# so it has to hold when the process that is actually stuck is a grandchild —
+# which is the common shape here, since most fetchers are bash shelling out to
+# aws/curl/kubectl.
+# --------------------------------------------------------------------------- #
+
+def _bash_fetcher(tmp_path, script: str, timeout: int):
+    (tmp_path / "fetcher.sh").write_text(script)
+    out = tmp_path / "out"
+    out.mkdir(exist_ok=True)
+    return make_fetcher(
+        tmp_path, runtime_type="bash", runtime_entry="fetcher.sh",
+        runtime_timeout=timeout,
+    ), out
+
+
+def test_timeout_kills_the_whole_process_group(tmp_path):
+    """A hung grandchild must not outlive the timeout.
+
+    bash sleeps in the foreground with a child sleep of its own. Killing only
+    the direct child leaves the grandchild holding the inherited stdout pipe,
+    so the drain threads block on a pipe that never reaches EOF and the runner
+    waits out the full sleep instead of its own timeout.
+    """
+    import time
+
+    from framework.runner.executor import _invoke
+
+    fetcher, out = _bash_fetcher(tmp_path, "#!/bin/bash\nsleep 30\n", timeout=1)
+    started = time.monotonic()
+    result = _invoke(fetcher, {"PATH": "/usr/bin:/bin"}, None, out)
+    elapsed = time.monotonic() - started
+
+    assert result.exit_code == 124, "timeout should report the timeout exit code"
+    assert elapsed < 15, f"timeout did not bound the run: took {elapsed:.1f}s for a 1s timeout"
+
+
+def test_a_backgrounded_grandchild_does_not_hang_the_run(tmp_path, monkeypatch):
+    """A fetcher that exits 0 leaving a background child is still bounded.
+
+    No timeout fires here — bash exits immediately and successfully — so the
+    process-group kill never runs. The orphan still holds the stdout pipe, and
+    only the drain deadline stops the runner waiting on it indefinitely.
+
+    The deadline is shortened for the test: this path always waits it out, so at
+    the real 10s it would cost that on every CI leg to prove the same thing.
+    """
+    import time
+
+    from framework.runner import executor
+
+    monkeypatch.setattr(executor, "_DRAIN_JOIN_TIMEOUT", 1.0)
+
+    fetcher, out = _bash_fetcher(tmp_path, "#!/bin/bash\nsleep 30 &\nexit 0\n", timeout=60)
+    started = time.monotonic()
+    result = executor._invoke(fetcher, {"PATH": "/usr/bin:/bin"}, None, out)
+    elapsed = time.monotonic() - started
+
+    assert result.exit_code == 0
+    assert elapsed < 6, f"drain was not bounded: {elapsed:.1f}s"
+
+
+def test_a_raising_log_callback_does_not_fail_the_fetcher(tmp_path):
+    """The runner must not kill a healthy fetcher because its consumer raised.
+
+    _drain's finally closes the pipe, so an exception escaping on_line makes the
+    child die on its next write — and the run then reports a fetcher failure for
+    a failure the runner itself caused. The live case is the TUI, which forwards
+    each line as a Textual message; that raises once the screen is torn down, so
+    quitting mid-run would mark the running fetcher failed.
+    """
+    from framework.runner.executor import _invoke
+
+    fetcher, out = _bash_fetcher(
+        tmp_path,
+        '#!/bin/bash\nfor i in $(seq 1 200); do echo "line $i"; done\nexit 0\n',
+        timeout=60,
+    )
+
+    seen = []
+
+    def hostile(line):
+        seen.append(line)
+        raise RuntimeError("consumer is gone")
+
+    result = _invoke(fetcher, {"PATH": "/usr/bin:/bin"}, None, out, on_line=hostile)
+
+    assert result.exit_code == 0, "a healthy fetcher must survive a raising consumer"
+    assert result.stdout.count("line ") == 200, "every line must still reach the record"
+    assert len(seen) == 1, "forwarding stops after the consumer first raises"
+
+
+# --------------------------------------------------------------------------- #
+# Target selectors supersede static credentials (executor._build_env)
+# --------------------------------------------------------------------------- #
+
+def _aws_like_spec() -> PlatformSpec:
+    """A category shaped like fetchers/_categories/aws.yaml: static keys are
+    passable ambiently, but a target-set profile supersedes them."""
+    return PlatformSpec(
+        category="testcloud",
+        passthrough_env=["CLOUD_PROFILE", "CLOUD_ACCESS_KEY_ID", "CLOUD_SECRET_ACCESS_KEY"],
+        selector_env=["CLOUD_PROFILE"],
+        credential_env=["CLOUD_ACCESS_KEY_ID", "CLOUD_SECRET_ACCESS_KEY"],
+    )
+
+
+def _profile_fetcher(tmp_path):
+    return make_fetcher(
+        tmp_path,
+        supports_targets=True,
+        target_schema={"profile": TargetField(name="profile", type="string", required=False, env="CLOUD_PROFILE")},
+    )
+
+
+def test_target_profile_drops_ambient_static_keys(tmp_path, monkeypatch):
+    """A stale key pair in the runner's environment reaches every fetcher and
+    outranks the profile, so a correct multi-account fanout fails on every
+    target at once. A target that names an identity must win."""
+    monkeypatch.setenv("CLOUD_ACCESS_KEY_ID", "AKIASTALEKEY")
+    monkeypatch.setenv("CLOUD_SECRET_ACCESS_KEY", "stale-secret")
+    fetcher = _profile_fetcher(tmp_path)
+    target = TargetInstance(values={"profile": "Audit"}, secrets={})
+
+    env = _build_env(fetcher, ManifestEntry(use="x"), target, tmp_path, _aws_like_spec())
+
+    assert env["CLOUD_PROFILE"] == "Audit"
+    assert "CLOUD_ACCESS_KEY_ID" not in env
+    assert "CLOUD_SECRET_ACCESS_KEY" not in env
+
+
+def test_target_profile_drops_keys_declared_as_manifest_secrets(tmp_path, monkeypatch):
+    """Same rule regardless of SOURCE. Keys named in the manifest's secrets block
+    are injected by a different code path than passthrough, and were the other
+    half of the same trap."""
+    monkeypatch.setenv("SRC_KEY", "AKIASTALEKEY")
+    spec = _aws_like_spec()
+    spec.secrets = [Secret(name="access_key_id", env="CLOUD_ACCESS_KEY_ID", required=False)]
+    fetcher = _profile_fetcher(tmp_path)
+    entry = ManifestEntry(use="x", secrets={"access_key_id": "${env:SRC_KEY}"})
+    target = TargetInstance(values={"profile": "Audit"}, secrets={})
+
+    env = _build_env(fetcher, entry, target, tmp_path, spec)
+
+    assert "CLOUD_ACCESS_KEY_ID" not in env
+
+
+def test_ambient_collection_keeps_static_keys(tmp_path, monkeypatch):
+    """No target means "collect here" — the static-key path stays intact, which
+    is how local dev and non-AWS runners authenticate."""
+    monkeypatch.setenv("CLOUD_ACCESS_KEY_ID", "AKIALIVEKEY")
+    fetcher = make_fetcher(tmp_path)
+
+    env = _build_env(fetcher, ManifestEntry(use="x"), None, tmp_path, _aws_like_spec())
+
+    assert env["CLOUD_ACCESS_KEY_ID"] == "AKIALIVEKEY"
+
+
+def test_target_without_selector_keeps_static_keys(tmp_path, monkeypatch):
+    """A target that scopes only the region has not chosen an identity, so it
+    must not disturb the credential chain."""
+    monkeypatch.setenv("CLOUD_ACCESS_KEY_ID", "AKIALIVEKEY")
+    fetcher = make_fetcher(
+        tmp_path,
+        supports_targets=True,
+        target_schema={"region": TargetField(name="region", type="string", required=False, env="CLOUD_REGION")},
+    )
+    target = TargetInstance(values={"region": "us-east-2"}, secrets={})
+
+    env = _build_env(fetcher, ManifestEntry(use="x"), target, tmp_path, _aws_like_spec())
+
+    assert env["CLOUD_REGION"] == "us-east-2"
+    assert env["CLOUD_ACCESS_KEY_ID"] == "AKIALIVEKEY"
+
+
+def test_shadowed_credentials_are_reported(tmp_path, monkeypatch):
+    """A silent drop would hide that a stale key is still in the deployment,
+    waiting to break every entry whose target does not name a profile."""
+    monkeypatch.setenv("CLOUD_ACCESS_KEY_ID", "AKIASTALEKEY")
+    fetcher = _profile_fetcher(tmp_path)
+    target = TargetInstance(values={"profile": "Audit"}, secrets={})
+    shadowed: list = []
+
+    _build_env(fetcher, ManifestEntry(use="x"), target, tmp_path, _aws_like_spec(),
+               shadow_sink=shadowed)
+
+    assert shadowed == [("CLOUD_ACCESS_KEY_ID", "CLOUD_PROFILE")]
+
+    seen: list = []
+    _emit_shadowed(shadowed, seen.append)
+    assert "CLOUD_ACCESS_KEY_ID" in seen[0] and "CLOUD_PROFILE" in seen[0]
+
+
+# --------------------------------------------------------------------------- #
+# An output that overwrites an earlier one in the same run
+# --------------------------------------------------------------------------- #
+
+_CLOBBER_MESSAGE = ("overwrote demo_hello.json, which an earlier entry or target wrote in this run. "
+                    "Give each entry its own target, or remove the duplicate entry.")
+
+
+def test_a_second_entry_that_overwrites_the_first_entrys_file_fails(tmp_path):
+    m = {"run": {"output_dir": str(tmp_path / "evidence"),
+                 "fetchers": [{"use": "demo_hello"}, {"use": "demo_hello"}]}}
+    events: list = []
+
+    summary = api.run(m, REPO_ROOT, on_event=events.append)
+
+    first, second = summary["invocations"]
+    assert summary["ok"] is False
+    assert (first["entry_key"], first["exit_code"], first["outputs"]) == ("demo_hello", 0, ["demo_hello.json"])
+    assert second["entry_key"] == "demo_hello#1"
+    assert second["exit_code"] != 0 and second["outputs"] == []
+    assert second["overwritten"] == ["demo_hello.json"] and "overwritten" not in first
+    assert _CLOBBER_MESSAGE in second["stderr_tail"]
+    results = [e for e in events if e["event"] == "fetcher_result"]
+    assert "error" not in results[0]
+    assert results[1]["error"] == _CLOBBER_MESSAGE
+    assert results[1]["error_code"] == "output_overwritten"
+
+
+def _target_fetcher(tmp_path, file_name_expr):
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text(
+        "import os\n"
+        f"name = {file_name_expr}\n"
+        "open(os.path.join(os.environ['EVIDENCE_DIR'], name), 'w').write('{}')\n"
+    )
+    return make_fetcher(fdir, supports_targets=True,
+                        target_schema={"region": TargetField(name="region", type="string", env="REGION")})
+
+
+def _two_regions():
+    return ManifestEntry(use="t_fetcher",
+                         targets=[TargetInstance(values={"region": r}, secrets={}) for r in ("a", "b")])
+
+
+def test_a_fan_out_that_writes_one_name_per_target_passes(tmp_path):
+    fetcher = _target_fetcher(tmp_path, "'out_' + os.environ['REGION'] + '.json'")
+
+    results = run_entry(fetcher, _two_regions(), tmp_path / "out")
+
+    assert [(r.exit_code, r.outputs, r.error) for r in results] == [
+        (0, ["out_a.json"], None), (0, ["out_b.json"], None)]
+
+
+def test_a_fan_out_that_writes_the_same_name_for_each_target_fails_the_second(tmp_path):
+    fetcher = _target_fetcher(tmp_path, "'out.json'")
+
+    first, second = run_entry(fetcher, _two_regions(), tmp_path / "out")
+
+    assert (first.exit_code, first.outputs, first.error) == (0, ["out.json"], None)
+    assert second.exit_code == 1 and second.outputs == []
+    assert second.error == ("overwrote out.json, which an earlier entry or target wrote in this run. "
+                            "Give each entry its own target, or remove the duplicate entry.")
+    assert second.error_code == "output_overwritten"
+    assert (first.overwritten, second.overwritten) == ([], ["out.json"])
+
+
+def test_a_file_a_later_target_overwrote_is_left_unwrapped(tmp_path):
+    # Wrapping runs after every target of an entry. Target a's result still names
+    # out.json, which now holds target b's data: wrapping it would label b's data
+    # as a's, with a's status. Left raw, the upload refuses it.
+    fetcher = _target_fetcher(tmp_path, "'out.json'")
+    out = tmp_path / "out"
+    results = run_entry(fetcher, _two_regions(), out)
+
+    api._wrap_results(results, fetcher, "RID", out)
+
+    assert not is_enveloped(json.loads((out / "out.json").read_text()))
+
+
+def test_files_of_a_clean_fan_out_are_wrapped(tmp_path):
+    fetcher = _target_fetcher(tmp_path, "'out_' + os.environ['REGION'] + '.json'")
+    out = tmp_path / "out"
+    results = run_entry(fetcher, _two_regions(), out)
+
+    api._wrap_results(results, fetcher, "RID", out)
+
+    for region in ("a", "b"):
+        doc = json.loads((out / f"out_{region}.json").read_text())
+        assert is_enveloped(doc) and doc["metadata"]["target"] == {"region": region}
+
+
+def test_two_fetchers_with_different_file_names_in_one_run_dir_pass(tmp_path):
+    out = tmp_path / "out"
+    for name in ("one", "two"):
+        fdir = tmp_path / name
+        fdir.mkdir()
+        (fdir / "fetcher.py").write_text(
+            f"import os\nopen(os.path.join(os.environ['EVIDENCE_DIR'], '{name}.json'), 'w').write('{{}}')\n")
+        [r] = run_entry(make_fetcher(fdir, name=name), ManifestEntry(use=name), out)
+        assert (r.exit_code, r.outputs, r.error) == (0, [f"{name}.json"], None)
+
+
+def test_deleting_an_earlier_output_fails_the_invocation(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "earlier.json").write_text("{}")
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text("import os\nos.remove(os.path.join(os.environ['EVIDENCE_DIR'], 'earlier.json'))\n")
+
+    [r] = run_entry(make_fetcher(fdir), ManifestEntry(use="t_fetcher"), out)
+
+    assert r.exit_code == 1 and r.outputs == []
+    assert r.error == ("deleted earlier.json, which an earlier entry or target wrote in this run. "
+                       "Give each entry its own target, or remove the duplicate entry.")
+
+
+def test_a_fetcher_that_fails_and_overwrites_keeps_its_exit_code_and_reason(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "t_fetcher.json").write_text('{"earlier": true}')
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text(_REPORTING_FETCHER)
+
+    [r] = run_entry(make_fetcher(fdir), ManifestEntry(use="t_fetcher"), out)
+
+    assert r.exit_code == 1 and r.outputs == []
+    assert r.error_code == "target_unreachable"
+    assert r.error.startswith("the real reason; overwrote t_fetcher.json, which an earlier entry")
+
+
+def test_validate_notes_two_entries_of_a_fetcher_with_no_targets(tmp_path):
+    m = {"run": {"output_dir": str(tmp_path / "evidence"),
+                 "fetchers": [{"use": "demo_hello"}, {"use": "demo_hello"}]}}
+
+    assert api.validate(m, REPO_ROOT) == []
+    assert api.validate_notes(m, REPO_ROOT) == [
+        "entries demo_hello and demo_hello#1 run the same fetcher with no targets; "
+        "they write the same files, so the second entry's run fails."]
+
+
+def test_validate_notes_nothing_for_one_entry_per_fetcher(tmp_path):
+    m = {"run": {"output_dir": str(tmp_path / "evidence"), "fetchers": [{"use": "demo_hello"}]}}
+
+    assert api.validate_notes(m, REPO_ROOT) == []
+
+
+# --------------------------------------------------------------------------- #
+# Concurrent targets (entry.concurrency)
+# --------------------------------------------------------------------------- #
+
+# Sleeps SLEEP_<REGION> seconds between recording its start and end, then writes
+# one file per target (or the same file, with SAME_NAME set) holding both times.
+_TIMED_FETCHER = """\
+import json, os, sys, time
+region = os.environ['REGION']
+start = time.monotonic()
+print('working on ' + region, flush=True)
+time.sleep(float(os.environ.get('SLEEP_' + region.upper(), '0')))
+name = 'out.json' if os.environ.get('SAME_NAME') else 'out_' + region + '.json'
+body = {'region': region, 'start': start, 'end': time.monotonic(), 'evidence_dir': os.environ['EVIDENCE_DIR']}
+open(os.path.join(os.environ['EVIDENCE_DIR'], name), 'w').write(json.dumps(body))
+"""
+
+
+def _timed_fetcher(tmp_path, sleeps, same_name=False, **overrides):
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text(_TIMED_FETCHER)
+    # The runner passes only whitelisted env through; config fields carry the knobs.
+    schema = {f"sleep_{r}": cfg(f"sleep_{r}", f"SLEEP_{r.upper()}", default=str(s)) for r, s in sleeps.items()}
+    if same_name:
+        schema["same_name"] = cfg("same_name", "SAME_NAME", default="1")
+    return make_fetcher(fdir, supports_targets=True, config_schema=schema,
+                        target_schema={"region": TargetField(name="region", type="string", env="REGION")},
+                        **overrides)
+
+
+def _regions(*names, concurrency=1):
+    return ManifestEntry(use="t_fetcher", concurrency=concurrency,
+                         targets=[TargetInstance(values={"region": r}, secrets={}) for r in names])
+
+
+def test_concurrent_targets_overlap_and_keep_target_order(tmp_path, monkeypatch):
+    # The first target is the slowest, so it finishes last; its result still comes first.
+    fetcher = _timed_fetcher(tmp_path, {"a": 0.6, "b": 0.3, "c": 0.0})
+    out = tmp_path / "out"
+
+    results = run_entry(fetcher, _regions("a", "b", "c", concurrency=3), out)
+
+    assert [r.target for r in results] == [{"region": r} for r in "abc"]
+    assert [(r.exit_code, r.outputs, r.error) for r in results] == [
+        (0, [f"out_{r}.json"], None) for r in "abc"]
+    times = {r: json.loads((out / f"out_{r}.json").read_text()) for r in "abc"}
+    # Every target started before the slowest one finished.
+    assert max(t["start"] for t in times.values()) < times["a"]["end"]
+    assert [p.name for p in out.iterdir() if p.name.startswith(".")] == []
+
+
+def test_concurrency_one_runs_targets_one_after_another_in_the_run_dir(tmp_path, monkeypatch):
+    fetcher = _timed_fetcher(tmp_path, {"a": 0.2, "b": 0.0})
+    out = tmp_path / "out"
+
+    results = run_entry(fetcher, _regions("a", "b"), out)
+
+    assert [r.outputs for r in results] == [["out_a.json"], ["out_b.json"]]
+    a, b = (json.loads((out / f"out_{r}.json").read_text()) for r in "ab")
+    assert a["end"] <= b["start"]
+    assert a["evidence_dir"] == b["evidence_dir"] == str(out.resolve())
+
+
+def test_concurrent_targets_that_share_a_file_name_fail_the_later_target(tmp_path, monkeypatch):
+    # b finishes first, but a is the earlier target: b is the one that overwrote,
+    # and the file holds b's data, as a serial run would leave it.
+    fetcher = _timed_fetcher(tmp_path, {"a": 0.3, "b": 0.0}, same_name=True)
+    out = tmp_path / "out"
+
+    first, second = run_entry(fetcher, _regions("a", "b", concurrency=2), out)
+
+    assert (first.exit_code, first.outputs, first.overwritten, first.error) == (0, ["out.json"], [], None)
+    assert second.exit_code == 1 and second.outputs == [] and second.overwritten == ["out.json"]
+    assert second.error_code == "output_overwritten"
+    assert second.error == ("overwrote out.json, which an earlier entry or target wrote in this run. "
+                            "Give each entry its own target, or remove the duplicate entry.")
+    assert json.loads((out / "out.json").read_text())["region"] == "b"
+
+
+def test_concurrent_target_overwriting_an_earlier_entrys_file_fails(tmp_path, monkeypatch):
+    fetcher = _timed_fetcher(tmp_path, {"a": 0.0, "b": 0.0})
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "out_b.json").write_text('{"earlier": true}')
+
+    first, second = run_entry(fetcher, _regions("a", "b", concurrency=2), out)
+
+    assert (first.exit_code, first.outputs) == (0, ["out_a.json"])
+    assert (second.exit_code, second.outputs, second.overwritten) == (1, [], ["out_b.json"])
+
+
+def test_concurrent_target_writing_a_file_where_an_earlier_one_wrote_a_dir_fails(tmp_path, monkeypatch):
+    # A serial fetcher could not open the directory sub/out_b.json as a file, so it would fail.
+    fdir = tmp_path / "fetcher"
+    fdir.mkdir()
+    (fdir / "fetcher.py").write_text(
+        "import os\n"
+        "sub = os.path.join(os.environ['EVIDENCE_DIR'], 'sub')\n"
+        "os.makedirs(sub, exist_ok=True)\n"
+        "open(os.path.join(sub, 'out_' + os.environ['REGION'] + '.json'), 'w').write('{}')\n")
+    fetcher = make_fetcher(fdir, supports_targets=True,
+                           target_schema={"region": TargetField(name="region", type="string", env="REGION")})
+    out = tmp_path / "out"
+    (out / "sub" / "out_b.json").mkdir(parents=True)
+
+    first, second = run_entry(fetcher, _regions("a", "b", concurrency=2), out)
+
+    assert (first.exit_code, first.error) == (0, None)
+    assert second.exit_code == 1
+    assert "wrote sub/out_b.json, which an earlier entry or target wrote in this run as a different kind of file" in second.error
+    assert (out / "sub" / "out_a.json").is_file() and (out / "sub" / "out_b.json").is_dir()
+
+
+def test_concurrent_issue_report_outputs_are_named_relative_to_the_run_dir(tmp_path, monkeypatch):
+    fetcher = _timed_fetcher(tmp_path, {"a": 0.0, "b": 0.0}, kind="issue_report")
+    out = tmp_path / "out"
+
+    results = run_entry(fetcher, _regions("a", "b", concurrency=2), out)
+
+    assert [r.outputs for r in results] == [["issue-reports/out_a.json"], ["issue-reports/out_b.json"]]
+    assert sorted(p.name for p in (out / "issue-reports").iterdir()) == ["out_a.json", "out_b.json"]
+
+
+def test_concurrent_log_lines_name_their_target(tmp_path, monkeypatch):
+    fetcher = _timed_fetcher(tmp_path, {"a": 0.0, "b": 0.0})
+    lines: list = []
+
+    run_entry(fetcher, _regions("a", "b", concurrency=2), tmp_path / "out", on_line=lines.append)
+
+    assert sorted(lines) == ["[region=a] working on a", "[region=b] working on b"]
+
+
+def test_a_concurrent_target_that_cannot_be_set_up_fails_in_its_place(tmp_path, monkeypatch):
+    fetcher = _timed_fetcher(tmp_path, {"a": 0.0})
+    fetcher.target_schema["region"] = TargetField(name="region", type="string", env="REGION", required=True)
+    entry = ManifestEntry(use="t_fetcher", concurrency=2, targets=[
+        TargetInstance(values={"region": "a"}, secrets={}), TargetInstance(values={}, secrets={})])
+
+    ok, failed = run_entry(fetcher, entry, tmp_path / "out")
+
+    assert (ok.exit_code, ok.outputs) == (0, ["out_a.json"])
+    assert (failed.exit_code, failed.error_code, failed.outputs) == (255, "runner_setup_failed", [])
+
+
+@pytest.mark.parametrize("entry_extra, ok", [
+    ({"concurrency": 4}, True),
+    ({"concurrency": 32}, True),
+    ({"concurrency": 0}, False),
+    ({"concurrency": 33}, False),
+    ({"concurrency": "4"}, False),
+])
+def test_manifest_schema_bounds_concurrency(tmp_path, entry_extra, ok):
+    m = {"run": {"output_dir": str(tmp_path), "fetchers": [{"use": "demo_hello", **entry_extra}]}}
+
+    assert (api.validate(m, REPO_ROOT) == []) is ok
+
+
+def test_parse_manifest_reads_concurrency():
+    parsed = manifest_loader.parse_manifest({"run": {"fetchers": [{"use": "x", "concurrency": 6}, {"use": "y"}]}})
+
+    assert [e.concurrency for e in parsed.entries] == [6, 1]
+
+
+def test_validate_notes_concurrency_the_runner_ignores(tmp_path):
+    m = {"run": {"output_dir": str(tmp_path), "fetchers": [
+        {"use": "demo_hello", "concurrency": 4},
+        {"use": "aws_acm_certificate_status", "concurrency": 4, "targets": [{"region": "us-east-1"}]},
+        {"use": "aws_acm_certificate_status", "concurrency": 4, "targets": [{"region": "us-east-1"}, {"region": "us-west-2"}]},
+    ]}}
+
+    notes = api.validate_notes(m, REPO_ROOT)
+
+    assert "demo_hello: concurrency 4 has no effect; the fetcher takes no targets" in notes
+    assert "aws_acm_certificate_status: concurrency 4 has no effect with fewer than two targets" in notes
+    assert not any(n.startswith("aws_acm_certificate_status#1: concurrency") for n in notes)
+
+
+# A child process runs the fan-out, so the test can signal it the way a terminal
+# or a container stop would. Each fetcher records its pid, then sleeps far past
+# the test's own deadline: only a kill ends it in time.
+_SIGNALLED_RUN = """\
+import sys
+from pathlib import Path
+root, tmp, concurrency = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
+sys.path[:0] = [str(root), str(root / 'tests')]
+import test_executor as te
+from framework.runner.executor import run_entry, sigterm_exits
+fdir = tmp / 'fetcher'
+fdir.mkdir()
+(fdir / 'fetcher.py').write_text(
+    "import os, time\\n"
+    f"open(os.path.join({str(tmp / 'pids')!r}, str(os.getpid())), 'w').close()\\n"
+    "time.sleep(60)\\n"
+)
+fetcher = te.make_fetcher(fdir, supports_targets=True, target_schema={
+    'region': te.TargetField(name='region', type='string', env='REGION')})
+with sigterm_exits():
+    run_entry(fetcher, te._regions('a', 'b', 'c', 'd', concurrency=concurrency), tmp / 'out')
+"""
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="process groups are POSIX")
+@pytest.mark.parametrize("signum", ["SIGINT", "SIGTERM"])
+@pytest.mark.parametrize("concurrency", [1, 2])
+def test_a_signalled_run_stops_its_fetchers_and_starts_no_more(tmp_path, signum, concurrency):
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    (tmp_path / "pids").mkdir()
+    script = tmp_path / "run.py"
+    script.write_text(_SIGNALLED_RUN)
+    proc = subprocess.Popen([sys.executable, str(script), str(REPO_ROOT), str(tmp_path), str(concurrency)])
+    try:
+        deadline = time.monotonic() + 20
+        while len(list((tmp_path / "pids").iterdir())) < concurrency:
+            assert time.monotonic() < deadline, "the fetchers never started"
+            time.sleep(0.05)
+        proc.send_signal(getattr(signal, signum))
+        # An unhandled Ctrl-C ends Python by SIGINT again; SIGTERM ends it through SystemExit(143).
+        assert proc.wait(timeout=10) == (-signal.SIGINT if signum == "SIGINT" else 128 + signal.SIGTERM)
+    finally:
+        proc.kill()
+    pids = [int(p.name) for p in (tmp_path / "pids").iterdir()]
+    # Only the targets running at the signal ever started, and none outlived the run.
+    assert len(pids) == concurrency
+    deadline = time.monotonic() + 5
+    while any(_alive(pid) for pid in pids) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not any(_alive(pid) for pid in pids)
+    assert not list((tmp_path / "out").glob(".paramify-staging-*"))

@@ -20,8 +20,12 @@ output:
 secrets:
   - name: client_id
     env: CROWDSTRIKE_CLIENT_ID
+    description: >-
+      Client ID of a Falcon API client with READ on the scopes in
+      fetchers/crowdstrike/README.md (Support and resources → API clients and keys).
   - name: client_secret
     env: CROWDSTRIKE_CLIENT_SECRET
+    description: Client secret of the same Falcon API client. Falcon shows it once.
 
 config_schema:
   api_base_url:
@@ -56,7 +60,7 @@ evidence_set:
   reference_id: EVD-CS-ZERO-TRUST-ASSESSMENT
   name: CrowdStrike Zero Trust Assessment
   instructions: >-
-    Script: fetcher.py. Authenticates at POST /oauth2/token and reads
+    Script: crowdstrike/zero_trust_assessment/fetcher.py. Authenticates at POST /oauth2/token and reads
     GET /zero-trust-assessment/entities/audit/v1 for the tenant-wide ZTA audit
     report. When include_host_assessments is enabled, also pages
     GET /zero-trust-assessment/queries/assessments/v1 with the configured score

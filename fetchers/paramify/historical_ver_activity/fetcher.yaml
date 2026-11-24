@@ -37,6 +37,10 @@ output:
 secrets:
   - name: api_token
     env: PARAMIFY_API_TOKEN
+    description: >-
+      Paramify API key (Settings → API Keys) with read access to what the fetcher reads:
+      issues and deviations for the VER reports, elements for
+      workspace_vendor_certification_status.
 
 # Report-period knobs. Declared here (not under secrets) because every entry in
 # secrets[] is mandatory -- the runner raises when a manifest omits one -- while
@@ -62,7 +66,7 @@ evidence_set:
   reference_id: EVD-PARAMIFY-VER-TFR-MRH
   name: Paramify Historical VER Activity (VER-TFR-MRH)
   instructions: >-
-    Script: fetcher.py. Reads all project issues for PARAMIFY_PROJECT_ID from the
+    Script: paramify/historical_ver_activity/fetcher.py. Reads all project issues for PARAMIFY_PROJECT_ID from the
     Paramify REST API (GET /issues) once, partitions into active (non-accepted)
     and accepted vulnerabilities using the shared accepted definition, and writes
     the FedRAMP Historical VER Activity snapshot JSON. Per VER-TFR-MRH, Class C

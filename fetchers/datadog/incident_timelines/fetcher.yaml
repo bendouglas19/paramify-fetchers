@@ -1,5 +1,5 @@
 name: datadog_incident_timelines
-version: 0.1.0
+version: 0.2.0
 description: Retrieves per-incident timeline entries from Datadog to support after-action reviews and incident response documentation.
 category: datadog
 
@@ -16,16 +16,28 @@ output:
 secrets:
 - name: api_key
   env: DATADOG_API_KEY
+  description: >-
+    Datadog API key, which identifies the organization (Organization Settings → API
+    Keys).
 - name: app_key
   env: DATADOG_APP_KEY
+  description: >-
+    Datadog application key of a service account with the Datadog Read Only role
+    (Organization Settings → Service Accounts → the account → New Key).
 - name: base_url
   env: DATADOG_BASE_URL
+  required: false
+  description: >-
+    Datadog API base URL. Defaults to https://api.ddog-gov.com (Datadog for Government);
+    set https://api.datadoghq.com for commercial US1, or your site's API host.
 - name: incidents_lookback_days
   env: DATADOG_INCIDENTS_LOOKBACK_DAYS
+  required: false
+  description: How many days back to collect Datadog incidents. Defaults to 90.
 ksis:
   - KSI-INR-AAR
 
 evidence_set:
   reference_id: EVD-DD-INCIDENT-TIMELINES
   name: Datadog Incident Timelines
-  instructions: 'Calls GET /api/v2/incidents then GET /api/v2/incidents/{id}/timeline for each. Lookback window controlled by DATADOG_INCIDENTS_LOOKBACK_DAYS (default 90). Writes JSON timeline data.'
+  instructions: 'Script: datadog/incident_timelines/fetcher.py. Calls GET /api/v2/incidents with offset pagination, then GET /api/v2/incidents/{id}/relationships/timeline_cells for each incident. Lookback window controlled by DATADOG_INCIDENTS_LOOKBACK_DAYS (default 90); an incident created before the window is dropped. Keeps each timeline cell''s type, timestamps, author, important flag and content text. A failed timeline read gives timeline_cells null for that incident, an entry in metadata.api_failures and status partial_failure. Writes JSON timeline data.'

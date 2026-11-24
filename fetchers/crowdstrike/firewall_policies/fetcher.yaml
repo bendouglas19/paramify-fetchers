@@ -21,8 +21,12 @@ output:
 secrets:
   - name: client_id
     env: CROWDSTRIKE_CLIENT_ID
+    description: >-
+      Client ID of a Falcon API client with READ on the scopes in
+      fetchers/crowdstrike/README.md (Support and resources → API clients and keys).
   - name: client_secret
     env: CROWDSTRIKE_CLIENT_SECRET
+    description: Client secret of the same Falcon API client. Falcon shows it once.
 
 config_schema:
   api_base_url:
@@ -42,7 +46,7 @@ evidence_set:
   reference_id: EVD-CS-FIREWALL-POLICIES
   name: CrowdStrike Firewall Policies
   instructions: >-
-    Script: fetcher.py. Authenticates at POST /oauth2/token, then pages
+    Script: crowdstrike/firewall_policies/fetcher.py. Authenticates at POST /oauth2/token, then pages
     GET /policy/combined/firewall/v1 (integer-offset) for the policies and
     resolves three GET-by-ids endpoints under /fwmgr/entities/: policies/v1
     for the enforcement fields (enforce, test_mode, default_inbound,

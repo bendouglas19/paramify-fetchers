@@ -1,0 +1,162 @@
+name: azure_ai_services_configuration
+version: 0.2.2
+description: Shows how exposed, authenticated, encrypted and logged each Azure AI services account and AI Search service is, including model deployments, content filters and agent connections.
+category: azure
+
+config_schema:
+  resource_exclusions:
+    type: patterns
+    prefixes: [rg, location, id]
+    bare: false
+    required: false
+    env: AZURE_RESOURCE_EXCLUSIONS
+    description: >
+      Resources outside the authorization boundary, to leave out of scope, as
+      case-insensitive glob patterns listed in the manifest, each with a
+      prefix: rg:<resource group> (read from the resource id), location:<region>
+      (the region's name without spaces, such as eastus2; a resource with no
+      location never matches one) or id:<resource id> (also matches that
+      resource's child resources). * matches any run of characters and ? one
+      character. A matching AI services account or AI Search service is listed under excluded
+      with the pattern and left out of every count and verdict; an account's
+      deployments, content filter policies, projects, connections and diagnostic
+      settings are not read, so one the identity can't read doesn't fail the run. Accounts and
+      search services are the only kinds: an id: pattern naming a project under an account
+      matches nothing and is listed among the unmatched patterns. A pattern
+      without one of these prefixes fails the run. Set it once under platforms.azure.config for every Azure
+      fetcher that has this field; fetchers without it ignore it. Each item is a
+      pattern, or a pattern with a reason. Empty: every resource is in scope.
+
+supports_targets: true
+
+runtime:
+  type: python
+  entry: fetcher.py
+
+output:
+  type: json
+  path: azure_ai_services_configuration.json
+  aggregation: per_target
+
+target_schema:
+  subscription_id:
+    type: string
+    required: false
+    env: AZURE_SUBSCRIPTION_ID
+    description: >
+      Azure subscription id to collect from. Optional — omit to use the first
+      enabled subscription the ambient credential can see ("collect where
+      deployed"); set one target per subscription to fan out.
+  environment:
+    type: string
+    required: false
+    env: AZURE_ENVIRONMENT
+    description: >
+      Deployment environment label (e.g. prod / preprod) written into the evidence
+      metadata. Optional — set per target for multi-subscription runs.
+
+secrets: []          # DefaultAzureCredential only — no handed-over secret (see _categories/azure.yaml)
+
+ksis:
+  - KSI-CNA-MAT   # public network access and network rules on each AI endpoint
+  - KSI-IAM-SNU   # API keys disabled in favour of Entra ID and managed identities
+  - KSI-SVC-SIN   # customer-managed key encryption of AI data at rest
+  - KSI-MLA-LET   # audit logs exported from each account and search service
+  - KSI-SVC-ASM   # Foundry connections that hold stored keys rather than using Entra ID
+
+evidence_set:
+  reference_id: EVD-AZURE-AI-SERVICES-CONFIG
+  name: Azure AI Services Configuration
+  instructions: |
+    Script: azure/ai_services_configuration/fetcher.py
+
+    Access: Reader on the subscription.
+
+    Commands Executed:
+    - subscriptions.list() — picks a subscription when none is set
+    - providers.get("Microsoft.CognitiveServices") — tells "not registered" from "no accounts"
+    - CognitiveServicesManagementClient accounts.list() — every Azure AI services account (Foundry, OpenAI, Language, Speech, Document Intelligence and other kinds) with its network, key, encryption and identity settings
+    - deployments.list(), rai_policies.list() and projects.list() (per Foundry or OpenAI account) — model deployments, content filter policies and Foundry projects
+    - GET {account}/connections and {project}/connections (ARM REST; per account and per project) — connections agents use to reach other systems, recorded without credentials or query strings
+    - GET /subscriptions/{id}/providers/Microsoft.Search/searchServices (ARM REST) — every AI Search service with its network, key and encryption settings
+    - diagnostic_settings.list() (per account and search service) — whether audit logs are exported
+
+    Output: azure_ai_services_configuration_<subscription>.json — each AI services account, search service, model deployment, content filter policy, project and connection with the verdicts below. Resources the resource_exclusions patterns take out are listed under excluded instead. A per-account list (diagnostic settings, deployments, content filter policies, projects or connections) that could not be read is null on that account and sets metadata.partial_failure; the summary counts built from such lists then cover only the accounts whose list was read.
+
+    Summary fields:
+
+    What was checked?
+    - total_accounts — Number of AI services accounts checked; null when the account list could not be read
+    - accounts_by_kind — Number of accounts for each kind of account (AIServices, OpenAI, and so on), with one entry per kind found; null when the account list could not be read
+    - total_search_services — Number of AI Search services checked; null when the search service list could not be read
+    - provider_registration_status — Whether the AI services provider (Microsoft.CognitiveServices) is registered on the subscription: registered, not_registered or unknown
+
+    Which resources are left out of scope?
+    - resource_exclusion_patterns — List of the configured resource_exclusions patterns (rg:, location: or id:); empty when none are set, so every resource is in scope
+    - resource_exclusion_patterns_unmatched — List of configured patterns that matched no account or search service, such as a mistyped name; null when either list could not be read
+    - excluded_accounts — Number of accounts left out of scope because a pattern matched their resource group, region or id; none of their settings are read and no other count includes them; null when the account list could not be read
+    - excluded_search_services — Number of search services left out of scope because a pattern matched their resource group, region or id; null when the search service list could not be read
+    - in_scope_accounts — Number of accounts read and in scope; 0 means the patterns took out every account, which a check can catch by requiring more than 0; null when the account list could not be read
+    - in_scope_search_services — Number of search services read and in scope; 0 means the patterns took out every one; null when the search service list could not be read
+
+    Can the accounts be reached from the internet?
+    - accounts_open_to_all_networks — Number of accounts reachable from any network (public access is on and the network rules allow all); null when the account list could not be read
+    - accounts_network_restricted — Number of accounts with public access on but the network rules denying by default; null when the account list could not be read
+    - accounts_private_only — Number of accounts with public network access disabled; null when the account list could not be read
+    - accounts_with_private_endpoints — Number of accounts with at least one private endpoint connection; null when the account list could not be read
+    - accounts_with_private_endpoint_but_public_access — Number of accounts that have a private endpoint but can still be reached publicly; null when the account list could not be read
+    - accounts_with_outbound_restricted — Number of accounts that restrict their own outbound network access; null when the account list could not be read
+    - search_services_open_to_all_networks — Number of search services reachable from any network (public access is on and no IP rules are set); null when the search service list could not be read
+
+    Do keys still work, or only Microsoft Entra ID sign-in?
+    - accounts_with_api_keys_enabled — Number of accounts where API keys still work (local authentication is not disabled); null when the account list could not be read
+    - accounts_entra_only — Number of accounts where API keys are disabled so only Microsoft Entra ID sign-in works; null when the account list could not be read
+    - accounts_entra_only_percentage — Percentage of accounts that accept only Entra ID sign-in = accounts_entra_only / total_accounts × 100 (a whole number, 0–100); 0 when total_accounts is 0; null when the account list could not be read
+    - accounts_without_managed_identity — Number of accounts with no managed identity; null when the account list could not be read
+    - search_services_with_api_keys_enabled — Number of search services where API keys still work; null when the search service list could not be read
+
+    Is data encrypted with a customer-managed key?
+    - accounts_with_customer_managed_key — Number of accounts encrypted with a key the customer manages instead of the Microsoft-managed key; null when the account list could not be read
+    - search_services_cmk_enforced — Number of search services that enforce customer-managed key encryption; null when the search service list could not be read
+
+    Are audit logs exported?
+    - accounts_with_diagnostic_settings — Number of accounts with at least one diagnostic setting; null when the account list could not be read
+    - accounts_audit_logs_exported — Number of accounts whose diagnostic setting sends audit logs to a destination; null when the account list could not be read
+    - accounts_audit_logs_unknown — Number of accounts whose diagnostic settings could not be read; null when the account list could not be read
+    - search_services_audit_logs_exported — Number of search services whose diagnostic setting sends operation logs to a destination; null when the search service list could not be read
+
+    Where may model deployments process data, and who publishes the models?
+    - total_deployments — Number of model deployments across all accounts; null when the account list could not be read
+    - deployments_global_processing — Number of deployments that may process data in any Azure region (Global deployment types); null when the account list could not be read
+    - deployments_data_zone_processing — Number of deployments that process data within one geography (DataZone deployment types); null when the account list could not be read
+    - deployments_regional_processing — Number of deployments that process data in the account's own region (Standard, ProvisionedManaged or Batch types); null when the account list could not be read
+    - deployments_processing_scope_unknown — Number of deployments whose deployment type is not recognised; null when the account list could not be read
+    - deployments_third_party_publisher — Number of deployments whose model publisher is neither OpenAI nor Microsoft; a deployment with no publisher reported is not counted; null when the account list could not be read
+    - deployments_by_model_publisher — Number of deployments for each model publisher (OpenAI, Anthropic and so on), with one entry per publisher found; a deployment with no publisher reported is counted under unknown; null when the account list could not be read
+    - deployments_with_automatic_version_upgrade — Number of deployments whose model is upgraded automatically when a new default version is available or the current one expires; null when the account list could not be read
+
+    Do deployments run under a content filter?
+    - deployments_content_filter_blocking — Number of deployments whose content filter policy has the hate, sexual, violence and self-harm filters enabled and blocking; null when the account list could not be read
+    - deployments_content_filter_non_blocking — Number of deployments whose content filter policy lacks a hate, sexual, violence or self-harm filter, or has one off or annotate-only; null when the account list could not be read
+    - deployments_content_filter_none — Number of deployments that name no content filter policy; null when the account list could not be read
+    - deployments_content_filter_missing — Number of deployments that name a policy that is not on the account; null when the account list could not be read
+    - deployments_content_filter_unknown — Number of deployments whose account's policies could not be listed; null when the account list could not be read
+    - deployments_jailbreak_protection — Number of deployments whose policy blocks jailbreak attempts (Prompt Shields); null when the account list could not be read
+    - deployments_indirect_attack_protection — Number of deployments whose policy blocks indirect attacks hidden in documents or tool output (Prompt Shields); Microsoft's default policy blocks jailbreaks but does not enable indirect-attack detection; null when the account list could not be read
+    - deployments_asynchronous_filtering — Number of deployments whose policy lets output stream before filtering completes; null when the account list could not be read
+
+    Are custom content filter policies weaker than Microsoft's default?
+    - content_filter_policies_custom — Number of content filter policies the customer manages; null when the account list could not be read
+    - content_filter_policies_weaker_than_default — Number of custom policies that do not block every harm category and jailbreaks, or set a severity threshold looser than Microsoft's default (a threshold is the lowest severity blocked, so High is looser than Medium); null when the account list could not be read
+    - content_filter_policies_weaker_unknown — Number of custom policies whose thresholds are missing or unrecognised, so the comparison is unknown; null when the account list could not be read
+    - content_filter_policies_custom_unused — Number of custom policies that no deployment uses; null when the account list could not be read
+
+    What can agents reach, and with what credentials?
+    - total_projects — Number of Foundry projects across all accounts; null when the account list could not be read
+    - total_connections — Number of connections across all accounts and projects (an account list that repeats a project's connection counts it once); null when the account list could not be read
+    - connections_using_stored_secrets — Number of connections that keep a credential (key, token, password, SAS or service principal secret) instead of using Entra ID or a managed identity; null when the account list could not be read
+    - connections_unauthenticated — Number of connections that use no authentication; null when the account list could not be read
+    - connections_auth_type_unrecognized — Number of connections whose authentication type is not recognised, so whether they hold a secret is unknown; null when the account list could not be read
+    - connections_unknown_accounts — Number of Foundry or OpenAI accounts whose connections could not be read; null when the account list could not be read
+    - remote_tool_connections — Number of connections that are tools or MCP servers agents can call; null when the account list could not be read
+    - grounding_with_bing_connections — Number of Grounding with Bing Search connections, which send queries outside the Azure compliance boundary; null when the account list could not be read

@@ -14,22 +14,31 @@ from __future__ import annotations
 
 import colorsys
 import math
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from rich.text import Text
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Center, Container, Vertical
 from textual.message import Message
 from textual.screen import Screen
-from textual.widgets import DataTable, Static
+from textual.widgets import Static
 
 from framework import api
+from framework.paramify_auth import UPLOAD_TOKEN_ENV
 from framework.tui import palette
-from framework.tui.modals import ConfirmModal, FormModal
+from framework.tui.components.chrome import UpdateNotice
+from framework.tui.components.table import DataTable
+from framework.tui.modals import ConfirmModal, FormModal, PickerModal
+from framework.tui.words import plural
+
+# The stack step's "skip" choice; no stack id can contain a NUL.
+_NO_STACK = "\0none"
 
 # PARAMIFY block logo (from the Go prototype's app.LogoLines()).
 LOGO = r"""
@@ -138,6 +147,7 @@ class WelcomeScreen(Screen):
             with Center():
                 yield Static(LOGO, id="welcome-logo", markup=False)
             yield Static(self._tagline(), id="welcome-tagline")
+            yield UpdateNotice(id="welcome-update")
             yield Static("", id="welcome-checks")
             with Container(id="welcome-panel"):
                 yield DataTable(id="welcome-manifests")
@@ -223,26 +233,27 @@ class WelcomeScreen(Screen):
             cat = getattr(self.app, "catalog_data", None)
             if cat:
                 results[1] = (
-                    1, f"✓ {cat['fetcher_count']} fetchers · {len(cat['categories'])} categories"
+                    1, f"✓ {plural(cat['fetcher_count'], 'fetcher')} · {plural(len(cat['categories']), 'category', 'categories')}"
                 )
             else:
                 results[1] = (-2, "✗ load failed")
             uploader = Path(root) / "uploaders" / "paramify_evidence"
-            results[3] = (1, "✓ paramify_evidence") if uploader.is_dir() else (-1, "not present")
+            results[3] = (1, "✓ ready") if uploader.is_dir() else (-1, "not present")
         n = len(self._manifests or [])
         results[2] = (1, f"✓ {n} discovered") if n else (-1, "none yet")
         self._check_results = results
         cat = getattr(self.app, "catalog_data", None)
         self._summary_parts = [
-            f"{cat['fetcher_count']} fetchers" if cat else "catalog unavailable",
-            f"{n} manifest{'' if n == 1 else 's'}" if n else "no manifests yet",
-            "uploader ready" if results[3][0] == 1 else "no uploader",
+            plural(cat["fetcher_count"], "fetcher") if cat else "catalog unavailable",
+            plural(n, "manifest") if n else "no manifests yet",
         ]
+        if results[3][0] != 1:
+            self._summary_parts.append("no uploader")
 
     def _summary_line(self) -> Text:
         text = Text()
         text.append("✓ ", style=palette.OK)
-        text.append("workspace ok · " + " · ".join(self._summary_parts), style=palette.MUTED)
+        text.append(" · ".join(self._summary_parts), style=palette.MUTED)
         return text
 
     def _render_checks(self, t: float) -> Text:
@@ -287,6 +298,7 @@ class WelcomeScreen(Screen):
     @staticmethod
     def _relative(ts: str) -> str:
         """Humanize a last-run stamp (run_id format or plain date); raw on mismatch."""
+        ts = re.sub(r"(?<=Z)-[0-9a-f]{4}$", "", ts)  # run ids carry a 4-hex suffix
         for fmt in ("%Y-%m-%dT%H-%M-%SZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
             try:
                 then = datetime.strptime(ts, fmt).replace(tzinfo=timezone.utc)
@@ -316,14 +328,14 @@ class WelcomeScreen(Screen):
 
     def _tagline(self) -> Text:
         t = Text()
-        t.append("fetcher", style="#BB9AF7 bold")
+        t.append("fetchers", style="#BB9AF7 bold")
         t.append(" — collect compliance evidence from your stack", style="#565F89")
         return t
 
     def _panel_title(self) -> str:
         return (
-            "select a run manifest" if self._manifests
-            else "no manifests yet — add one under manifests/ or press n"
+            "manifests" if self._manifests
+            else "no manifests yet · press n to create one"
         )
 
     def _hints(self) -> Text:
@@ -360,36 +372,97 @@ class WelcomeScreen(Screen):
         self._open(self._selected())
 
     def action_new(self) -> None:
-        if not self.app.root_path:
-            self.notify("Cannot create a manifest: repo root not found.", severity="error")
-            return
+        """New manifest in two steps: its name, then the Paramify stack it uploads to.
 
+        Nothing is written until both are answered. The stack step is optional:
+        it is skipped without a token, and a failed stack list or Escape still
+        creates the manifest, since the stack can be set later on the manifest
+        screen and a local file should not wait on the network.
+        """
+        if not self.app.root_path:
+            self.notify("Couldn't create a manifest: the repo root wasn't found.", severity="error")
+            return
+        self._ask_name("")
+
+    def _ask_name(self, typed: str) -> None:
         def done(result: Optional[dict]) -> None:
             name = (result or {}).get("new manifest", {}).get("name")
             if not name:
                 return
             try:
-                path = api.new_manifest_path(self.app.root_path, name)
+                api.new_manifest_target(self.app.root_path, name)
             except FileExistsError:
+                # Back to the form with the name kept, before the stack is asked for.
                 self.notify(f"{name} already exists.", severity="warning")
+                self._ask_name(name)
                 return
-            except (ValueError, OSError) as exc:
-                self.notify(f"Could not create manifest: {exc}", severity="error")
+            except ValueError as exc:
+                self.notify(str(exc), severity="error")
+                self._ask_name(name)
                 return
-            self.post_message(ManifestSelected(str(path)))  # open the new one
+            if api.upload_readiness(self.app.root_path)["token_present"]:
+                self._load_stacks(name)
+            else:
+                self._ask_stack(name, [], notice=(
+                    "No Paramify API token, so stacks can't be listed.\n"
+                    f"Set {UPLOAD_TOKEN_ENV}, then pick a stack on the manifest screen."
+                ))
 
         self.app.push_screen(
             FormModal(
                 "New manifest",
                 {"new manifest": [{
-                    "key": "name", "label": "file name", "kind": "text",
+                    "key": "name", "label": "name", "kind": "text", "value": typed,
                     "placeholder": "e.g. aws-prod", "required": True,
-                    "help": "created empty under manifests/",
+                    "help": "saved under manifests/",
                 }]},
-                subtitle="Create a manifest and start editing it",
+                subtitle="Then pick the Paramify stack it uploads to.",
+                save_label="Next",
             ),
             done,
         )
+
+    @work(thread=True, exclusive=True, group="new-manifest-stacks")
+    def _load_stacks(self, name: str) -> None:
+        try:
+            stacks = api.list_stacks(self.app.root_path)
+        except Exception as exc:
+            self.app.call_from_thread(self._ask_stack, name, [], notice=(
+                f"Couldn't list stacks: {exc}\n"
+                "Check the API token and URL, then pick a stack on the manifest screen."
+            ))
+            return
+        self.app.call_from_thread(self._ask_stack, name, stacks)
+
+    def _ask_stack(self, name: str, stacks: List[dict], notice: str = "") -> None:
+        """The stack step. With a notice (no token, a failed list) it still shows,
+        says why, and offers only to create the manifest without a stack."""
+        names = {s["id"]: s["name"] for s in stacks}
+
+        def done(choice: Optional[str]) -> None:
+            # Escape (None) is a skip too: the name is already settled.
+            stack = None if choice in (None, _NO_STACK) else choice
+            self._create(name, stack, names.get(stack) if stack else None)
+
+        # With no list to pick from, the one choice must not read as cancelling.
+        skip = "Create it without a stack (set it later)" if notice else "Skip: set it later"
+        options = [(_NO_STACK, skip)]
+        options += [(s["id"], f"{s['name']}  ({s['id']})") for s in stacks]
+        self.app.push_screen(
+            PickerModal("Paramify stack", options, subtitle=f"Where {name} uploads its evidence", notice=notice),
+            done,
+        )
+
+    def _create(self, name: str, stack: Optional[str], stack_name: Optional[str]) -> None:
+        try:
+            path = api.new_manifest_path(self.app.root_path, name, stack=stack, stack_name=stack_name)
+        except FileExistsError:
+            self.notify(f"{name} already exists.", severity="warning")
+            return
+        except (ValueError, OSError) as exc:
+            self.notify(f"Couldn't create the manifest: {exc}", severity="error")
+            return
+        self.post_message(ManifestSelected(str(path)))  # open the new one
 
     def action_delete(self) -> None:
         path = self._selected()
@@ -402,12 +475,12 @@ class WelcomeScreen(Screen):
             try:
                 Path(path).unlink()
             except OSError as exc:
-                self.notify(f"Could not delete: {exc}", severity="error")
+                self.notify(f"Couldn't delete it: {exc}", severity="error")
                 return
             self.notify(f"Deleted {Path(path).name}.")
             self._reload_table()
 
-        self.app.push_screen(ConfirmModal(f"Delete '{Path(path).name}' (the file on disk)?"), done)
+        self.app.push_screen(ConfirmModal(f"Delete {Path(path).name}? This removes the file."), done)
 
     def _reload_table(self) -> None:
         self._manifests = api.list_manifests(self.app.root_path) if self.app.root_path else []

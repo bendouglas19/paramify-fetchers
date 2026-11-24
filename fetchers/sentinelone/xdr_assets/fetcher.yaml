@@ -16,8 +16,14 @@ output:
 secrets:
 - name: api_token
   env: SENTINELONE_API_TOKEN
+  description: >-
+    API token of a SentinelOne service user with the Viewer role at Account scope
+    (Settings → Users → Service Users → Generate API Token).
 - name: api_url
   env: SENTINELONE_API_URL
+  description: >-
+    SentinelOne console base URL, no trailing slash (e.g.
+    https://your-instance.s1gov.net).
 
 ksis:
   - KSI-PIY-GIV
@@ -25,4 +31,4 @@ ksis:
 evidence_set:
   reference_id: EVD-S1-XDR-ASSET
   name: SentinelOne XDR Assets
-  instructions: 'Script: xdrassetfetcher.py. Calls the SentinelOne API endpoint /web/api/v2.1/xdr/assets, supports cursor pagination, summarizes infectionStatus and assetStatus, writes JSON and CSV summary.'
+  instructions: 'Script: sentinelone/xdr_assets/fetcher.py. Calls the SentinelOne API endpoint /web/api/v2.1/xdr/assets, supports cursor pagination, summarizes infectionStatus and assetStatus, writes JSON and CSV summary.'

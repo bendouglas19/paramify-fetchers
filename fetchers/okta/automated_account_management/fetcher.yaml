@@ -16,8 +16,11 @@ output:
 secrets:
 - name: api_token
   env: OKTA_API_TOKEN
+  description: >-
+    Okta SSWS API token created by a read-only admin (Security → API → Tokens).
 - name: org_url
   env: OKTA_ORG_URL
+  description: Okta org base URL, no trailing slash (e.g. https://your-org.okta.com).
 
 ksis:
   - KSI-IAM-AAM
@@ -25,4 +28,4 @@ ksis:
 evidence_set:
   reference_id: EVD-OKTA-KSI-IAM-07
   name: Okta Automated Account Management
-  instructions: 'Script: okta_automated_account_management.py. Uses Okta APIs to collect account lifecycle monitoring and health evidence. Output: okta_automated_account_management.json'
+  instructions: 'Script: okta/automated_account_management/fetcher.py. Uses Okta APIs to collect account lifecycle monitoring and health evidence. Output: okta_automated_account_management.json'

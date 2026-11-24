@@ -16,8 +16,11 @@ output:
 secrets:
 - name: api_token
   env: OKTA_API_TOKEN
+  description: >-
+    Okta SSWS API token created by a read-only admin (Security → API → Tokens).
 - name: org_url
   env: OKTA_ORG_URL
+  description: Okta org base URL, no trailing slash (e.g. https://your-org.okta.com).
 
 ksis:
   - KSI-IAM-JIT
@@ -25,4 +28,4 @@ ksis:
 evidence_set:
   reference_id: EVD-OKTA-KSI-IAM-04
   name: Okta Just-in-Time Authorization
-  instructions: 'Script: okta_just_in_time_authorization.py. Uses Okta APIs to collect JIT authorization evidence (policies, rules, group-based access, activity). Output: okta_just_in_time_authorization.json'
+  instructions: 'Script: okta/just_in_time_authorization/fetcher.py. Uses Okta APIs to collect JIT authorization evidence (policies, rules, group-based access, activity). Output: okta_just_in_time_authorization.json'

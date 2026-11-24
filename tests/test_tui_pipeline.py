@@ -1,0 +1,484 @@
+"""TUI tests for the pipeline actions on the Pipelines tab: jobs (`j`) and the
+cycle close (`C`), plus the run console's hint that issue reports are waiting.
+
+The API is faked at the framework.api boundary; the app, its modals and its
+workers run for real.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("textual", reason="TUI tests need the 'tui' extra")
+
+from rich.text import Text  # noqa: E402
+
+from framework import api  # noqa: E402
+from framework.tui.modals import ConfirmModal, PickerModal  # noqa: E402
+from framework.tui.screens.paramify import ParamifyPage  # noqa: E402
+from framework.tui.screens.paramify_events import latest_run_scoped  # noqa: E402
+from framework.tui.screens.pipelines import PipelinesPage  # noqa: E402
+from framework.tui.screens.run import RunPage  # noqa: E402
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Run fixtures shared with test_run_selection, loaded by path: tests/ is not a
+# package, so importing it by name depends on how pytest was launched.
+_spec = importlib.util.spec_from_file_location(
+    "run_selection_fixtures", Path(__file__).with_name("test_run_selection.py")
+)
+_fixtures = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_fixtures)
+evidence_run, issue_run = _fixtures.evidence_run, _fixtures.issue_run
+
+
+def _write_manifest(tmp_path: Path) -> Path:
+    catalog = api.catalog(REPO_ROOT)
+    name = next(f["name"] for c in catalog["categories"] for f in c["fetchers"])
+    manifest = api.init_manifest()
+    api.set_output_dir(manifest, str(tmp_path / "evidence"))
+    api.add_entry(manifest, name)
+    path = tmp_path / "pipeline-test.yaml"
+    api.dump_manifest(manifest, path, REPO_ROOT)
+    return path
+
+
+
+async def _settle(app, pilot):
+    await app.workers.wait_for_complete()
+    await pilot.pause()
+    await pilot.pause()
+
+
+def _options(screen) -> list:
+    return [label for _, label in screen._options]
+
+
+def test_j_lists_pipeline_jobs(tmp_path, monkeypatch, run_tui):
+    jobs = [
+        {"job_id": "job-failed", "status": "FAILED", "type": "PROCESS",
+         "assessment_id": "A-1", "created_at": "2026-09-28T10:00:00Z",
+         "counts": None, "error": "boom", "blocked_by": None},
+        {"job_id": "job-done", "status": "COMPLETED", "type": "PROCESS_CLOSE",
+         "assessment_id": "A-1", "created_at": "2026-09-27T10:00:00Z",
+         "counts": {"issuesCreated": 3, "issuesAutoClosed": 1}, "blocked_by": None},
+    ]
+    monkeypatch.setattr(api, "issues_jobs", lambda root, **kw: jobs)
+
+    async def body(app, pilot):
+        await pilot.press("6")
+        await pilot.pause()
+        await pilot.press("j")
+        await _settle(app, pilot)
+        assert isinstance(app.screen, PickerModal)
+        labels = _options(app.screen)
+        assert any("FAILED" in label for label in labels)
+        assert any("3 created" in label and "1 auto-closed" in label for label in labels)
+
+    run_tui(body, _write_manifest(tmp_path))
+
+
+def test_a_failed_job_offers_retry_and_cancel_behind_a_confirm(tmp_path, monkeypatch, run_tui):
+    job = {"job_id": "job-failed", "status": "FAILED", "type": "PROCESS",
+           "assessment_id": "A-1", "created_at": "", "counts": None, "blocked_by": None}
+    calls = []
+    monkeypatch.setattr(api, "issues_jobs", lambda root, **kw: [job])
+    monkeypatch.setattr(
+        api, "issues_job_action",
+        lambda root, job_id, action: calls.append((job_id, action)) or {**job, "status": "QUEUED"},
+    )
+
+    async def body(app, pilot):
+        await pilot.press("6")
+        await pilot.pause()
+        await pilot.press("j")
+        await _settle(app, pilot)
+        app.screen.dismiss("job-failed")
+        await pilot.pause()
+        assert isinstance(app.screen, PickerModal)
+        assert [oid for oid, _ in app.screen._options] == ["retry", "cancel"]
+        app.screen.dismiss("retry")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        await pilot.press("y")
+        await _settle(app, pilot)
+        assert calls == [("job-failed", "retry")]
+
+    run_tui(body, _write_manifest(tmp_path))
+
+
+def test_shift_c_closes_a_manifest_assessment_after_a_warning(tmp_path, monkeypatch, run_tui):
+    closed = []
+    monkeypatch.setattr(
+        api, "issues_close",
+        lambda root, aid, **kw: closed.append(aid) or {
+            "job_id": "job-close", "status": "COMPLETED", "type": "CLOSE",
+            "counts": {"issuesAutoClosed": 7},
+        },
+    )
+
+    async def body(app, pilot):
+        app.manifest["run"]["fetchers"][0]["config"] = {
+            "assessment_id": "A-1", "assessment_name": "Monthly Scan",
+        }
+        await pilot.press("6")
+        await pilot.pause()
+        await pilot.press("C")
+        await pilot.pause()
+        assert isinstance(app.screen, PickerModal)
+        assert app.screen._options == [("A-1", "Monthly Scan")]
+        app.screen.dismiss("A-1")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        assert "auto-closed" in str(app.screen._message)
+        await pilot.press("y")
+        await _settle(app, pilot)
+        assert closed == ["A-1"]
+
+    run_tui(body, _write_manifest(tmp_path))
+
+
+def test_shift_c_with_no_assessment_says_so(tmp_path, run_tui):
+    async def body(app, pilot):
+        await pilot.press("6")
+        await pilot.pause()
+        await pilot.press("C")
+        await pilot.pause()
+        assert not isinstance(app.screen, PickerModal)
+
+    run_tui(body, _write_manifest(tmp_path))
+
+
+def test_run_console_points_at_waiting_issue_reports(tmp_path, run_tui):
+    async def body(app, pilot):
+        page = app.screen.query_one(RunPage)
+        page._finalize(True, "", issue_reports=2)
+        await pilot.pause()
+        banner = page.query_one("#run-banner")
+        rendered = banner.render()
+        text = rendered.plain if isinstance(rendered, Text) else str(rendered)
+        assert "2 scan reports to send on the Pipelines tab (i)" in text
+
+    run_tui(body, _write_manifest(tmp_path))
+
+
+def test_each_page_picks_the_newest_run_of_its_own_kind(tmp_path, run_tui):
+    """An evidence manifest and a pipeline manifest share the output dir; the
+    Pipelines page must not go blank because the evidence run is newer, and the
+    upload must still pick the evidence run."""
+    out = tmp_path / "evidence"
+    scans = issue_run(out, "2026-09-01T00-00-00Z")
+    evidence = evidence_run(out, "2026-09-02T00-00-00Z")
+
+    async def body(app, pilot):
+        assert latest_run_scoped(app, "evidence")[0]["dir"] == str(evidence)
+        await pilot.press("6")
+        await pilot.pause()
+        assert app.screen.query_one(PipelinesPage)._issues_run_dir == str(scans)
+
+    run_tui(body, _write_manifest(tmp_path))
+
+
+def test_enter_in_the_picker_filter_takes_the_highlighted_option(tmp_path, run_tui):
+    """Up/down move the list's cursor from the filter box; Enter there has to
+    take that option, not do nothing."""
+    picked = []
+
+    async def body(app, pilot):
+        app.push_screen(
+            PickerModal("Pick", [("a", "Alpha assessment"), ("b", "Beta assessment")]),
+            picked.append,
+        )
+        await pilot.pause()
+        await pilot.press("b", "e", "t")
+        await pilot.pause()
+        await pilot.press("enter")  # the only match, nothing highlighted yet
+        await pilot.pause()
+        app.push_screen(
+            PickerModal("Pick", [("a", "Alpha assessment"), ("b", "Beta assessment")]),
+            picked.append,
+        )
+        await pilot.pause()
+        await pilot.press("down", "down", "enter")
+        await pilot.pause()
+
+    run_tui(body, _write_manifest(tmp_path))
+    assert picked == ["b", "b"]
+
+
+def test_pipelines_keys_work_on_a_pipeline_only_manifest(tmp_path, monkeypatch, run_tui):
+    """Focus has to land in the page, or `i` does nothing."""
+    out = tmp_path / "evidence"
+    issue_run(out, "2026-09-01T00-00-00Z")
+    monkeypatch.setenv("PARAMIFY_UPLOAD_API_TOKEN", "t")
+
+    async def body(app, pilot):
+        await pilot.press("6")
+        await pilot.pause()
+        page = app.screen.query_one(PipelinesPage)
+        assert app.focused is not None and app.focused in page.walk_children()
+        await pilot.press("i")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+
+    run_tui(body, _write_manifest(tmp_path))
+
+
+def test_pipelines_tab_lists_the_scan_report_fetchers(tmp_path, run_tui):
+    manifest = api.init_manifest()
+    api.set_output_dir(manifest, str(tmp_path / "evidence"))
+    api.add_entry(manifest, "demo_hello")
+    api.add_entry(manifest, "qualys_vmdr_vulnerability_findings")
+    path = tmp_path / "scans.yaml"
+    api.dump_manifest(manifest, path, REPO_ROOT)
+
+    async def body(app, pilot):
+        from framework.tui.components.table import DataTable
+
+        await pilot.press("6")
+        await pilot.pause()
+        table = app.screen.query_one("#pipelines-fetchers", DataTable)
+        return [str(table.get_row_at(i)[0]) for i in range(table.row_count)]
+
+    assert run_tui(body, path) == ["qualys_vmdr_vulnerability_findings"]
+
+
+def _sends_to(tmp_path, run_tui, edit) -> list:
+    """The Pipelines list's "sends to" cells for a one-scan-report manifest that edit() changes."""
+    manifest = api.init_manifest()
+    api.set_output_dir(manifest, str(tmp_path / "evidence"))
+    api.add_entry(manifest, "qualys_vmdr_vulnerability_findings")
+    edit(manifest["run"])
+    path = tmp_path / "scans.yaml"
+    api.dump_manifest(manifest, path, REPO_ROOT)
+
+    async def body(app, pilot):
+        from framework.tui.components.table import DataTable
+
+        await pilot.press("6")
+        await pilot.pause()
+        table = app.screen.query_one("#pipelines-fetchers", DataTable)
+        return [str(table.get_row_at(i)[1]) for i in range(table.row_count)]
+
+    return run_tui(body, path)
+
+
+def test_an_unset_close_cycle_reads_as_unset_not_never(tmp_path, run_tui):
+    def edit(run):
+        run["fetchers"][0]["config"] = {"assessment_id": "A-1", "assessment_name": "Monthly Scan"}
+
+    assert _sends_to(tmp_path, run_tui, edit) == ["Monthly Scan · close unset"]
+
+
+def test_a_platform_level_assessment_counts(tmp_path, monkeypatch, run_tui):
+    monkeypatch.setenv("SCAN_CLOSE", "after_run")
+
+    def edit(run):
+        run["fetchers"][0]["config"] = {"close_cycle": "${env:SCAN_CLOSE}"}
+        run["platforms"] = {"qualys": {"config": {"assessment_id": "A-9"}}}
+
+    assert _sends_to(tmp_path, run_tui, edit) == ["A-9 · after_run"]
+
+
+def test_a_on_an_empty_manifest_says_what_to_do(tmp_path, run_tui):
+    manifest = api.init_manifest()
+    api.set_output_dir(manifest, str(tmp_path / "evidence"))
+    path = tmp_path / "empty.yaml"
+    api.dump_manifest(manifest, path, REPO_ROOT)
+
+    async def body(app, pilot):
+        await pilot.press("1")
+        await pilot.pause()
+        await pilot.press("tab")  # from the catalog to the manifest list
+        await pilot.pause()
+        await pilot.press("A")
+        await pilot.pause()
+        assert not isinstance(app.screen, PickerModal)
+        assert any("scan report first" in str(n.message) for n in app._notifications)
+
+    run_tui(body, path)
+
+
+def _fake_send(monkeypatch):
+    """Stand-in for the framework's issue-report upload: the same events, no HTTP."""
+    def upload(run_dir, root, on_event=None, **kw):
+        on_event({"event": "upload_start", "files": 1, "run_dir": run_dir, "base_url": "x"})
+        on_event({"event": "upload_file", "file": "scan.csv", "outcome": "uploaded",
+                  "assessment_id": "A-1"})
+        on_event({"event": "upload_complete", "ok": True, "uploaded": 1, "errors": 0})
+        return {"ok": True}
+
+    monkeypatch.setattr(api, "issues_upload_run", upload)
+
+
+def test_focus_returns_to_the_pipelines_page_after_a_send(tmp_path, monkeypatch, run_tui):
+    """Sending disables the page's buttons; the focused one going disabled used to
+    leave focus nowhere, so `j` and `C` did nothing until the user pressed the tab key again."""
+    out = tmp_path / "evidence"
+    issue_run(out, "2026-09-01T00-00-00Z")
+    monkeypatch.setenv("PARAMIFY_UPLOAD_API_TOKEN", "t")
+    _fake_send(monkeypatch)
+    monkeypatch.setattr(api, "issues_jobs", lambda root, **kw: [
+        {"job_id": "job-1", "status": "COMPLETED", "type": "PROCESS", "assessment_id": "A-1",
+         "created_at": "", "counts": None, "blocked_by": None}])
+
+    async def body(app, pilot):
+        await pilot.press("6")
+        await pilot.pause()
+        page = app.screen.query_one(PipelinesPage)
+        await pilot.press("i")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmModal)
+        await pilot.press("y")
+        await _settle(app, pilot)
+
+        assert app.focused is not None and app.focused in page.walk_children(), \
+            "focus was lost after the send"
+        assert not app.focused.disabled
+        await pilot.press("j")
+        await _settle(app, pilot)
+        assert isinstance(app.screen, PickerModal)
+
+    run_tui(body, _write_manifest(tmp_path))
+
+
+@pytest.mark.parametrize("page_cls", [ParamifyPage, PipelinesPage])
+def test_finishing_a_send_does_not_pull_focus_off_another_tab(tmp_path, run_tui, page_cls, stub_paramify_status):
+    stub_paramify_status()
+
+    async def body(app, pilot):
+        page = app.screen.query_one(page_cls)
+        await pilot.press("1")                     # the user is on Fetchers
+        await pilot.pause()
+        before = app.focused
+        page._finalize_upload({"ok": True, "uploaded": 1})
+        await _settle(app, pilot)
+        assert app.focused is before
+        assert app.focused not in page.walk_children()
+
+    run_tui(body, _write_manifest(tmp_path))
+
+
+def _info_cell(page, use):
+    from textual.widgets import DataTable
+
+    dt = page.query_one("#run-status", DataTable)
+    return str(dt.get_cell(page._rows[use], page._cols[3]))
+
+
+def test_run_tab_shows_why_an_issue_report_fetcher_failed(tmp_path, run_tui):
+    reason = "Wiz rejected the client credentials (HTTP 401)"
+
+    async def body(app, pilot):
+        page = app.screen.query_one(RunPage)
+        page._handle_event({"event": "run_start", "fetchers": ["wiz_issues_report"],
+                            "run_id": "r", "run_dir": "d"})
+        page._handle_event({"event": "fetcher_start", "fetcher": "wiz_issues_report", "targets": 1})
+        page._handle_event({"event": "fetcher_result", "fetcher": "wiz_issues_report",
+                            "exit_code": 1, "duration_sec": 1, "outputs": [],
+                            "error": reason, "error_code": "auth_failed"})
+        await pilot.pause()
+        assert _info_cell(page, "wiz_issues_report") == reason
+
+    run_tui(body, _write_manifest(tmp_path))
+
+
+def test_a_successful_fetcher_has_no_reason_in_the_info_column(tmp_path, run_tui):
+    async def body(app, pilot):
+        page = app.screen.query_one(RunPage)
+        page._handle_event({"event": "run_start", "fetchers": ["f"], "run_id": "r", "run_dir": "d"})
+        page._handle_event({"event": "fetcher_start", "fetcher": "f", "targets": 1})
+        page._handle_event({"event": "fetcher_result", "fetcher": "f", "exit_code": 0,
+                            "duration_sec": 1, "outputs": ["issue-reports/x.csv"]})
+        await pilot.pause()
+        assert _info_cell(page, "f") == ""
+
+    run_tui(body, _write_manifest(tmp_path))
+
+
+def test_a_fanout_failure_keeps_the_counts_and_adds_the_reason(tmp_path, run_tui):
+    async def body(app, pilot):
+        page = app.screen.query_one(RunPage)
+        page._handle_event({"event": "run_start", "fetchers": ["f"], "run_id": "r", "run_dir": "d"})
+        page._handle_event({"event": "fetcher_start", "fetcher": "f", "targets": 2, "fanout": True})
+        page._handle_event({"event": "fetcher_result", "fetcher": "f", "exit_code": 0,
+                            "duration_sec": 1, "outputs": []})
+        page._handle_event({"event": "fetcher_result", "fetcher": "f", "exit_code": 1,
+                            "duration_sec": 1, "outputs": [], "error": "scanner down"})
+        await pilot.pause()
+        assert _info_cell(page, "f") == "1/2 ok  · 1 failed  · scanner down"
+
+    run_tui(body, _write_manifest(tmp_path))
+
+
+def test_a_broken_catalog_does_not_stop_the_tui(tmp_path, monkeypatch, run_tui):
+    """A fetcher.yaml that fails discovery: the app says it could not load the
+    catalog and stays up; the Pipelines page lists nothing rather than raising."""
+    path = _write_manifest(tmp_path)
+
+    def broken(root):
+        raise ValueError("fetchers/x/fetcher.yaml: not valid")
+
+    monkeypatch.setattr(api, "catalog", broken)
+
+    async def body(app, pilot):
+        from framework.tui.components.table import DataTable
+        from framework.tui.screens.workspace import WorkspaceScreen
+
+        for key in ("6", "1", "6"):
+            await pilot.press(key)
+            await pilot.pause()
+        table = app.screen.query_one("#pipelines-fetchers", DataTable)
+        notices = [str(n.message) for n in app._notifications]
+        return isinstance(app.screen, WorkspaceScreen), app.is_running, table.row_count, notices
+
+    on_workspace, running, rows, notices = run_tui(body, path)
+    assert on_workspace and running
+    assert rows == 0
+    assert any("Couldn't load the catalog" in n for n in notices), notices
+
+
+@pytest.mark.parametrize(
+    "busy_page, busy_flag, tab, keys",
+    [
+        (ParamifyPage, "_acting", "6", ("i",)),     # upload or sync running: no scan send
+        (ParamifyPage, "_acting", "6", ("C",)),     # ... and no cycle close
+        (ParamifyPage, "_planning", "6", ("i",)),   # a preview being planned: no scan send
+        (PipelinesPage, "_uploading", "5", ("u",)),  # scan send running: no evidence upload
+        (PipelinesPage, "_uploading", "5", ("s",)),  # ... no scripts preview
+        (PipelinesPage, "_uploading", "5", ("v",)),  # ... and no validators preview
+    ],
+    ids=["action-blocks-send", "action-blocks-close", "planning-blocks-send",
+         "send-blocks-upload", "send-blocks-scripts", "send-blocks-validators"],
+)
+def test_one_paramify_write_runs_at_a_time_across_pages(
+    tmp_path, monkeypatch, run_tui, stub_paramify_status, busy_page, busy_flag, tab, keys
+):
+    """The Paramify and Pipelines pages share one busy guard, as they did on one page:
+    while either runs a write, the other refuses to start one and says why."""
+    out = tmp_path / "evidence"
+    issue_run(out, "2026-09-01T00-00-00Z")
+    evidence_run(out, "2026-09-02T00-00-00Z")
+    monkeypatch.setenv("PARAMIFY_UPLOAD_API_TOKEN", "t")
+    stub_paramify_status()
+    started = []
+    for name in ("issues_upload_run", "upload_run", "plan_upload", "scripts_sync", "sync_validators",
+                 "issues_close"):
+        monkeypatch.setattr(api, name, lambda *a, _n=name, **k: started.append(_n))
+
+    async def body(app, pilot):
+        app.manifest["run"]["fetchers"][0]["config"] = {"assessment_id": "A-1"}
+        setattr(app.screen.query_one(busy_page), busy_flag, True)
+        await pilot.press(tab)
+        await _settle(app, pilot)  # the Paramify tab reads its status before its keys show
+        await pilot.press(*keys)
+        await _settle(app, pilot)
+        return type(app.screen).__name__, [str(n.message) for n in app._notifications]
+
+    screen, notices = run_tui(body, _write_manifest(tmp_path))
+    assert screen == "WorkspaceScreen", "a second Paramify write got as far as its confirm or picker"
+    assert "A Paramify operation is already in progress." in notices, notices
+    assert started == []

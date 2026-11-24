@@ -35,6 +35,7 @@ from azure_common import (  # noqa: E402
     NOT_REGISTERED,
     REGISTRATION_UNKNOWN,
     Collector,
+    arm_client_kwargs,
     build_payload,
     classify_failure_code,
     coverage_percentage,
@@ -42,12 +43,13 @@ from azure_common import (  # noqa: E402
     failure_reason,
     model_attr,
     provider_registration_status,
+    report_failure,
     resolve_subscription,
     resource_group_from_id,
     sanitize_for_filename,
     write_evidence,
-    write_status,
 )
+from resource_exclusions import ResourceExclusions  # noqa: E402
 
 logger = logging.getLogger("azure_postgresql_configuration")
 
@@ -117,6 +119,8 @@ def project_postgresql_server(server) -> dict:
         "delegated_subnet_resource_id": model_attr(network, "delegated_subnet_resource_id"),
         "backup_retention_days": model_attr(backup, "backup_retention_days"),
         "geo_redundant_backup": model_attr(backup, "geo_redundant_backup"),
+        # SystemManaged or AzureKeyVault; None when Azure returned no data_encryption block.
+        "data_encryption_type": model_attr(model_attr(server, "data_encryption"), "type"),
         "high_availability_mode": model_attr(high_availability, "mode"),
         "high_availability_state": model_attr(high_availability, "state"),
     }
@@ -261,6 +265,12 @@ def server_record(
         # --- durability ---
         "backup_retention_days": server.get("backup_retention_days"),
         "geo_redundant_backup": server.get("geo_redundant_backup"),
+        "data_encryption_type": server.get("data_encryption_type"),
+        # Unknown (None) when no type was returned: counted apart, never as platform-managed.
+        "customer_managed_key": (
+            str(server["data_encryption_type"]).lower() == "azurekeyvault"
+            if server.get("data_encryption_type") else None
+        ),
         "geo_redundant_backup_enabled": (
             str(server.get("geo_redundant_backup") or "").lower() == GEO_REDUNDANT_ENABLED
         ),
@@ -310,6 +320,8 @@ def summarize(servers: list[dict]) -> dict:
             1 for s in servers if s["geo_redundant_backup_enabled"]
         ),
         "high_availability_servers": sum(1 for s in servers if s["high_availability_enabled"]),
+        "customer_managed_key_servers": sum(1 for s in servers if s["customer_managed_key"] is True),
+        "data_encryption_unknown_servers": sum(1 for s in servers if s["customer_managed_key"] is None),
     }
 
 
@@ -414,20 +426,20 @@ def _collect_entra_admins(client, collector: Collector, group, server_name) -> l
         return []
 
 
-def collect_postgresql_servers(subscription_id, cred, collector: Collector) -> list[dict]:
-    """One servers list, then per server: 6 parameter GETs + firewall + Entra admins."""
+def collect_postgresql_servers(subscription_id, cred, collector: Collector, exclusions=None, excluded=None) -> list[dict] | None:
+    """One servers list, then per in-scope server: 6 parameter GETs + firewall + Entra admins; excluded servers are appended to `excluded`."""
 
     def _client():
         # Lazy import: keeps a missing SDK inside the guard below, where it becomes
         # a recorded failure and a status file rather than an import-time crash.
         from azure.mgmt.postgresqlflexibleservers import PostgreSQLManagementClient
 
-        return PostgreSQLManagementClient(credential=cred, subscription_id=subscription_id)
+        return PostgreSQLManagementClient(credential=cred, subscription_id=subscription_id, **arm_client_kwargs())
 
     # Guarded: a missing SDK becomes internal_error, evidence still written.
     client = collector.guard("postgresql.PostgreSQLManagementClient (init)", _client)
     if client is None:
-        return []
+        return None
 
     def _list():
         servers_group = client.servers
@@ -446,9 +458,14 @@ def collect_postgresql_servers(subscription_id, cred, collector: Collector) -> l
         # ItemPaged: the SDK follows nextLink itself, so pagination is handled.
         return [project_postgresql_server(s) for s in lister()]
 
-    projected_servers = collector.guard(
-        "postgresql.servers.list_by_subscription", _list, default=[]
-    )
+    projected_servers = collector.guard("postgresql.servers.list_by_subscription", _list)
+    if projected_servers is None:
+        return None
+
+    if exclusions:
+        projected_servers, out = exclusions.split(projected_servers, "postgresql_server")
+        if excluded is not None:
+            excluded.extend(out)
 
     servers: list[dict] = []
     for server in projected_servers:
@@ -495,7 +512,10 @@ def main() -> int:
     subscription_id = sub["subscription_id"]
     cred = collector.guard("azure.identity.DefaultAzureCredential", credential)
 
-    servers: list[dict] = []
+    exclusions = ResourceExclusions.from_env()
+    exclusions.record_invalid(collector)
+    excluded: list[dict] = []
+    servers: list[dict] | None = None
     registration = REGISTRATION_UNKNOWN
     if subscription_id and cred is not None:
         # Asked first: an unregistered provider returns an empty list, not an error.
@@ -508,7 +528,7 @@ def main() -> int:
                 "PostgreSQL in use; reporting status not_registered",
                 subscription_id,
             )
-        servers = collect_postgresql_servers(subscription_id, cred, collector)
+        servers = collect_postgresql_servers(subscription_id, cred, collector, exclusions, excluded)
     elif not subscription_id:
         collector.record(
             "resolve_subscription",
@@ -518,6 +538,12 @@ def main() -> int:
             ),
         )
 
+    listed = servers is not None
+    if not listed:
+        exclusions.mark_unread()
+    exclusions.warn_unmatched(logger)
+    servers = servers or []
+
     evidence = build_payload(
         subscription_id=subscription_id,
         subscription_source=sub["subscription_source"],
@@ -525,8 +551,13 @@ def main() -> int:
         results={
             "postgresql_servers": servers,
             "provider_registration_status": registration,
+            "excluded": excluded,
         },
-        summary={**summarize(servers), "provider_registration_status": registration},
+        summary={
+            **summarize(servers),
+            "provider_registration_status": registration,
+            **exclusions.summary(excluded, ("postgresql_server",), {"postgresql_servers": len(servers) if listed else None}),
+        },
     )
 
     filename = (
@@ -536,10 +567,7 @@ def main() -> int:
     path = write_evidence(output_dir, filename, evidence)
 
     if not collector.ok:
-        logger.error(
-            "Encountered %d Azure API failure(s) during collection", len(collector.failures)
-        )
-        write_status(
+        report_failure(
             failure_reason(collector.failures), classify_failure_code(collector.failures)
         )
         return 1
